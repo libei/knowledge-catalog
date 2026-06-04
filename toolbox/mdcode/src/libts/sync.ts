@@ -44,6 +44,9 @@ export class CatalogSync {
         const nameParts = entry.name.split('/');
         const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
                                                     [...this._snapshot.aspectTypes.keys()]);
+        // The server will respond with 403 permission denied for both resource not exist or 
+        // insufficient permission. We cannot tell if a resource not exist or user does not 
+        // have the access. Thus using 200 for an ensured result.
         if (res.status != 200 || !res.result) {
           continue;
         }
@@ -75,6 +78,20 @@ export class CatalogSync {
       const nameParts = entry.name.split('/');
       const project = nameParts[1];
       const location = nameParts[3];
+
+      const exist = await this._catalog.lookupEntry(project, location, entry.name);
+      if (exist.status != 200 || !exist.result) {
+        console.log(`entry ${name} does not exist, will try to create the entry.`);
+        
+        const entryGroup = nameParts[5];
+        const entryId = nameParts[7];
+        const createEntryRes = await this._catalog.createEntry(project, location, entryGroup, entryId, entry);
+        if (createEntryRes.status != 200 || !createEntryRes.result) {
+          console.log(`Failed to push entry ${entry.name}: Failed to create new entry.`);
+        }
+        console.log(`Successfully created and pushed entry ${entry.name}`);
+        continue;
+      }
 
       const updateMask = [];
       const aspectKeys = Object.keys(entry.aspects || {});

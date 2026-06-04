@@ -145,7 +145,7 @@ function runScenario(scenario: any) {
 
       // Assert expectations - Catalog Service
       if (scenario.assert?.catalog?.entries) {
-        expect(catalog.mockEntries).toEqual(scenario.assert.catalog.entries);
+        expect(JSON.parse(JSON.stringify(catalog.mockEntries))).toEqual(JSON.parse(JSON.stringify(scenario.assert.catalog.entries)));
       }
     });
   });
@@ -231,6 +231,15 @@ function main() {
     async function(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
       if (currentCatalogMock) {
         return await currentCatalogMock.updateEntry(entry, updateMask, aspectKeys);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'createEntry').mockImplementation(
+    async function(project: string, location: string, entryGroup: string, entryId: string, entry?: gcp.Entry) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.createEntry(project, location, entryGroup, entryId, entry);
       }
       return { status: 404, message: 'Not found' };
     }
