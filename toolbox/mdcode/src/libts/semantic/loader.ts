@@ -12,6 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 import { SemanticModel, Entity, Field, Relationship, Metric, DataSource } from './ir';
+import { referencedEntityNames, dedupe } from './expr';
 
 export interface LoadOptions {
   dialect?: string;         // preferred expression dialect; default 'BIGQUERY'
@@ -130,6 +131,17 @@ function convertModel(m: ModelDoc, opts: LoadOptions, warnings: string[]): Seman
   const dialect = opts.dialect ?? DEFAULT_DIALECT;
 
   const entities = m.datasets.map(ds => convertDataset(ds, opts, warnings, dialect));
+
+  const seenNames = new Set<string>();
+  for (const e of entities) {
+    if (seenNames.has(e.name)) {
+      warnings.push(
+        `model '${m.name}': duplicate dataset name '${e.name}'; ` +
+        `only one node table can carry that label (the graph will be invalid)`);
+    }
+    seenNames.add(e.name);
+  }
+
   const keysByEntity = new Map(entities.map(e => [e.name, e.keys]));
 
   const relationships = (m.relationships ?? []).map(
@@ -175,6 +187,11 @@ function convertRelationship(r: RelationshipDoc, keysByEntity: Map<string, strin
   if (!keysByEntity.has(r.to)) {
     warnings.push(`${ctx}: 'to' dataset '${r.to}' is not defined in the model`);
   }
+  if (r.from_columns.length !== r.to_columns.length) {
+    warnings.push(
+      `${ctx}: from_columns (${r.from_columns.length}) and to_columns ` +
+      `(${r.to_columns.length}) have different lengths; the join keys will be mismatched`);
+  }
 
   // Fall back to the FK columns when the from dataset declares no primary key.
   const sourceKey = fromKeys && fromKeys.length ? fromKeys : r.from_columns;
@@ -196,7 +213,7 @@ function convertMetric(mt: MetricDoc, entityNames: string[],
                        warnings: string[], dialect: string): Metric {
   const ctx = `metric '${mt.name}'`;
   const expression = pickDialect(mt.expression, dialect, ctx, warnings);
-  const entities = referencedEntities(expression, entityNames);
+  const entities = referencedEntityNames(expression, entityNames);
   if (!entities.length) {
     warnings.push(`${ctx}: expression references no known entity; it may not be placeable downstream`);
   }
@@ -275,20 +292,4 @@ function withDefaults(ds: DataSource, opts: LoadOptions): DataSource {
 
 function unquote(part: string): string {
   return part.replace(/^[`"]/, '').replace(/[`"]$/, '');
-}
-
-// Returns the entity names whose `<name>.` qualifier appears in the expression.
-// This is a light scan (it does not exclude string literals); the BigQuery
-// generator applies the literal-aware placement when it lowers the metric.
-function referencedEntities(expression: string, entityNames: string[]): string[] {
-  return entityNames.filter(
-    name => new RegExp(`\\b${escapeRegExp(name)}\\.`).test(expression));
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function dedupe(items: string[]): string[] {
-  return [...new Set(items)];
 }

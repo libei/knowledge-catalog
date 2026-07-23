@@ -16,6 +16,7 @@
 //
 
 import { SemanticModel, Entity, Field, Relationship, RelationshipEnd, Metric, DataSource } from './ir';
+import { referencedEntityNames, stripQualifier, dedupe } from './expr';
 
 export interface GenerateOptions {
   project?: string;    // default project for the graph + unqualified table refs
@@ -120,18 +121,7 @@ function placeMetric(metric: Metric, model: SemanticModel,
 // expression. String literals are ignored so a value like 'orders.x' is not
 // mistaken for a reference to the `orders` entity.
 function referencedEntities(expression: string, model: SemanticModel): string[] {
-  const scannable = blankStringLiterals(expression);
-  return (model.entities ?? [])
-    .map(e => e.name)
-    .filter(name => new RegExp(`\\b${escapeRegExp(name)}\\.`).test(scannable));
-}
-
-// Removes the `<entity>.` qualifier so the expression references table-local
-// columns, without touching text inside string literals (a literal such as
-// 'orders.x' is data, not a qualified column reference).
-function stripQualifier(expression: string, entity: string): string {
-  const re = new RegExp(`\\b${escapeRegExp(entity)}\\.`, 'g');
-  return mapOutsideStringLiterals(expression, seg => seg.replace(re, ''));
+  return referencedEntityNames(expression, (model.entities ?? []).map(e => e.name));
 }
 
 function startsWithSupportedAggregate(body: string): boolean {
@@ -218,10 +208,6 @@ function edgeKey(rel: Relationship, sourceEntity: Entity | undefined): string[] 
   ]);
 }
 
-function dedupe(items: string[]): string[] {
-  return [...new Set(items)];
-}
-
 function keys(end: RelationshipEnd): { rel: string; entity: string } {
   return {
     rel: end.joinKeys.relationshipColumns.join(', '),
@@ -285,37 +271,8 @@ function quote(s: string): string {
   return `"${escaped}"`;
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function sameSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const sa = new Set(a);
   return b.every(x => sa.has(x));
-}
-
-// Matches a single- or double-quoted SQL string literal, honoring backslash
-// escapes. (Triple-quoted / raw literals are uncommon in measure expressions and
-// are treated as ordinary text.)
-const STRING_LITERAL = /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g;
-
-// Replaces string-literal contents with blanks of equal length, so qualifier
-// scanning sees literal-free text without shifting any offsets.
-function blankStringLiterals(expression: string): string {
-  return expression.replace(STRING_LITERAL, m => ' '.repeat(m.length));
-}
-
-// Applies `fn` only to the parts of `expression` that lie outside string
-// literals, leaving each literal verbatim.
-function mapOutsideStringLiterals(expression: string, fn: (segment: string) => string): string {
-  let out = '';
-  let last = 0;
-  for (const m of expression.matchAll(STRING_LITERAL)) {
-    out += fn(expression.slice(last, m.index));
-    out += m[0];
-    last = m.index! + m[0].length;
-  }
-  out += fn(expression.slice(last));
-  return out;
 }

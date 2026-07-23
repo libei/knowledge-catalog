@@ -155,6 +155,23 @@ describe('relationships map onto the direct-FK IR convention', () => {
     });
     expect(warnings.some(w => w.includes("'to' dataset 'ghost'"))).toBe(true);
   });
+
+  test('mismatched from_columns/to_columns arity warns (invalid join keys)', () => {
+    const { warnings } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [
+          { name: 'orders', source: 'orders', primary_key: ['order_id'], fields: [] },
+          { name: 'customers', source: 'customers', primary_key: ['a', 'b'], fields: [] },
+        ],
+        relationships: [{
+          name: 'r', from: 'orders', to: 'customers',
+          from_columns: ['x', 'y'], to_columns: ['a'],
+        }],
+      }],
+    });
+    expect(warnings.some(w => w.includes('different lengths'))).toBe(true);
+  });
 });
 
 
@@ -179,6 +196,25 @@ describe('metrics infer their referenced entities from the expression', () => {
       }],
     });
     expect(warnings.some(w => w.includes('references no known entity'))).toBe(true);
+  });
+
+  test('a qualifier inside a string literal is not counted as a reference', () => {
+    // 'customers.region' is data, not a column reference, so the metric must be
+    // attributed only to order_items.
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [
+          { name: 'order_items', source: 'order_items', primary_key: ['id'], fields: [] },
+          { name: 'customers', source: 'customers', primary_key: ['id'], fields: [] },
+        ],
+        metrics: [{
+          name: 'tagged',
+          expression: expr("CONCAT(SUM(order_items.amount), 'customers.region')"),
+        }],
+      }],
+    });
+    expect(models[0].metrics[0].entities).toEqual(['order_items']);
   });
 });
 
@@ -211,6 +247,19 @@ describe('document-level handling', () => {
       }],
     });
     expect(models[0].entities[0].fields[0].name).toBe('id');
+  });
+
+  test('duplicate dataset names warn (only one node table can carry the label)', () => {
+    const { warnings } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [
+          { name: 'orders', source: 'a', primary_key: ['id'], fields: [] },
+          { name: 'orders', source: 'b', primary_key: ['id'], fields: [] },
+        ],
+      }],
+    });
+    expect(warnings.some(w => w.includes("duplicate dataset name 'orders'"))).toBe(true);
   });
 
   test('a document without semantic_model throws', () => {
