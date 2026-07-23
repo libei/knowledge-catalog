@@ -16,9 +16,8 @@
     "build": "npm run build:libts && npm run build:tool",
     "compile": "npx tsc --noEmit",
     "test:libts": "npx bun test ./tests/libts/scenarios.ts",
-    "test:semantic": "npx bun test ./tests/libts/semantic.bigquery.test.ts",
-    "test:loader": "npx bun test ./tests/libts/semantic.loader.test.ts",
-    "test": "npm run test:libts && npm run test:semantic && npm run test:loader",
+    "test:semantic": "npx bun test ./tests/libts/semantic/",
+    "test": "npm run test:libts && npm run test:semantic",
     "x:mcp": "npx @modelcontextprotocol/inspector dist/kcmd mcp"
   },
   "keywords": [],

@@ -11,8 +11,8 @@
 import { describe, test, expect } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { loadModels, LoadOptions } from '../../src/libts/semantic/loader';
-import { generatePropertyGraph } from '../../src/libts/semantic/bigquery';
+import { loadModels, LoadOptions } from '../../../src/libts/semantic/loader';
+import { generatePropertyGraph } from '../../../src/libts/semantic/bigquery';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
