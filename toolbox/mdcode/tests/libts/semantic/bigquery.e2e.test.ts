@@ -3,10 +3,12 @@
 //
 // The primary check is a GOLDEN test: for every fixture under `fixtures/`, the
 // complete generated DDL plus the emitted warnings are compared byte-for-byte
-// against a committed `<fixture>.golden.sql`. The golden files are the reviewable
-// "big picture" — open a `.yaml` next to its `.golden.sql` to see the full input
-// and full output of the translation, and any dropped metric, reordered block,
-// or changed OPTIONS shows up as a diff.
+// against a committed `<fixture>.bigquery.golden.sql` (destination-scoped, so
+// other output targets can add their own goldens per fixture). The golden files
+// are the reviewable "big picture" — open a `.yaml` next to its
+// `.bigquery.golden.sql` to see the full input and full output of the
+// translation, and any dropped metric, reordered block, or changed OPTIONS shows
+// up as a diff.
 //
 //   Regenerate goldens after an intentional generator change:
 //     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/bigquery.e2e.test.ts
@@ -57,8 +59,10 @@ function render(fixture: string): string {
   return `${ddl}\n-- warnings --\n${warnBlock}\n`;
 }
 
+// Goldens are destination-scoped: `<fixture>.bigquery.golden.sql`. Other output
+// destinations will add their own `<fixture>.<destination>.golden.<ext>`.
 const goldenPath = (fixture: string) =>
-  path.join(FIXTURES, fixture.replace(/\.yaml$/, '.golden.sql'));
+  path.join(FIXTURES, fixture.replace(/\.yaml$/, '.bigquery.golden.sql'));
 
 
 describe('golden DDL: each corpus fixture generates its exact expected property graph', () => {
