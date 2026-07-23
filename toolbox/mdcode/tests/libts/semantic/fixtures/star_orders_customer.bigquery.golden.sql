@@ -26,13 +26,6 @@ EDGE TABLES (
 OPTIONS(description="Sales orders with customer attributes\n\nUse this model for order analysis.");
 
 -- warnings --
--- field 'orders.o_orderkey': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'orders.o_custkey': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'orders.o_orderdate': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'orders.o_totalprice': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'customer.c_custkey': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'customer.c_name': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- metric 'total_revenue': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- metric 'order_count': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
+-- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
 -- metric 'order_count': expression references no known entity; it may not be placeable downstream
 -- metric 'order_count' references no known entity; skipped (cannot be a single MEASURE)

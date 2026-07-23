@@ -58,26 +58,7 @@ EDGE TABLES (
 OPTIONS(description="TPC-DS retail model");
 
 -- warnings --
--- field 'store_sales.ss_item_sk': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store_sales.ss_ticket_number': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store_sales.ss_customer_sk': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store_sales.ss_store_sk': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store_sales.ss_quantity': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store_sales.ss_sales_price': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store_sales.ss_ext_sales_price': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store_sales.ss_net_profit': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'customer.c_customer_sk': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'customer.c_first_name': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'customer.c_last_name': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'item.i_item_sk': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'item.i_brand': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'item.i_category': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'item.i_current_price': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store.s_store_sk': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store.s_store_name': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store.s_city': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store.s_state': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
--- field 'store.s_number_employees': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')
+-- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
 -- dataset 'date_dim': no primary_key; the entity's KEY will be empty (invalid for graph generation)
 -- entity 'date_dim': empty KEY (no primary key); node table skipped, as a graph node requires a KEY
 -- relationship 'store_sales_to_date_dim': references skipped entity 'date_dim'; edge omitted
