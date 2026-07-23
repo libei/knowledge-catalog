@@ -207,6 +207,56 @@ describe('graph naming and options', () => {
 });
 
 
+describe('robust handling of messy inputs (from code review)', () => {
+  test('a description with newlines/tabs/quotes escapes into a single valid string literal', () => {
+    // Raw newlines cannot appear inside a BigQuery double-quoted literal; they
+    // (and \t, ", \) must be escaped or the OPTIONS(description=...) is invalid.
+    const model: SemanticModel = {
+      name: 'm', relationships: [], metrics: [],
+      entities: [{ name: 'e', dataSource: { table: 't' }, keys: ['id'],
+        fields: [{ name: 'id', expression: 'e.id', description: 'line1\nline2\t"q"' }] }],
+    };
+    const { ddl } = generatePropertyGraph(model, OPTS);
+    expect(ddl).toContain('OPTIONS(description="line1\\nline2\\t\\"q\\"")');
+    expect(ddl).not.toContain('line1\nline2');  // no raw newline inside the literal
+  });
+
+  test('an entity qualifier inside a string literal is neither stripped nor counted as a reference', () => {
+    // Only order_items is genuinely referenced; 'orders.note' is data. The metric
+    // must place on order_items (not be flagged as spanning orders too), and the
+    // literal text must survive qualifier stripping unchanged.
+    const model: SemanticModel = {
+      ...SALES,
+      metrics: [{ name: 'flagged',
+        expression: "SUM(IF(order_items.amount > 0, order_items.amount, 0)) /* 'orders.note' */",
+        entities: ['order_items'] }],
+    };
+    const { ddl, warnings } = generatePropertyGraph(model, OPTS);
+    expect(ddl).toContain("MEASURE(SUM(IF(amount > 0, amount, 0)) /* 'orders.note' */) AS flagged");
+    expect(warnings.some(w => w.includes('flagged') && w.includes('multiple'))).toBe(false);
+  });
+
+  test("a metric whose declared entities disagree with its expression is reported", () => {
+    // The IR declares entities: ['orders'] but the expression aggregates
+    // order_items; the generator places per the expression and surfaces the
+    // discrepancy instead of resolving it silently.
+    const model: SemanticModel = {
+      ...SALES,
+      metrics: [{ name: 'mislabeled', expression: 'SUM(order_items.amount)', entities: ['orders'] }],
+    };
+    const { warnings } = generatePropertyGraph(model, OPTS);
+    expect(warnings.some(w => w.includes("metric 'mislabeled'") && w.includes('declares entities')))
+      .toBe(true);
+  });
+
+  test('a model with no entities is reported rather than silently emitting an invalid graph', () => {
+    const model: SemanticModel = { name: 'm', entities: [], relationships: [], metrics: [] };
+    const { warnings } = generatePropertyGraph(model, OPTS);
+    expect(warnings.some(w => w.includes('no entities'))).toBe(true);
+  });
+});
+
+
 describe('emits DDL that BigQuery accepts (live-verified regression guard)', () => {
   // The exact strings below were run against BigQuery and produced correct
   // results. Any change to generator formatting must be re-verified before these

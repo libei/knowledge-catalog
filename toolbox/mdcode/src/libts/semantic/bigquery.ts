@@ -41,18 +41,28 @@ const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
 export function generatePropertyGraph(model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
   const warnings: string[] = [];
 
+  // The IR requires entities/relationships/metrics, but be defensive against a
+  // hand-built or partially-deserialized model rather than throwing on `.map`.
+  const entities = model.entities ?? [];
+  const relationships = model.relationships ?? [];
+  const metrics = model.metrics ?? [];
+
+  if (!entities.length) {
+    warnings.push('model has no entities; the generated NODE TABLES block will be empty and invalid');
+  }
+
   // Metrics are model-level; place each on the single entity its aggregate
   // references. metricsByEntity: entity name -> measure property lines.
   const metricsByEntity = new Map<string, string[]>();
-  for (const metric of model.metrics ?? []) {
+  for (const metric of metrics) {
     placeMetric(metric, model, metricsByEntity, warnings);
   }
 
-  const nodeTables = model.entities.map(
+  const nodeTables = entities.map(
     entity => renderNodeTable(entity, metricsByEntity.get(entity.name) ?? [], opts, warnings));
 
-  const entitiesByName = new Map(model.entities.map(e => [e.name, e]));
-  const edgeTables = model.relationships.map(
+  const entitiesByName = new Map(entities.map(e => [e.name, e]));
+  const edgeTables = relationships.map(
     rel => renderEdgeTable(rel, entitiesByName, opts, warnings));
 
   const graphName = qualifyGraph(model, opts);
@@ -65,7 +75,7 @@ export function generatePropertyGraph(model: SemanticModel, opts: GenerateOption
     blocks.push(`EDGE TABLES (\n${edgeTables.join(',\n')}\n)`);
   }
 
-  return { ddl: blocks.join('\n') + ';\n', warnings };
+  return { ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings) };
 }
 
 
@@ -74,6 +84,16 @@ export function generatePropertyGraph(model: SemanticModel, opts: GenerateOption
 function placeMetric(metric: Metric, model: SemanticModel,
                      metricsByEntity: Map<string, string[]>, warnings: string[]): void {
   const referenced = referencedEntities(metric.expression, model);
+
+  // The IR also declares metric.entities. Placement is driven by the qualifiers
+  // actually present in the expression (that is what we strip and attach), but a
+  // disagreement with the declared list signals an inconsistent model, so
+  // surface it rather than resolving silently.
+  if (metric.entities && !sameSet(metric.entities, referenced)) {
+    warnings.push(
+      `metric '${metric.name}' declares entities [${metric.entities.join(', ')}] but its ` +
+      `expression references [${referenced.join(', ') || 'none'}]; placing per the expression`);
+  }
 
   if (referenced.length !== 1) {
     const detail = referenced.length === 0
@@ -96,16 +116,22 @@ function placeMetric(metric: Metric, model: SemanticModel,
   metricsByEntity.set(entity, lines);
 }
 
-// Returns the model entity names whose `<name>.` qualifier appears in an expression.
+// Returns the model entity names whose `<name>.` qualifier appears in an
+// expression. String literals are ignored so a value like 'orders.x' is not
+// mistaken for a reference to the `orders` entity.
 function referencedEntities(expression: string, model: SemanticModel): string[] {
-  return model.entities
+  const scannable = blankStringLiterals(expression);
+  return (model.entities ?? [])
     .map(e => e.name)
-    .filter(name => new RegExp(`\\b${escapeRegExp(name)}\\.`).test(expression));
+    .filter(name => new RegExp(`\\b${escapeRegExp(name)}\\.`).test(scannable));
 }
 
-// Removes the `<entity>.` qualifier so the expression references table-local columns.
+// Removes the `<entity>.` qualifier so the expression references table-local
+// columns, without touching text inside string literals (a literal such as
+// 'orders.x' is data, not a qualified column reference).
 function stripQualifier(expression: string, entity: string): string {
-  return expression.replace(new RegExp(`\\b${escapeRegExp(entity)}\\.`, 'g'), '');
+  const re = new RegExp(`\\b${escapeRegExp(entity)}\\.`, 'g');
+  return mapOutsideStringLiterals(expression, seg => seg.replace(re, ''));
 }
 
 function startsWithSupportedAggregate(body: string): boolean {
@@ -157,11 +183,13 @@ function renderEdgeTable(rel: Relationship, entitiesByName: Map<string, Entity>,
     backing = qualifyTable(sourceEntity.dataSource, opts, warnings, `relationship '${rel.name}'`);
   }
 
+  const src = keys(rel.source);
+  const dst = keys(rel.destination);
   const lines = [
     line(1, `${backing} AS ${rel.name}`),
     line(2, `KEY(${edgeKey(rel, sourceEntity).join(', ')})`),
-    line(2, `SOURCE KEY(${keys(rel.source).rel}) REFERENCES ${rel.source.entity}(${keys(rel.source).entity})`),
-    line(2, `DESTINATION KEY(${keys(rel.destination).rel}) REFERENCES ${rel.destination.entity}(${keys(rel.destination).entity})`),
+    line(2, `SOURCE KEY(${src.rel}) REFERENCES ${rel.source.entity}(${src.entity})`),
+    line(2, `DESTINATION KEY(${dst.rel}) REFERENCES ${rel.destination.entity}(${dst.entity})`),
   ];
 
   if (rel.fields && rel.fields.length) {
@@ -219,8 +247,9 @@ function qualifyTable(ds: DataSource, opts: GenerateOptions,
 // Builds the dataset-qualified graph name.
 function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
   const name = opts.graphName ?? model.name;
-  const dataset = opts.dataset ?? model.entities[0]?.dataSource.dataset;
-  const project = opts.project ?? model.entities[0]?.dataSource.project;
+  const first = (model.entities ?? [])[0];
+  const dataset = opts.dataset ?? first?.dataSource.dataset;
+  const project = opts.project ?? first?.dataSource.project;
   const parts = [project, dataset, name].filter((p): p is string => !!p);
   return `\`${parts.join('.')}\``;
 }
@@ -242,10 +271,51 @@ function propertiesBlock(properties: string[]): string {
   return `${line(2, 'PROPERTIES(')}\n${list(3, properties)}\n${line(2, ')')}`;
 }
 
+// Renders a value as a BigQuery double-quoted string literal. Backslash and the
+// quote are escaped, and control characters that cannot appear raw inside a
+// quoted literal (newline, carriage return, tab) are escaped too, so a
+// multi-line description does not produce a broken literal.
 function quote(s: string): string {
-  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  const escaped = s
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+  return `"${escaped}"`;
 }
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function sameSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = new Set(a);
+  return b.every(x => sa.has(x));
+}
+
+// Matches a single- or double-quoted SQL string literal, honoring backslash
+// escapes. (Triple-quoted / raw literals are uncommon in measure expressions and
+// are treated as ordinary text.)
+const STRING_LITERAL = /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g;
+
+// Replaces string-literal contents with blanks of equal length, so qualifier
+// scanning sees literal-free text without shifting any offsets.
+function blankStringLiterals(expression: string): string {
+  return expression.replace(STRING_LITERAL, m => ' '.repeat(m.length));
+}
+
+// Applies `fn` only to the parts of `expression` that lie outside string
+// literals, leaving each literal verbatim.
+function mapOutsideStringLiterals(expression: string, fn: (segment: string) => string): string {
+  let out = '';
+  let last = 0;
+  for (const m of expression.matchAll(STRING_LITERAL)) {
+    out += fn(expression.slice(last, m.index));
+    out += m[0];
+    last = m.index! + m[0].length;
+  }
+  out += fn(expression.slice(last));
+  return out;
 }
