@@ -9,8 +9,8 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { loadModels, fromDocument } from '../../src/libts/semantic/loader';
-import { generatePropertyGraph } from '../../src/libts/semantic/bigquery';
+import { loadModels, fromDocument } from '../../../src/libts/semantic/loader';
+import { generatePropertyGraph } from '../../../src/libts/semantic/bigquery';
 
 // Shorthand for the format's per-dialect expression object.
 function expr(expression: string, dialect = 'BIGQUERY') {

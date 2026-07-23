@@ -11,8 +11,8 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { generatePropertyGraph, GenerateOptions } from '../../src/libts/semantic/bigquery';
-import { SemanticModel } from '../../src/libts/semantic/ir';
+import { generatePropertyGraph, GenerateOptions } from '../../../src/libts/semantic/bigquery';
+import { SemanticModel } from '../../../src/libts/semantic/ir';
 
 // Target used for the live verification; kept so the golden DDL below is
 // reproducible byte-for-byte.
