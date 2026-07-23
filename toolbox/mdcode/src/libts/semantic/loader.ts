@@ -41,15 +41,39 @@ const expressionSchema = z.object({
   })).min(1),
 });
 
+// The format's AI-first annotation. It appears at every level (model, dataset,
+// field, relationship, metric) and is either a bare instructions string or a
+// structured object. `examples` shapes vary across producers, so it is accepted
+// leniently and only string examples are carried into the IR description.
+const aiContextSchema = z.union([
+  z.string(),
+  z.object({
+    instructions: z.string().optional(),
+    synonyms: z.array(z.string()).optional(),
+    examples: z.array(z.any()).optional(),
+  }),
+]);
+
+// A field's dimension metadata; only the time flag is read today.
+const dimensionSchema = z.object({
+  is_time: z.boolean().optional(),
+});
+
 const fieldSchema = z.object({
   name: z.string(),
   expression: expressionSchema,
+  description: z.string().optional(),
+  label: z.string().optional(),
+  dimension: dimensionSchema.optional(),
+  ai_context: aiContextSchema.optional(),
 });
 
 const datasetSchema = z.object({
   name: z.string(),
   source: z.string(),
   primary_key: z.array(z.string()).optional(),
+  description: z.string().optional(),
+  ai_context: aiContextSchema.optional(),
   fields: z.array(fieldSchema).optional(),
 });
 
@@ -59,17 +83,21 @@ const relationshipSchema = z.object({
   to: z.string(),
   from_columns: z.array(z.string()).min(1),
   to_columns: z.array(z.string()).min(1),
+  description: z.string().optional(),
+  ai_context: aiContextSchema.optional(),
 });
 
 const metricSchema = z.object({
   name: z.string(),
   expression: expressionSchema,
   description: z.string().optional(),
+  ai_context: aiContextSchema.optional(),
 });
 
 const modelSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
+  ai_context: aiContextSchema.optional(),
   datasets: z.array(datasetSchema).min(1),
   relationships: z.array(relationshipSchema).optional(),
   metrics: z.array(metricSchema).optional(),
@@ -86,6 +114,47 @@ type FieldDoc = z.infer<typeof fieldSchema>;
 type RelationshipDoc = z.infer<typeof relationshipSchema>;
 type MetricDoc = z.infer<typeof metricSchema>;
 type ModelDoc = z.infer<typeof modelSchema>;
+type AiContextDoc = z.infer<typeof aiContextSchema>;
+
+// The AI-first `ai_context` normalized to a common shape: a bare string is read
+// as `instructions`; a structured object keeps its parts. `examples` is filtered
+// to strings (producers vary; non-string examples are dropped).
+interface AiContext {
+  instructions?: string;
+  synonyms?: string[];
+  examples?: string[];
+}
+
+function normalizeAiContext(ai: AiContextDoc | undefined): AiContext {
+  if (ai === undefined) return {};
+  if (typeof ai === 'string') return { instructions: ai };
+  const out: AiContext = {};
+  if (ai.instructions) out.instructions = ai.instructions;
+  if (ai.synonyms && ai.synonyms.length) out.synonyms = dedupe(ai.synonyms);
+  if (ai.examples && ai.examples.length) {
+    const strings = ai.examples.filter((e): e is string => typeof e === 'string');
+    if (strings.length) out.examples = strings;
+  }
+  return out;
+}
+
+// Composes a single description string from ordered parts, dropping empties.
+// Parts are separated by blank lines so a base description, AI instructions, and
+// derived markers read as distinct paragraphs in the emitted metadata.
+function composeDescription(...parts: (string | undefined)[]): string | undefined {
+  const kept = parts
+    .map(p => (p === undefined ? undefined : p.trim()))
+    .filter((p): p is string => !!p);
+  return kept.length ? kept.join('\n\n') : undefined;
+}
+
+function examplesLine(examples: string[] | undefined): string | undefined {
+  return examples && examples.length ? `Examples: ${examples.join('; ')}` : undefined;
+}
+
+function synonymsLine(synonyms: string[] | undefined): string | undefined {
+  return synonyms && synonyms.length ? `Synonyms: ${synonyms.join(', ')}` : undefined;
+}
 
 
 /**
@@ -151,26 +220,51 @@ function convertModel(m: ModelDoc, opts: LoadOptions, warnings: string[]): Seman
   const metrics = (m.metrics ?? []).map(
     mt => convertMetric(mt, entityNames, warnings, dialect));
 
+  // The IR's SemanticModel has no synonyms slot, so any model-level synonyms are
+  // folded into the description rather than dropped.
+  const ctx = normalizeAiContext(m.ai_context);
+  const description = composeDescription(
+    m.description, ctx.instructions, synonymsLine(ctx.synonyms), examplesLine(ctx.examples));
+
   const model: SemanticModel = { name: m.name, entities, relationships, metrics };
-  if (m.description) model.description = m.description;
+  if (description) model.description = description;
   return model;
 }
 
 function convertDataset(ds: DatasetDoc, opts: LoadOptions,
                         warnings: string[], dialect: string): Entity {
-  const ctx = `dataset '${ds.name}'`;
-  const dataSource = parseSource(ds.source, opts, warnings, ctx);
+  const ctxLabel = `dataset '${ds.name}'`;
+  const dataSource = parseSource(ds.source, opts, warnings, ctxLabel);
   const keys = ds.primary_key ?? [];
   if (!keys.length) {
-    warnings.push(`${ctx}: no primary_key; the entity's KEY will be empty (invalid for graph generation)`);
+    warnings.push(`${ctxLabel}: no primary_key; the entity's KEY will be empty (invalid for graph generation)`);
   }
   const fields = (ds.fields ?? []).map(f => convertField(f, ds.name, warnings, dialect));
-  return { name: ds.name, dataSource, keys, fields };
+
+  const ctx = normalizeAiContext(ds.ai_context);
+  const entity: Entity = { name: ds.name, dataSource, keys, fields };
+  const description = composeDescription(ds.description, ctx.instructions, examplesLine(ctx.examples));
+  if (description) entity.description = description;
+  if (ctx.synonyms) entity.synonyms = ctx.synonyms;
+  return entity;
 }
 
 function convertField(f: FieldDoc, entityName: string, warnings: string[], dialect: string): Field {
   const expression = pickDialect(f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
-  return { name: f.name, expression };
+  const ctx = normalizeAiContext(f.ai_context);
+
+  // Base the description on the field's own description, falling back to its
+  // display label; append AI instructions, a time-dimension marker, and examples.
+  const description = composeDescription(
+    f.description ?? f.label,
+    ctx.instructions,
+    f.dimension?.is_time ? 'Time dimension.' : undefined,
+    examplesLine(ctx.examples));
+
+  const field: Field = { name: f.name, expression };
+  if (description) field.description = description;
+  if (ctx.synonyms) field.synonyms = ctx.synonyms;
+  return field;
 }
 
 // Maps a foreign-key relationship onto the IR's direct-FK edge convention: the
@@ -196,7 +290,8 @@ function convertRelationship(r: RelationshipDoc, keysByEntity: Map<string, strin
   // Fall back to the FK columns when the from dataset declares no primary key.
   const sourceKey = fromKeys && fromKeys.length ? fromKeys : r.from_columns;
 
-  return {
+  const relCtx = normalizeAiContext(r.ai_context);
+  const relationship: Relationship = {
     name: r.name,
     source: {
       entity: r.from,
@@ -207,6 +302,10 @@ function convertRelationship(r: RelationshipDoc, keysByEntity: Map<string, strin
       joinKeys: { relationshipColumns: r.from_columns, entityColumns: r.to_columns },
     },
   };
+  const description = composeDescription(r.description, relCtx.instructions, examplesLine(relCtx.examples));
+  if (description) relationship.description = description;
+  if (relCtx.synonyms) relationship.synonyms = relCtx.synonyms;
+  return relationship;
 }
 
 function convertMetric(mt: MetricDoc, entityNames: string[],
@@ -217,8 +316,11 @@ function convertMetric(mt: MetricDoc, entityNames: string[],
   if (!entities.length) {
     warnings.push(`${ctx}: expression references no known entity; it may not be placeable downstream`);
   }
+  const aiCtx = normalizeAiContext(mt.ai_context);
   const metric: Metric = { name: mt.name, expression, entities };
-  if (mt.description) metric.description = mt.description;
+  const description = composeDescription(mt.description, aiCtx.instructions, examplesLine(aiCtx.examples));
+  if (description) metric.description = description;
+  if (aiCtx.synonyms) metric.synonyms = aiCtx.synonyms;
   return metric;
 }
 
@@ -234,14 +336,21 @@ function pickDialect(expr: ExpressionDoc, preferred: string,
   const exact = byName(preferred);
   if (exact) return exact.expression;
 
+  // No transpilation is performed: the fallback expression is passed through
+  // verbatim, so a non-'${preferred}' expression may not be valid in the target
+  // and should be reviewed. The warnings say so explicitly.
   const fallback = byName(FALLBACK_DIALECT);
   if (fallback) {
-    warnings.push(`${ctx}: no '${preferred}' dialect; using '${FALLBACK_DIALECT}' expression`);
+    warnings.push(
+      `${ctx}: no '${preferred}' dialect; using '${FALLBACK_DIALECT}' expression ` +
+      `verbatim (not transpiled to '${preferred}')`);
     return fallback.expression;
   }
 
   const first = expr.dialects[0];
-  warnings.push(`${ctx}: no '${preferred}' or '${FALLBACK_DIALECT}' dialect; using '${first.dialect}' expression`);
+  warnings.push(
+    `${ctx}: no '${preferred}' or '${FALLBACK_DIALECT}' dialect; using '${first.dialect}' ` +
+    `expression verbatim (not transpiled to '${preferred}')`);
   return first.expression;
 }
 

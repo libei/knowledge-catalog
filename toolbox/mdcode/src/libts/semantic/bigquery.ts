@@ -76,6 +76,12 @@ export function generatePropertyGraph(model: SemanticModel, opts: GenerateOption
     blocks.push(`EDGE TABLES (\n${edgeTables.join(',\n')}\n)`);
   }
 
+  // Graph-level description: the trailing OPTIONS after the EDGE TABLES clause
+  // (grammar: create_property_graph_statement). Model synonyms, if any, were
+  // already folded into model.description by the loader.
+  const graphOpts = optionsClause(model.description);
+  if (graphOpts) blocks.push(graphOpts);
+
   return { ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings) };
 }
 
@@ -112,8 +118,10 @@ function placeMetric(metric: Metric, model: SemanticModel,
       `aggregate (${SUPPORTED_AGGREGATES.join(', ')}); emitting anyway`);
   }
 
+  const opts = optionsClause(metric.description, metric.synonyms);
+  const measure = `MEASURE(${body}) AS ${metric.name}`;
   const lines = metricsByEntity.get(entity) ?? [];
-  lines.push(`MEASURE(${body}) AS ${metric.name}`);
+  lines.push(opts ? `${measure} ${opts}` : measure);
   metricsByEntity.set(entity, lines);
 }
 
@@ -138,22 +146,26 @@ function renderNodeTable(entity: Entity, measures: string[],
     ...measures,
   ];
 
-  return [
+  const lines = [
     line(1, `${table} AS ${entity.name}`),
     line(2, `KEY(${entity.keys.join(', ')})`),
-    propertiesBlock(properties),
-  ].join('\n');
+  ];
+  // Element-table description attaches to the DEFAULT LABEL: after the key
+  // clause, before PROPERTIES (grammar: element_table_definition).
+  const labelOpts = optionsClause(entity.description, entity.synonyms);
+  if (labelOpts) lines.push(line(2, labelOpts));
+  lines.push(propertiesBlock(properties));
+  return lines.join('\n');
 }
 
 // Renders a field as a graph property: a bare column when the expression is just
-// the column, else `<expr> AS <name>`. Attaches a description when present.
+// the column, else `<expr> AS <name>`. Attaches a description (+ folded
+// synonyms) when present, as trailing OPTIONS per the `derived_property` rule.
 function renderFieldProperty(field: Field, entity: string): string {
   const local = stripQualifier(field.expression, entity);
-  let prop = local === field.name ? field.name : `${local} AS ${field.name}`;
-  if (field.description) {
-    prop += ` OPTIONS(description=${quote(field.description)})`;
-  }
-  return prop;
+  const prop = local === field.name ? field.name : `${local} AS ${field.name}`;
+  const opts = optionsClause(field.description, field.synonyms);
+  return opts ? `${prop} ${opts}` : prop;
 }
 
 
@@ -181,6 +193,11 @@ function renderEdgeTable(rel: Relationship, entitiesByName: Map<string, Entity>,
     line(2, `SOURCE KEY(${src.rel}) REFERENCES ${rel.source.entity}(${src.entity})`),
     line(2, `DESTINATION KEY(${dst.rel}) REFERENCES ${rel.destination.entity}(${dst.entity})`),
   ];
+
+  // Edge description attaches to the DEFAULT LABEL: after the SOURCE/DESTINATION
+  // clauses, before PROPERTIES (grammar: element_table_definition).
+  const labelOpts = optionsClause(rel.description, rel.synonyms);
+  if (labelOpts) lines.push(line(2, labelOpts));
 
   if (rel.fields && rel.fields.length) {
     const properties = rel.fields.map(f => renderFieldProperty(f, rel.name));
@@ -275,4 +292,25 @@ function sameSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const sa = new Set(a);
   return b.every(x => sa.has(x));
+}
+
+// Combines a description and synonyms into one metadata string. BigQuery graphs
+// have no dedicated synonyms slot, so synonyms are folded into the description
+// text (the only metadata sink the graph DDL exposes).
+function describe(description?: string, synonyms?: string[]): string | undefined {
+  const parts: string[] = [];
+  if (description && description.trim()) parts.push(description.trim());
+  if (synonyms && synonyms.length) parts.push(`Synonyms: ${synonyms.join(', ')}`);
+  return parts.length ? parts.join('\n\n') : undefined;
+}
+
+// Renders the `OPTIONS(description=...)` clause carrying a description +
+// synonyms, or undefined when there is nothing to say. The grammar allows this
+// clause on graph properties and measures (after the alias), on element tables
+// (as DEFAULT LABEL options, before PROPERTIES), and on the graph itself (after
+// the EDGE TABLES clause). See storage/googlesql/parser: `derived_property`,
+// `element_table_definition`, `create_property_graph_statement`.
+function optionsClause(description?: string, synonyms?: string[]): string | undefined {
+  const text = describe(description, synonyms);
+  return text ? `OPTIONS(description=${quote(text)})` : undefined;
 }
