@@ -3,14 +3,13 @@
 //
 // The loader reads the subset of an open, AI-first semantics format needed to
 // normalize a model into the IR. Each test names one behavior. Focused tests use
-// `fromDocument` with object literals; the end-to-end block parses YAML text and
-// runs the loaded model through the BigQuery generator to prove the full
-// file -> IR -> DDL path.
+// `fromDocument` with object literals; document-level tests parse raw YAML/JSON
+// text via `loadModels`. This file asserts only the IR — the BigQuery generator
+// is covered by `bigquery.test.ts` (unit) and `bigquery.e2e.test.ts` (file -> DDL).
 //
 
 import { describe, test, expect } from 'bun:test';
 import { loadModels, fromDocument } from '../../../src/libts/semantic/loader';
-import { generatePropertyGraph } from '../../../src/libts/semantic/bigquery';
 
 // Shorthand for the format's per-dialect expression object.
 function expr(expression: string, dialect = 'BIGQUERY') {
@@ -421,81 +420,5 @@ describe('document-level handling', () => {
 
   test('unparseable input throws', () => {
     expect(() => loadModels('{ this is : not valid')).toThrow(/load error/);
-  });
-});
-
-
-// End-to-end: parse YAML text, then generate BigQuery DDL from the loaded model.
-//
-// This fixture was executed against a live BigQuery instance (project
-// `sqlgen-testing`): the generated `CREATE OR REPLACE PROPERTY GRAPH` was
-// accepted, and its measures were validated with GRAPH_EXPAND + AGG against a
-// plain-SQL control. For the `west` region the graph returned total_revenue 135
-// and order_count 3 (not 4) — confirming that the loaded `order_count` lands on
-// the `orders` node and is deduplicated per order despite the order_items
-// fan-out. These text assertions pin the same behavior without a live instance.
-const SALES_YAML = `
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales_graph
-    datasets:
-      - name: customers
-        source: customers
-        primary_key: [customer_id]
-        fields:
-          - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: customers.customer_id }] } }
-          - { name: region, expression: { dialects: [{ dialect: BIGQUERY, expression: customers.region }] } }
-      - name: orders
-        source: orders
-        primary_key: [order_id]
-        fields:
-          - { name: order_id, expression: { dialects: [{ dialect: BIGQUERY, expression: orders.order_id }] } }
-          - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: orders.customer_id }] } }
-      - name: order_items
-        source: order_items
-        primary_key: [order_item_id]
-        fields:
-          - { name: order_item_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.order_item_id }] } }
-          - { name: order_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.order_id }] } }
-          - { name: amount, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.amount }] } }
-    relationships:
-      - { name: orders_customers, from: orders, to: customers, from_columns: [customer_id], to_columns: [customer_id] }
-      - { name: orderitems_orders, from: order_items, to: orders, from_columns: [order_id], to_columns: [order_id] }
-    metrics:
-      - name: total_revenue
-        expression: { dialects: [{ dialect: BIGQUERY, expression: "SUM(order_items.amount)" }] }
-      - name: order_count
-        expression: { dialects: [{ dialect: BIGQUERY, expression: "COUNT(orders.order_id)" }] }
-`;
-
-describe('end-to-end: a loaded model generates BigQuery property-graph DDL', () => {
-  const { models, warnings } = loadModels(SALES_YAML, { defaultProject: 'p', defaultDataset: 'd' });
-  const { ddl } = generatePropertyGraph(models[0], { project: 'p', dataset: 'd' });
-
-  test('exactly one clean model loads (no warnings)', () => {
-    expect(models).toHaveLength(1);
-    expect(warnings).toEqual([]);
-  });
-
-  test('entities become keyed node tables over their base tables', () => {
-    expect(ddl).toContain('`p.d.customers` AS customers');
-    expect(ddl).toContain('KEY(order_item_id)');
-  });
-
-  test('the metric becomes an inline measure on its owning entity', () => {
-    expect(ddl).toContain('MEASURE(SUM(amount)) AS total_revenue');
-  });
-
-  test('a count metric lands on its own entity node, not the fan-out table', () => {
-    // order_count counts orders, so it must sit on the `orders` node (keyed by
-    // order_id) — this is what makes GRAPH_EXPAND + AGG return 3 orders for the
-    // west region rather than 4 (the order_items count). Verified live.
-    const ordersBlock = ddl.slice(ddl.indexOf('AS orders\n'), ddl.indexOf('AS order_items'));
-    expect(ordersBlock).toContain('MEASURE(COUNT(order_id)) AS order_count');
-  });
-
-  test('relationships become edge tables referencing the node labels', () => {
-    expect(ddl).toContain('SOURCE KEY(order_id) REFERENCES orders(order_id)');
-    expect(ddl).toContain('DESTINATION KEY(customer_id) REFERENCES customers(customer_id)');
   });
 });
