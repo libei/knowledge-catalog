@@ -123,9 +123,9 @@ function renderNodeTable(entity: Entity, measures: string[],
   ];
 
   return [
-    `  ${table} AS ${entity.name}`,
-    `    KEY(${entity.keys.join(', ')})`,
-    `    PROPERTIES(\n${indentList(properties, 6)}\n    )`,
+    line(1, `${table} AS ${entity.name}`),
+    line(2, `KEY(${entity.keys.join(', ')})`),
+    propertiesBlock(properties),
   ].join('\n');
 }
 
@@ -158,15 +158,15 @@ function renderEdgeTable(rel: Relationship, entitiesByName: Map<string, Entity>,
   }
 
   const lines = [
-    `  ${backing} AS ${rel.name}`,
-    `    KEY(${edgeKey(rel, sourceEntity).join(', ')})`,
-    `    SOURCE KEY(${keys(rel.source).rel}) REFERENCES ${rel.source.entity}(${keys(rel.source).entity})`,
-    `    DESTINATION KEY(${keys(rel.destination).rel}) REFERENCES ${rel.destination.entity}(${keys(rel.destination).entity})`,
+    line(1, `${backing} AS ${rel.name}`),
+    line(2, `KEY(${edgeKey(rel, sourceEntity).join(', ')})`),
+    line(2, `SOURCE KEY(${keys(rel.source).rel}) REFERENCES ${rel.source.entity}(${keys(rel.source).entity})`),
+    line(2, `DESTINATION KEY(${keys(rel.destination).rel}) REFERENCES ${rel.destination.entity}(${keys(rel.destination).entity})`),
   ];
 
   if (rel.fields && rel.fields.length) {
     const properties = rel.fields.map(f => renderFieldProperty(f, rel.name));
-    lines.push(`    PROPERTIES(\n${indentList(properties, 6)}\n    )`);
+    lines.push(propertiesBlock(properties));
   }
 
   return lines.join('\n');
@@ -226,9 +226,20 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
 }
 
 
-function indentList(lines: string[], spaces: number): string {
-  const pad = ' '.repeat(spaces);
-  return lines.map(l => `${pad}${l}`).join(',\n');
+// All generated indentation flows through this single mechanism: one nesting
+// level == one INDENT. `line` indents one line to a depth; `list` indents a set
+// of lines and joins them comma-separated; `propertiesBlock` is the shared
+// `PROPERTIES( ... )` shape used by both node and edge tables. Keeping every
+// indent derived from `depth` (rather than hardcoded spaces) makes the output
+// indentation consistent by construction.
+const INDENT = '  ';
+const pad = (depth: number): string => INDENT.repeat(depth);
+const line = (depth: number, text: string): string => `${pad(depth)}${text}`;
+const list = (depth: number, lines: string[]): string =>
+  lines.map(l => line(depth, l)).join(',\n');
+
+function propertiesBlock(properties: string[]): string {
+  return `${line(2, 'PROPERTIES(')}\n${list(3, properties)}\n${line(2, ')')}`;
 }
 
 function quote(s: string): string {
