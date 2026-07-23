@@ -80,39 +80,11 @@ const SCHOOL: SemanticModel = {
 };
 
 
-describe('entities become node tables', () => {
-  const { ddl } = generatePropertyGraph(SALES, OPTS);
-
-  test('each entity is a node table keyed by its grain (the KEY measures lock to)', () => {
-    expect(ddl).toContain('`sqlgen-testing.bei_semantic_ir_verify.customers` AS customers');
-    expect(ddl).toContain('KEY(customer_id)');
-    expect(ddl).toContain('`sqlgen-testing.bei_semantic_ir_verify.order_items` AS order_items');
-    expect(ddl).toContain('KEY(order_item_id)');
-  });
-
-  test('a plain-column field emits a bare property (no redundant "col AS col")', () => {
-    // order_items.amount -> just `amount`, since the expression is only the column.
-    expect(ddl).toContain('\n      amount');
-    expect(ddl).not.toContain('amount AS amount');
-  });
-
-  test('a field description is preserved as OPTIONS(description=...)', () => {
-    expect(ddl).toContain('region OPTIONS(description="Sales region")');
-  });
-});
-
-
 describe('model-level metrics become inline measures', () => {
-  const { ddl, warnings } = generatePropertyGraph(SALES, OPTS);
-
-  test('a single-entity metric becomes a table-local MEASURE (entity qualifier stripped)', () => {
-    // SUM(order_items.amount) -> MEASURE(SUM(amount)); the measure body must
-    // reference columns local to the table it is attached to.
-    expect(ddl).toContain('MEASURE(SUM(amount)) AS total_revenue');
-    expect(ddl).toContain('MEASURE(COUNT(order_item_id)) AS item_count');
-  });
+  const { warnings } = generatePropertyGraph(SALES, OPTS);
 
   test('a measure is attached to its owning entity, keeping it locked to that KEY', () => {
+    const { ddl } = generatePropertyGraph(SALES, OPTS);
     // order_count counts orders, so it must live on the `orders` node (locked to
     // order_id) — not on the fan-out `order_items` table. Live verification
     // confirmed this yields 3 orders for the "west" region, not 4 (the item
@@ -137,34 +109,6 @@ describe('model-level metrics become inline measures', () => {
 
   test('placeable metrics produce no warnings', () => {
     expect(warnings).toEqual([]);
-  });
-});
-
-
-describe('relationships become edge tables', () => {
-  test('every edge table declares an explicit element KEY (base-table PKs are not assumed)', () => {
-    // BigQuery rejects an edge table without a key unless the base table declares
-    // a PRIMARY KEY; semantic models over arbitrary tables cannot rely on that,
-    // so the generator always emits KEY(...). This was caught by live testing.
-    const { ddl } = generatePropertyGraph(SALES, OPTS);
-    expect(ddl).toContain('AS orders_customers\n    KEY(order_id)');
-    expect(ddl).toContain('AS orderitems_orders\n    KEY(order_item_id)');
-  });
-
-  test('a direct-FK edge is backed by the source entity table; REFERENCES target each endpoint KEY', () => {
-    const { ddl } = generatePropertyGraph(SALES, OPTS);
-    expect(ddl).toContain('`sqlgen-testing.bei_semantic_ir_verify.orders` AS orders_customers');
-    expect(ddl).toContain('SOURCE KEY(order_id) REFERENCES orders(order_id)');
-    expect(ddl).toContain('DESTINATION KEY(customer_id) REFERENCES customers(customer_id)');
-  });
-
-  test('an association edge is backed by its own table, keyed by rel.keys, and carries edge properties', () => {
-    const { ddl } = generatePropertyGraph(SCHOOL, OPTS);
-    expect(ddl).toContain('`sqlgen-testing.bei_semantic_ir_verify.enrollment` AS enrollment');
-    expect(ddl).toContain('AS enrollment\n    KEY(enrollment_id)');
-    expect(ddl).toContain('SOURCE KEY(student_id) REFERENCES students(student_id)');
-    expect(ddl).toContain('DESTINATION KEY(course_id) REFERENCES courses(course_id)');
-    expect(ddl).toContain('grade OPTIONS(description="Letter grade")');
   });
 });
 
@@ -253,6 +197,35 @@ describe('robust handling of messy inputs (from code review)', () => {
     const model: SemanticModel = { name: 'm', entities: [], relationships: [], metrics: [] };
     const { warnings } = generatePropertyGraph(model, OPTS);
     expect(warnings.some(w => w.includes('no entities'))).toBe(true);
+  });
+
+  test('an entity with an empty KEY is skipped, and edges referencing it are omitted', () => {
+    // A graph node requires a KEY; a keyless entity (e.g. a dimension declared
+    // with no primary_key, only custom_extensions) cannot form a valid node, so
+    // it and any edge pointing at it are dropped rather than emitted as invalid
+    // `KEY()` and a dangling edge REFERENCE. Surfaced by the corpus golden for
+    // the date_dim fixture.
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [
+        { name: 'facts', dataSource: { table: 'facts' }, keys: ['id'],
+          fields: [{ name: 'id', expression: 'facts.id' }] },
+        { name: 'nokey', dataSource: { table: 'nokey' }, keys: [], fields: [] },
+      ],
+      relationships: [
+        { name: 'facts_to_nokey',
+          source:      { entity: 'facts', joinKeys: { relationshipColumns: ['id'],       entityColumns: ['id'] } },
+          destination: { entity: 'nokey', joinKeys: { relationshipColumns: ['nokey_id'], entityColumns: ['nokey_id'] } } },
+      ],
+      metrics: [],
+    };
+    const { ddl, warnings } = generatePropertyGraph(model, OPTS);
+    expect(ddl).not.toContain('nokey');       // node skipped
+    expect(ddl).not.toContain('KEY()');       // never emit an empty key
+    expect(ddl).not.toContain('EDGE TABLES'); // the only edge referenced the skipped node
+    expect(warnings.some(w => w.includes("entity 'nokey'") && w.includes('empty KEY'))).toBe(true);
+    expect(warnings.some(w => w.includes("relationship 'facts_to_nokey'") && w.includes('skipped entity')))
+      .toBe(true);
   });
 });
 

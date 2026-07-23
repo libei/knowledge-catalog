@@ -52,19 +52,47 @@ export function generatePropertyGraph(model: SemanticModel, opts: GenerateOption
     warnings.push('model has no entities; the generated NODE TABLES block will be empty and invalid');
   }
 
+  // A graph node table requires a non-empty KEY. An entity whose primary key is
+  // empty cannot form a valid node, so skip it (and, below, any edge that
+  // references it) rather than emit `KEY()` — invalid DDL. The loader already
+  // warns about the missing key; this records the resulting structural drop.
+  const skipped = new Set<string>();
+  const validEntities = entities.filter(entity => {
+    if (entity.keys && entity.keys.length) return true;
+    warnings.push(
+      `entity '${entity.name}': empty KEY (no primary key); node table skipped, ` +
+      `as a graph node requires a KEY`);
+    skipped.add(entity.name);
+    return false;
+  });
+  if (entities.length && !validEntities.length) {
+    warnings.push('every entity was skipped (empty KEY); the generated graph would be empty and invalid');
+  }
+
   // Metrics are model-level; place each on the single entity its aggregate
-  // references. metricsByEntity: entity name -> measure property lines.
+  // references. metricsByEntity: entity name -> measure property lines. Measures
+  // placed on a skipped entity simply never render (its node table is gone).
   const metricsByEntity = new Map<string, string[]>();
   for (const metric of metrics) {
     placeMetric(metric, model, metricsByEntity, warnings);
   }
 
-  const nodeTables = entities.map(
+  const nodeTables = validEntities.map(
     entity => renderNodeTable(entity, metricsByEntity.get(entity.name) ?? [], opts, warnings));
 
-  const entitiesByName = new Map(entities.map(e => [e.name, e]));
-  const edgeTables = relationships.map(
-    rel => renderEdgeTable(rel, entitiesByName, opts, warnings));
+  const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
+  const edgeTables = relationships
+    .filter(rel => {
+      // An edge REFERENCES both endpoint nodes; if either was skipped the edge
+      // cannot resolve, so drop it too.
+      const dangling = [rel.source.entity, rel.destination.entity].filter(n => skipped.has(n));
+      if (!dangling.length) return true;
+      warnings.push(
+        `relationship '${rel.name}': references skipped entity ` +
+        `${dangling.map(n => `'${n}'`).join(', ')}; edge omitted`);
+      return false;
+    })
+    .map(rel => renderEdgeTable(rel, entitiesByName, opts, warnings));
 
   const graphName = qualifyGraph(model, opts);
 
@@ -154,7 +182,9 @@ function renderNodeTable(entity: Entity, measures: string[],
   // clause, before PROPERTIES (grammar: element_table_definition).
   const labelOpts = optionsClause(entity.description, entity.synonyms);
   if (labelOpts) lines.push(line(2, labelOpts));
-  lines.push(propertiesBlock(properties));
+  // Omit the PROPERTIES block when there is nothing to list, rather than emit an
+  // empty `PROPERTIES()` (a node table may declare just its KEY).
+  if (properties.length) lines.push(propertiesBlock(properties));
   return lines.join('\n');
 }
 
