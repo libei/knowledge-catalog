@@ -59,6 +59,31 @@ describe('dataset source strings parse into structured table refs', () => {
     });
     expect(warnings.some(w => w.includes('no primary_key'))).toBe(true);
   });
+
+  test('backtick- or double-quoted identifiers are unquoted', () => {
+    const { models } = fromDocument({
+      semantic_model: [{ name: 'm', datasets: [
+        { name: 'a', source: '`proj`.`ds`.`tbl`', primary_key: ['id'], fields: [] }] }],
+    });
+    expect(models[0].entities[0].dataSource).toEqual({ project: 'proj', dataset: 'ds', table: 'tbl' });
+  });
+
+  test('more than three dotted parts warns, keeping the remainder as the table', () => {
+    const { models, warnings } = fromDocument({
+      semantic_model: [{ name: 'm', datasets: [
+        { name: 'a', source: 'p.d.t.extra', primary_key: ['id'], fields: [] }] }],
+    });
+    expect(models[0].entities[0].dataSource).toEqual({ project: 'p', dataset: 'd', table: 't.extra' });
+    expect(warnings.some(w => w.includes('dotted parts'))).toBe(true);
+  });
+
+  test('an explicit project/dataset in the source is not overridden by defaults', () => {
+    const { models } = fromDocument({
+      semantic_model: [{ name: 'm', datasets: [
+        { name: 'a', source: 'realproj.realds.tbl', primary_key: ['id'], fields: [] }] }],
+    }, { defaultProject: 'P', defaultDataset: 'D' });
+    expect(models[0].entities[0].dataSource).toEqual({ project: 'realproj', dataset: 'realds', table: 'tbl' });
+  });
 });
 
 
@@ -104,6 +129,34 @@ describe('per-dialect expressions collapse to a single string', () => {
       { dialect: 'BIGQUERY', expression: 'BQ' },
     ]), { dialect: 'SNOWFLAKE' });
     expect(models[0].metrics[0].expression).toBe('SF');
+  });
+
+  test('dialect names are matched case-insensitively', () => {
+    const { models, warnings } = fromDocument(metricDoc([
+      { dialect: 'BigQuery', expression: 'SUM(orders.a)' },
+    ]), { dialect: 'bigquery' });
+    expect(models[0].metrics[0].expression).toBe('SUM(orders.a)');
+    expect(warnings.some(w => w.includes('dialect'))).toBe(false);
+  });
+
+  test('field expressions select their dialect independently of metrics', () => {
+    const { models, warnings } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'orders', source: 'orders', primary_key: ['id'],
+          fields: [
+            { name: 'id', expression: expr('orders.id') },
+            { name: 'net', expression: {
+              dialects: [{ dialect: 'ANSI_SQL', expression: 'orders.gross - orders.tax' }] } },
+          ],
+        }],
+      }],
+    });
+    const fields = models[0].entities[0].fields;
+    expect(fields[0].expression).toBe('orders.id');                  // BIGQUERY, no fallback
+    expect(fields[1].expression).toBe('orders.gross - orders.tax');  // ANSI_SQL fallback
+    expect(warnings.some(w => w.includes("field 'orders.net'") && w.includes('ANSI_SQL'))).toBe(true);
   });
 });
 
@@ -156,6 +209,49 @@ describe('relationships map onto the direct-FK IR convention', () => {
     expect(warnings.some(w => w.includes("'to' dataset 'ghost'"))).toBe(true);
   });
 
+  test('a composite foreign key maps column-for-column', () => {
+    const { models, warnings } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [
+          { name: 'sales', source: 'sales', primary_key: ['sale_id'], fields: [] },
+          { name: 'stores', source: 'stores', primary_key: ['region', 'store_no'], fields: [] },
+        ],
+        relationships: [{
+          name: 'sales_stores', from: 'sales', to: 'stores',
+          from_columns: ['region', 'store_no'], to_columns: ['region', 'store_no'],
+        }],
+      }],
+    });
+    const rel = models[0].relationships[0];
+    // Source end carries the `from` dataset's own PK; destination end carries the
+    // full composite FK, column-for-column.
+    expect(rel.source.joinKeys).toEqual({
+      relationshipColumns: ['sale_id'], entityColumns: ['sale_id'] });
+    expect(rel.destination.joinKeys).toEqual({
+      relationshipColumns: ['region', 'store_no'], entityColumns: ['region', 'store_no'] });
+    expect(warnings.some(w => w.includes('different lengths'))).toBe(false);
+  });
+
+  test('the source end falls back to from_columns when the from dataset has no PK', () => {
+    const { models, warnings } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [
+          { name: 'orders', source: 'orders', fields: [] },  // no primary_key
+          { name: 'customers', source: 'customers', primary_key: ['customer_id'], fields: [] },
+        ],
+        relationships: [{
+          name: 'r', from: 'orders', to: 'customers',
+          from_columns: ['customer_id'], to_columns: ['customer_id'],
+        }],
+      }],
+    });
+    expect(models[0].relationships[0].source.joinKeys).toEqual({
+      relationshipColumns: ['customer_id'], entityColumns: ['customer_id'] });
+    expect(warnings.some(w => w.includes('no primary_key'))).toBe(true);
+  });
+
   test('mismatched from_columns/to_columns arity warns (invalid join keys)', () => {
     const { warnings } = fromDocument({
       semantic_model: [{
@@ -185,6 +281,26 @@ describe('metrics infer their referenced entities from the expression', () => {
       }],
     });
     expect(models[0].metrics[0].entities).toEqual(['order_items']);
+  });
+
+  test('a metric spanning multiple entities lists them all, in first-seen order', () => {
+    // The loader records every referenced entity; the generator is what later
+    // decides such a metric cannot be a single MEASURE. No missing-entity warning.
+    const { models, warnings } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [
+          { name: 'orders', source: 'orders', primary_key: ['id'], fields: [] },
+          { name: 'customers', source: 'customers', primary_key: ['id'], fields: [] },
+        ],
+        metrics: [{
+          name: 'ratio',
+          expression: expr('SUM(orders.amount) / COUNT(customers.id)'),
+        }],
+      }],
+    });
+    expect(models[0].metrics[0].entities).toEqual(['orders', 'customers']);
+    expect(warnings.some(w => w.includes('references no known entity'))).toBe(false);
   });
 
   test('a metric referencing no known entity warns', () => {
@@ -262,8 +378,45 @@ describe('document-level handling', () => {
     expect(warnings.some(w => w.includes("duplicate dataset name 'orders'"))).toBe(true);
   });
 
+  test('each semantic_model entry becomes its own IR model', () => {
+    const { models } = fromDocument({
+      semantic_model: [
+        { name: 'first', datasets: [{ name: 'a', source: 'a', primary_key: ['id'], fields: [] }] },
+        { name: 'second', datasets: [{ name: 'b', source: 'b', primary_key: ['id'], fields: [] }] },
+      ],
+    });
+    expect(models.map(m => m.name)).toEqual(['first', 'second']);
+  });
+
+  test('model and metric descriptions carry through to the IR', () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm', description: 'a sales model',
+        datasets: [{ name: 'orders', source: 'orders', primary_key: ['id'], fields: [] }],
+        metrics: [{ name: 'c', description: 'row count', expression: expr('COUNT(orders.id)') }],
+      }],
+    });
+    expect(models[0].description).toBe('a sales model');
+    expect(models[0].metrics[0].description).toBe('row count');
+  });
+
+  test('JSON text loads identically to YAML (yaml.parse accepts JSON)', () => {
+    const json = JSON.stringify({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'a', source: 'proj.ds.tbl', primary_key: ['id'], fields: [] }],
+      }],
+    });
+    const { models } = loadModels(json);
+    expect(models[0].entities[0].dataSource).toEqual({ project: 'proj', dataset: 'ds', table: 'tbl' });
+  });
+
   test('a document without semantic_model throws', () => {
     expect(() => fromDocument({ foo: 'bar' })).toThrow(/Semantic model load error/);
+  });
+
+  test('an empty semantic_model array throws (min one model required)', () => {
+    expect(() => fromDocument({ semantic_model: [] })).toThrow(/Semantic model load error/);
   });
 
   test('unparseable input throws', () => {
@@ -273,6 +426,14 @@ describe('document-level handling', () => {
 
 
 // End-to-end: parse YAML text, then generate BigQuery DDL from the loaded model.
+//
+// This fixture was executed against a live BigQuery instance (project
+// `sqlgen-testing`): the generated `CREATE OR REPLACE PROPERTY GRAPH` was
+// accepted, and its measures were validated with GRAPH_EXPAND + AGG against a
+// plain-SQL control. For the `west` region the graph returned total_revenue 135
+// and order_count 3 (not 4) — confirming that the loaded `order_count` lands on
+// the `orders` node and is deduplicated per order despite the order_items
+// fan-out. These text assertions pin the same behavior without a live instance.
 const SALES_YAML = `
 version: 0.2.0.dev0
 semantic_model:
@@ -303,6 +464,8 @@ semantic_model:
     metrics:
       - name: total_revenue
         expression: { dialects: [{ dialect: BIGQUERY, expression: "SUM(order_items.amount)" }] }
+      - name: order_count
+        expression: { dialects: [{ dialect: BIGQUERY, expression: "COUNT(orders.order_id)" }] }
 `;
 
 describe('end-to-end: a loaded model generates BigQuery property-graph DDL', () => {
@@ -321,6 +484,14 @@ describe('end-to-end: a loaded model generates BigQuery property-graph DDL', () 
 
   test('the metric becomes an inline measure on its owning entity', () => {
     expect(ddl).toContain('MEASURE(SUM(amount)) AS total_revenue');
+  });
+
+  test('a count metric lands on its own entity node, not the fan-out table', () => {
+    // order_count counts orders, so it must sit on the `orders` node (keyed by
+    // order_id) — this is what makes GRAPH_EXPAND + AGG return 3 orders for the
+    // west region rather than 4 (the order_items count). Verified live.
+    const ordersBlock = ddl.slice(ddl.indexOf('AS orders\n'), ddl.indexOf('AS order_items'));
+    expect(ordersBlock).toContain('MEASURE(COUNT(order_id)) AS order_count');
   });
 
   test('relationships become edge tables referencing the node labels', () => {
