@@ -147,20 +147,19 @@ function renderEdgeTable(rel: Relationship, entitiesByName: Map<string, Entity>,
   // otherwise by the source entity's base table (direct foreign-key relationship,
   // where the source table holds the join columns).
   let backing: string;
+  const sourceEntity = entitiesByName.get(rel.source.entity);
   if (rel.dataSource) {
     backing = qualifyTable(rel.dataSource, opts, warnings, `relationship '${rel.name}'`);
+  } else if (!sourceEntity) {
+    warnings.push(`relationship '${rel.name}': unknown source entity '${rel.source.entity}'`);
+    backing = `\`${rel.source.entity}\``;
   } else {
-    const sourceEntity = entitiesByName.get(rel.source.entity);
-    if (!sourceEntity) {
-      warnings.push(`relationship '${rel.name}': unknown source entity '${rel.source.entity}'`);
-      backing = `\`${rel.source.entity}\``;
-    } else {
-      backing = qualifyTable(sourceEntity.dataSource, opts, warnings, `relationship '${rel.name}'`);
-    }
+    backing = qualifyTable(sourceEntity.dataSource, opts, warnings, `relationship '${rel.name}'`);
   }
 
   const lines = [
     `  ${backing} AS ${rel.name}`,
+    `    KEY(${edgeKey(rel, sourceEntity).join(', ')})`,
     `    SOURCE KEY(${keys(rel.source).rel}) REFERENCES ${rel.source.entity}(${keys(rel.source).entity})`,
     `    DESTINATION KEY(${keys(rel.destination).rel}) REFERENCES ${rel.destination.entity}(${keys(rel.destination).entity})`,
   ];
@@ -171,6 +170,28 @@ function renderEdgeTable(rel: Relationship, entitiesByName: Map<string, Entity>,
   }
 
   return lines.join('\n');
+}
+
+// The edge element key: the columns that uniquely identify an edge row. Graph
+// element tables must declare a key explicitly (base-table PRIMARY KEYs are not
+// assumed). Prefers the relationship's own `keys`; for a direct FK backed by the
+// source entity's table, uses that entity's keys; otherwise falls back to the
+// composite of both ends' join columns on the backing table.
+function edgeKey(rel: Relationship, sourceEntity: Entity | undefined): string[] {
+  if (rel.keys && rel.keys.length) {
+    return rel.keys;
+  }
+  if (!rel.dataSource && sourceEntity) {
+    return sourceEntity.keys;
+  }
+  return dedupe([
+    ...rel.source.joinKeys.relationshipColumns,
+    ...rel.destination.joinKeys.relationshipColumns,
+  ]);
+}
+
+function dedupe(items: string[]): string[] {
+  return [...new Set(items)];
 }
 
 function keys(end: RelationshipEnd): { rel: string; entity: string } {
