@@ -84,25 +84,30 @@ describe('golden DDL: each corpus fixture generates its exact expected property 
 });
 
 
-describe('dialect selection warns clearly when the target dialect is absent', () => {
-  test('an ANSI-only expression falls back to ANSI with a not-transpiled warning', () => {
+describe('dialect selection is surfaced by risk when the target dialect is absent', () => {
+  test('an ANSI-only model emits one informational note, not a per-field warning', () => {
     // The star fixture supplies only ANSI_SQL; the default target is BIGQUERY.
+    // Falling back to the portable canonical dialect is the intended path, so it
+    // collapses to a single note however many expressions rely on it.
     const { loadWarnings } = build('star_orders_customer.yaml');
-    expect(loadWarnings).toContain(
-      "field 'orders.o_orderkey': no 'BIGQUERY' dialect; using 'ANSI_SQL' expression verbatim (not transpiled to 'BIGQUERY')");
+    const notes = loadWarnings.filter(w => w.includes("using the portable 'ANSI_SQL'"));
+    expect(notes).toEqual([
+      "note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)",
+    ]);
   });
 
-  test('with no ANSI fallback, the first listed dialect is used and named in the warning', () => {
+  test('with no ANSI fallback, the first listed dialect is used and warned per metric', () => {
     // The lineitem fixture supplies only DATABRICKS: neither BIGQUERY nor the
-    // ANSI_SQL fallback exists, so the loader uses DATABRICKS verbatim and says so.
+    // ANSI_SQL canonical fallback exists, so the loader uses DATABRICKS verbatim
+    // and warns — a vendor dialect is a genuine transpilation risk.
     const { loadWarnings } = build('lineitem_databricks_ext.yaml');
     expect(loadWarnings).toContain(
       "metric 'revenue': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'DATABRICKS' expression verbatim (not transpiled to 'BIGQUERY')");
   });
 
-  test('selecting the matching dialect explicitly produces no fallback warning', () => {
+  test('selecting the matching dialect explicitly produces no fallback note', () => {
     const { loadWarnings } = build('star_orders_customer.yaml', { dialect: 'ANSI_SQL' });
-    expect(loadWarnings.filter(w => w.includes('not transpiled'))).toEqual([]);
+    expect(loadWarnings.filter(w => w.includes("using the portable 'ANSI_SQL'"))).toEqual([]);
   });
 });
 

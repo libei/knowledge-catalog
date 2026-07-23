@@ -106,12 +106,12 @@ describe('per-dialect expressions collapse to a single string', () => {
     expect(warnings.some(w => w.includes('dialect'))).toBe(false);
   });
 
-  test('ANSI_SQL is the fallback when the preferred dialect is absent', () => {
+  test('ANSI_SQL is the fallback when the preferred dialect is absent, with an informational note', () => {
     const { models, warnings } = fromDocument(metricDoc([
       { dialect: 'ANSI_SQL', expression: 'SUM(orders.a)' },
     ]));
     expect(models[0].metrics[0].expression).toBe('SUM(orders.a)');
-    expect(warnings.some(w => w.includes("using 'ANSI_SQL'"))).toBe(true);
+    expect(warnings.some(w => w.startsWith('note:') && w.includes("using the portable 'ANSI_SQL'"))).toBe(true);
   });
 
   test('otherwise the first listed dialect is used, with a warning', () => {
@@ -155,7 +155,9 @@ describe('per-dialect expressions collapse to a single string', () => {
     const fields = models[0].entities[0].fields;
     expect(fields[0].expression).toBe('orders.id');                  // BIGQUERY, no fallback
     expect(fields[1].expression).toBe('orders.gross - orders.tax');  // ANSI_SQL fallback
-    expect(warnings.some(w => w.includes("field 'orders.net'") && w.includes('ANSI_SQL'))).toBe(true);
+    // The canonical-fallback note is field-agnostic (so it dedupes); the point
+    // here is that the two fields still pick their expressions independently.
+    expect(warnings.some(w => w.includes("using the portable 'ANSI_SQL'"))).toBe(true);
   });
 });
 

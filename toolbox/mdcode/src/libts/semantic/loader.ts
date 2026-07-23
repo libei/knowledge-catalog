@@ -325,9 +325,20 @@ function convertMetric(mt: MetricDoc, entityNames: string[],
 }
 
 
-// Picks a single expression string from the per-dialect variants: the requested
-// dialect, else the portable ANSI_SQL fallback, else the first listed (warning on
-// either fallback). Dialect names are compared case-insensitively.
+// Picks a single expression string from the per-dialect variants. Preference
+// order: the requested dialect, else the portable canonical dialect (ANSI_SQL),
+// else the first listed. Dialect names are compared case-insensitively. No
+// transpilation is performed; the chosen expression is passed through verbatim.
+//
+// The two fallbacks differ in risk, so they are surfaced differently:
+//   - ANSI_SQL is the AI-first format's default expression language (ANSI
+//     SQL:2003 core), deliberately chosen to be valid across targets — BigQuery
+//     included. Falling back to it is the intended authoring path, not a lossy
+//     degradation, so it is reported as a single informational `note:` (worded
+//     field-agnostically so identical notes dedupe to one line per document).
+//   - A vendor-specific dialect (e.g. SNOWFLAKE) may use syntax the target does
+//     not accept, so falling back to one is a genuine risk and is warned per
+//     field/metric, naming the dialect.
 function pickDialect(expr: ExpressionDoc, preferred: string,
                      ctx: string, warnings: string[]): string {
   const byName = (name: string) =>
@@ -336,15 +347,13 @@ function pickDialect(expr: ExpressionDoc, preferred: string,
   const exact = byName(preferred);
   if (exact) return exact.expression;
 
-  // No transpilation is performed: the fallback expression is passed through
-  // verbatim, so a non-'${preferred}' expression may not be valid in the target
-  // and should be reviewed. The warnings say so explicitly.
-  const fallback = byName(FALLBACK_DIALECT);
-  if (fallback) {
+  const canonical = byName(FALLBACK_DIALECT);
+  if (canonical) {
     warnings.push(
-      `${ctx}: no '${preferred}' dialect; using '${FALLBACK_DIALECT}' expression ` +
-      `verbatim (not transpiled to '${preferred}')`);
-    return fallback.expression;
+      `note: no '${preferred}' dialect for one or more expressions; using the portable ` +
+      `'${FALLBACK_DIALECT}' dialect verbatim ('${preferred}' accepts the ANSI core subset — ` +
+      `supply '${preferred}' variants only for ${preferred}-specific SQL)`);
+    return canonical.expression;
   }
 
   const first = expr.dialects[0];
