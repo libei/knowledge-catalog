@@ -1,12 +1,14 @@
-// Behavior specification for the loader's metadata fidelity: the AI-first
-// `ai_context`, field `description`/`label`/`dimension.is_time`, and dialect
-// selection are carried into the IR and emitted as BigQuery `OPTIONS(...)`.
+// End-to-end tests for the BigQuery destination: real-shaped fixtures run the
+// full file -> IR -> DDL path, pinning that the AI-first `ai_context`, field
+// `description`/`label`/`dimension.is_time`, and dialect selection survive the
+// translation and land as BigQuery `OPTIONS(...)`.
 //
-// These tests read the corpus fixtures under `fixtures/` (real-shaped models in
-// the AI-first semantics format, neutralized) and run the full file -> IR -> DDL
-// path. They pin where descriptions, folded synonyms, and time-dimension markers
-// land in the generated property graph, and the warnings emitted when an
-// expression has no target-dialect variant.
+// These tests read the corpus fixtures under `fixtures/` (models in the AI-first
+// semantics format, neutralized). They pin where descriptions, folded synonyms,
+// and time-dimension markers land in the generated property graph, and the
+// warnings emitted when an expression has no target-dialect variant.
+//
+// Unit-level tests for the same generator live in `bigquery.test.ts`.
 
 import { describe, test, expect } from 'bun:test';
 import * as fs from 'fs';
