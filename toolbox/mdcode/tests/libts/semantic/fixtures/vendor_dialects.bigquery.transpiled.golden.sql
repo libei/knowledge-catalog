@@ -12,9 +12,12 @@ NODE TABLES (
       CAST(o_totalprice AS FLOAT64) AS price_float,
       DATE_ADD(o_orderdate, INTERVAL 7 DAY) AS due_date,
       DATE_DIFF(o_shipdate, o_orderdate, DAY) AS ship_days,
+      o_totalprice,
+      IF(o_orderstatus = 'F', o_totalprice, 0) AS fulfilled_revenue_input,
+      COALESCE(o_totalprice, 0) AS avg_price_known_input,
       MEASURE(SUM(o_totalprice)) AS total_revenue OPTIONS(description="Total order revenue (portable control expression)"),
-      MEASURE(SUM(IF(o_orderstatus = 'F', o_totalprice, 0))) AS fulfilled_revenue OPTIONS(description="Revenue from fulfilled orders"),
-      MEASURE(AVG(COALESCE(o_totalprice, 0))) AS avg_price_known OPTIONS(description="Average order price, treating NULL as zero")
+      MEASURE(SUM(fulfilled_revenue_input)) AS fulfilled_revenue OPTIONS(description="Revenue from fulfilled orders"),
+      MEASURE(AVG(avg_price_known_input)) AS avg_price_known OPTIONS(description="Average order price, treating NULL as zero")
     ),
   `samples.tpch.customer` AS customer
     KEY(c_custkey)

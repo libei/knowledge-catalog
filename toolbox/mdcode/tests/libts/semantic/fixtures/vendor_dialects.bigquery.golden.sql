@@ -12,9 +12,12 @@ NODE TABLES (
       o_totalprice::double AS price_float,
       DATEADD(day, 7, o_orderdate) AS due_date,
       DATEDIFF(day, o_orderdate, o_shipdate) AS ship_days,
+      o_totalprice,
+      IFF(o_orderstatus = 'F', o_totalprice, 0) AS fulfilled_revenue_input,
+      NVL(o_totalprice, 0) AS avg_price_known_input,
       MEASURE(SUM(o_totalprice)) AS total_revenue OPTIONS(description="Total order revenue (portable control expression)"),
-      MEASURE(SUM(IFF(o_orderstatus = 'F', o_totalprice, 0))) AS fulfilled_revenue OPTIONS(description="Revenue from fulfilled orders"),
-      MEASURE(AVG(NVL(o_totalprice, 0))) AS avg_price_known OPTIONS(description="Average order price, treating NULL as zero")
+      MEASURE(SUM(fulfilled_revenue_input)) AS fulfilled_revenue OPTIONS(description="Revenue from fulfilled orders"),
+      MEASURE(AVG(avg_price_known_input)) AS avg_price_known OPTIONS(description="Average order price, treating NULL as zero")
     ),
   `samples.tpch.customer` AS customer
     KEY(c_custkey)
