@@ -70,15 +70,22 @@ export function generatePropertyGraph(model: SemanticModel, opts: GenerateOption
   }
 
   // Metrics are model-level; place each on the single entity its aggregate
-  // references. metricsByEntity: entity name -> measure property lines. Measures
-  // placed on a skipped entity simply never render (its node table is gone).
+  // references. A BigQuery graph measure must aggregate an EXPOSED PROPERTY, not
+  // a raw column or an inline expression, so each metric is lowered into a
+  // derived operand property plus a MEASURE over it (see placeMetric). Both maps
+  // are keyed by entity name; entries on a skipped entity simply never render.
+  const entityByName = new Map(entities.map(e => [e.name, e]));
   const metricsByEntity = new Map<string, string[]>();
+  const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
-    placeMetric(metric, model, metricsByEntity, warnings);
+    placeMetric(metric, model, entityByName, metricsByEntity, loweringByEntity, warnings);
   }
 
-  const nodeTables = validEntities.map(
-    entity => renderNodeTable(entity, metricsByEntity.get(entity.name) ?? [], opts, warnings));
+  const nodeTables = validEntities.map(entity => renderNodeTable(
+    entity,
+    loweringByEntity.get(entity.name)?.derivedProperties ?? [],
+    metricsByEntity.get(entity.name) ?? [],
+    opts, warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   const edgeTables = relationships
@@ -114,11 +121,50 @@ export function generatePropertyGraph(model: SemanticModel, opts: GenerateOption
 }
 
 
+// Per-entity state for lowering metrics into measures. A BigQuery graph measure
+// can only aggregate a PROPERTY of the node, so a metric's aggregate operand
+// (which may be a bare column or an arbitrary expression) has to be exposed as a
+// property first; the measure then aggregates that property. This tracks the
+// derived properties synthesized for one entity, plus the bookkeeping to reuse an
+// existing/derived property for an identical operand and keep property names
+// unique.
+interface MeasureLowering {
+  derivedProperties: string[];        // extra property lines to emit on the node
+  taken: Set<string>;                 // property names already in use on the node
+  byLocalExpr: Map<string, string>;   // existing field local-expression -> its property name
+  operandToName: Map<string, string>; // operand expression -> the property exposing it
+}
+
+// Builds the lowering state for an entity, seeded with its declared fields so an
+// operand equal to an existing field reuses that property instead of duplicating.
+function newLowering(entity: Entity): MeasureLowering {
+  const taken = new Set<string>();
+  const byLocalExpr = new Map<string, string>();
+  for (const f of entity.fields) {
+    taken.add(f.name);
+    const local = stripQualifier(f.expression, entity.name);
+    if (!byLocalExpr.has(local)) byLocalExpr.set(local, f.name);
+  }
+  return { derivedProperties: [], taken, byLocalExpr, operandToName: new Map() };
+}
+
 // Assigns a metric to the node table of the single entity its aggregate
-// references, recording a warning if it references zero or multiple entities.
+// references, lowering it to a MEASURE over an exposed property. Records a
+// warning (and skips) when it references zero/multiple entities or is not a
+// single supported aggregate over one operand.
 function placeMetric(metric: Metric, model: SemanticModel,
-                     metricsByEntity: Map<string, string[]>, warnings: string[]): void {
-  const referenced = referencedEntities(metric.expression, model);
+                     entityByName: Map<string, Entity>,
+                     metricsByEntity: Map<string, string[]>,
+                     loweringByEntity: Map<string, MeasureLowering>,
+                     warnings: string[]): void {
+  let referenced = referencedEntities(metric.expression, model);
+
+  // A qualifier-free aggregate (e.g. COUNT(*)) names no entity in its expression;
+  // fall back to a singular declared home when the IR provides one, so it can
+  // still be placed rather than dropped as "references no entity".
+  if (referenced.length === 0 && metric.entities && metric.entities.length === 1) {
+    referenced = [metric.entities[0]];
+  }
 
   // The IR also declares metric.entities. Placement is driven by the qualifiers
   // actually present in the expression (that is what we strip and attach), but a
@@ -138,19 +184,127 @@ function placeMetric(metric: Metric, model: SemanticModel,
     return;
   }
 
-  const entity = referenced[0];
-  const body = stripQualifier(metric.expression, entity);
-  if (!startsWithSupportedAggregate(body)) {
+  const entityName = referenced[0];
+  const entity = entityByName.get(entityName);
+  const body = stripQualifier(metric.expression, entityName);
+
+  // A graph measure must be one supported aggregate wrapping a single operand;
+  // anything else (a non-aggregate, or a compound of aggregates like a ratio)
+  // cannot be a single MEASURE. Flag it rather than emit DDL BigQuery rejects.
+  const agg = splitAggregate(body);
+  if (!agg || !entity) {
     warnings.push(
-      `metric '${metric.name}' expression '${body}' does not begin with a supported ` +
-      `aggregate (${SUPPORTED_AGGREGATES.join(', ')}); emitting anyway`);
+      `metric '${metric.name}' expression '${body}' is not a single supported aggregate ` +
+      `(${SUPPORTED_AGGREGATES.join(', ')}) over one operand; skipped (cannot be a single MEASURE)`);
+    return;
   }
 
-  const opts = optionsClause(metric.description, metric.synonyms);
-  const measure = `MEASURE(${body}) AS ${metric.name}`;
-  const lines = metricsByEntity.get(entity) ?? [];
-  lines.push(opts ? `${measure} ${opts}` : measure);
-  metricsByEntity.set(entity, lines);
+  const lowering = loweringByEntity.get(entityName) ?? newLowering(entity);
+  loweringByEntity.set(entityName, lowering);
+
+  // Resolve the aggregate's operand to an exposed property. COUNT(*) has no
+  // operand column, so it counts the (non-null) key property instead.
+  let operandExpr = agg.operand;
+  if (operandExpr === '*') {
+    if (agg.fn.toUpperCase() !== 'COUNT' || !entity.keys?.length) {
+      warnings.push(
+        `metric '${metric.name}': '${agg.fn}(*)' is not supported; skipped ` +
+        `(only COUNT(*) over a keyed node can be lowered)`);
+      return;
+    }
+    operandExpr = entity.keys[0];
+  }
+
+  const propName = exposeOperand(lowering, operandExpr, metric.name);
+  const aggregate = `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${propName})`;
+
+  const optsClause = optionsClause(metric.description, metric.synonyms);
+  const measure = `MEASURE(${aggregate}) AS ${metric.name}`;
+  const lines = metricsByEntity.get(entityName) ?? [];
+  lines.push(optsClause ? `${measure} ${optsClause}` : measure);
+  metricsByEntity.set(entityName, lines);
+}
+
+// Ensures `operandExpr` is exposed as a node property and returns its property
+// name. Reuses an existing field (or a previously derived property) with the same
+// expression; a bare column is exposed under its own name; any other expression
+// gets a synthesized, unique name derived from the metric.
+function exposeOperand(lowering: MeasureLowering, operandExpr: string, metricName: string): string {
+  const existing = lowering.byLocalExpr.get(operandExpr) ?? lowering.operandToName.get(operandExpr);
+  if (existing) return existing;
+
+  let name: string;
+  if (isSimpleIdentifier(operandExpr) && !lowering.taken.has(operandExpr)) {
+    // A bare column not already declared: expose it under its own name.
+    name = operandExpr;
+    lowering.derivedProperties.push(name);
+  } else {
+    name = uniqueName(`${metricName}_input`, lowering.taken);
+    lowering.derivedProperties.push(`${operandExpr} AS ${name}`);
+  }
+  lowering.taken.add(name);
+  lowering.operandToName.set(operandExpr, name);
+  return name;
+}
+
+// Splits a single-aggregate expression into its function name and operand, or
+// returns null when the body is not exactly one supported aggregate wrapping one
+// operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, or a multi-argument
+// call). `COUNT(DISTINCT x)` is recognized, yielding operand `x` with distinct.
+function splitAggregate(body: string): { fn: string; operand: string; distinct: boolean } | null {
+  const s = body.trim();
+  const head = s.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+  if (!head) return null;
+  const fn = head[1];
+  if (!SUPPORTED_AGGREGATES.includes(fn.toUpperCase())) return null;
+
+  // Find the operand bounded by the aggregate's outer parentheses, tracking
+  // string literals and nesting so inner parens/quotes don't end it early.
+  let depth = 0, inStr = false, start = -1, end = -1;
+  for (let i = head[0].length - 1; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) { if (c === "'") inStr = false; continue; }
+    if (c === "'") { inStr = true; continue; }
+    if (c === '(') { if (depth === 0) start = i + 1; depth++; }
+    else if (c === ')') { if (--depth === 0) { end = i; break; } }
+  }
+  if (start < 0 || end < 0) return null;
+  if (s.slice(end + 1).trim() !== '') return null;  // trailing ops => not a single aggregate
+
+  let operand = s.slice(start, end).trim();
+  let distinct = false;
+  const dm = operand.match(/^DISTINCT\s+(.*)$/is);
+  if (dm) { distinct = true; operand = dm[1].trim(); }
+
+  if (operand !== '*' && hasTopLevelComma(operand)) return null;  // multi-arg aggregate
+  return { fn, operand, distinct };
+}
+
+// True if `expr` contains a comma outside any nested parentheses or string
+// literal (i.e. it is really several arguments, not one operand).
+function hasTopLevelComma(expr: string): boolean {
+  let depth = 0, inStr = false;
+  for (const c of expr) {
+    if (inStr) { if (c === "'") inStr = false; continue; }
+    if (c === "'") { inStr = true; continue; }
+    else if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === ',' && depth === 0) return true;
+  }
+  return false;
+}
+
+function isSimpleIdentifier(s: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s);
+}
+
+// Returns `base` if free, else the first `base_2`, `base_3`, ... not in `taken`.
+function uniqueName(base: string, taken: Set<string>): string {
+  if (!taken.has(base)) return base;
+  for (let i = 2; ; i++) {
+    const candidate = `${base}_${i}`;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
 // Returns the model entity names whose `<name>.` qualifier appears in an
@@ -160,17 +314,15 @@ function referencedEntities(expression: string, model: SemanticModel): string[] 
   return referencedEntityNames(expression, (model.entities ?? []).map(e => e.name));
 }
 
-function startsWithSupportedAggregate(body: string): boolean {
-  const fn = body.trimStart().match(/^([A-Za-z_]+)\s*\(/);
-  return !!fn && SUPPORTED_AGGREGATES.includes(fn[1].toUpperCase());
-}
 
-
-function renderNodeTable(entity: Entity, measures: string[],
+function renderNodeTable(entity: Entity, derivedProperties: string[], measures: string[],
                          opts: GenerateOptions, warnings: string[]): string {
   const table = qualifyTable(entity.dataSource, opts, warnings, `entity '${entity.name}'`);
+  // Order: declared fields, then any operand properties synthesized for measures,
+  // then the measures themselves (which reference those operand properties).
   const properties = [
     ...entity.fields.map(f => renderFieldProperty(f, entity.name)),
+    ...derivedProperties,
     ...measures,
   ];
 
