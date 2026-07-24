@@ -29,13 +29,19 @@ export class CatalogSnapshot {
     this._layout = createLayout(manifest.source.layout, catalogPath);
   }
 
-  static async fromPath(basePath: string, ctx: gcp.ApiContext): Promise<CatalogSnapshot> {
-    const manifestPath = path.join(basePath, 'catalog.yaml');
-    if (!fs.existsSync(manifestPath)) {
-      throw new Error(`Cannot find catalog manifest at '${manifestPath}'`);
+  // `manifest` may be supplied by a caller that has already loaded it (e.g. push,
+  // which inspects the scope before building a snapshot) to avoid loading and
+  // re-validating catalog.yaml — and its GCP round-trips — twice.
+  static async fromPath(basePath: string, ctx: gcp.ApiContext,
+                        manifest?: CatalogManifest): Promise<CatalogSnapshot> {
+    if (!manifest) {
+      const manifestPath = path.join(basePath, 'catalog.yaml');
+      if (!fs.existsSync(manifestPath)) {
+        throw new Error(`Cannot find catalog manifest at '${manifestPath}'`);
+      }
+      manifest = await CatalogManifest.load(manifestPath, ctx);
     }
 
-    const manifest = await CatalogManifest.load(manifestPath, ctx);
     const snapshot = new CatalogSnapshot(basePath, manifest);
 
     await snapshot._buildTypes(manifest, ctx);

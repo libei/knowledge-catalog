@@ -11,6 +11,7 @@ cli.command('init', 'Initialize a new catalog snapshot')
    .option('--entry-group <id>', 'Identifier of the EntryGroup (project.location.id)')
    .option('--bigquery-dataset <id...>', 'Identifier of the BigQuery dataset(s) (project.datasetId)')
    .option('--kb <id>', 'Identifier of the Knowledge Base EntryGroup (project.location.id)')
+   .option('--semantic-model <id>', 'Identifier of the semantic-model EntryGroup (project.location.id)')
    .option('--pull', 'Optionally pull catalog entries during initialization')
    .action(async (options) => {
       try {
@@ -40,6 +41,10 @@ cli.command('pull', 'Pull catalog entries')
 cli.command('push', 'Push catalog entries')
    .option('--force', 'Force push changes')
    .option('--validate-only', 'Only validate changes without applying')
+   .option('--semantic-model <name>', 'Semantic model name to push (default: all models in the workspace)')
+   .option('--dry-run', 'Validate and print the generated DDL without executing it')
+   .option('--project <id>', 'Override the BigQuery project for the property graph')
+   .option('--dataset <id>', 'Override the BigQuery dataset for the property graph')
    .action(async (options) => {
       let exitCode = 1;
       try {

@@ -30,6 +30,20 @@ interface TableList {
   nextPageToken?: string;
 }
 
+export interface QueryError {
+  reason?: string;
+  location?: string;
+  message?: string;
+}
+
+export interface QueryResponse {
+  jobComplete?: boolean;
+  // jobs.query returns query-level errors here (often with HTTP 200), so callers
+  // must check this in addition to the HTTP status.
+  errors?: QueryError[];
+  [key: string]: any;
+}
+
 
 export class BigQueryClient extends api.ApiClient {
 
@@ -66,5 +80,15 @@ export class BigQueryClient extends api.ApiClient {
 
       pageToken = res.result?.nextPageToken;
     } while (pageToken);
+  }
+
+  // Runs a SQL statement (including DDL, e.g. CREATE OR REPLACE PROPERTY GRAPH)
+  // synchronously via jobs.query, billed to `project`. Query-level failures may
+  // be reported either by a non-200 status or by a populated `errors` array on a
+  // 200 response, so callers should inspect both.
+  async query(project: string, sql: string): Promise<api.ApiResult<QueryResponse>> {
+    const name = `projects/${project}/queries`;
+    const body = { query: sql, useLegacySql: false };
+    return await this._post<QueryResponse>(name, body);
   }
 }
