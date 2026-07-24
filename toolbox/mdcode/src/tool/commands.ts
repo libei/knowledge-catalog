@@ -24,7 +24,7 @@ export interface PushOptions {
   force?: boolean;
   validateOnly?: boolean;
   // Semantic-model (BigQuery) push options:
-  model?: string;      // limit to a single model by name (default: all)
+  semanticModel?: string;  // limit to a single model by name (default: all)
   dryRun?: boolean;    // compile + print the DDL without executing
   project?: string;    // override the BigQuery project for the graph + table refs
   dataset?: string;    // override the BigQuery dataset for the graph + table refs
@@ -151,10 +151,10 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
     models.push(...fileModels);
   }
 
-  if (options.model) {
-    models = models.filter(m => m.name === options.model);
+  if (options.semanticModel) {
+    models = models.filter(m => m.name === options.semanticModel);
     if (!models.length) {
-      console.error(`Error: no semantic model named '${options.model}' found in '${dir}'.`);
+      console.error(`Error: no semantic model named '${options.semanticModel}' found in '${dir}'.`);
       return 1;
     }
   }
