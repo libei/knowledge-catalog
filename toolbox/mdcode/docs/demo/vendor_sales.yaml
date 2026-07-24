@@ -1,0 +1,106 @@
+# Demo semantic model for `kcmd push --transpile`.
+#
+# Authored in the AI-first semantics format. The interesting fields and metrics
+# are written in VENDOR dialects (Snowflake / Postgres / Databricks) that
+# BigQuery does not accept verbatim. `kcmd push --transpile` rewrites them to
+# GoogleSQL via sqlglot before emitting the property-graph DDL.
+#
+# Table sources are bare names (`orders`, `customer`); `kcmd push --project/
+# --dataset` fills in where they live, so this file is not tied to any project.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: vendor_sales
+    description: Orders and customers authored in vendor SQL dialects
+    datasets:
+      - name: orders
+        source: orders
+        primary_key: [o_orderkey]
+        description: One row per order
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderkey
+          - name: o_custkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_custkey
+          - name: order_status_label
+            description: Human-readable order status
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "IFF(orders.o_orderstatus = 'F', 'fulfilled', 'open')"
+          - name: clerk_name
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "NVL(orders.o_clerk, 'unknown')"
+          - name: comment_text
+            expression:
+              dialects:
+                - dialect: POSTGRES
+                  expression: "orders.o_comment::text"
+          - name: price_float
+            expression:
+              dialects:
+                - dialect: DATABRICKS
+                  expression: "orders.o_totalprice::double"
+          - name: due_date
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "DATEADD(day, 7, orders.o_orderdate)"
+          - name: ship_days
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "DATEDIFF(day, orders.o_orderdate, orders.o_shipdate)"
+      - name: customer
+        source: customer
+        primary_key: [c_custkey]
+        fields:
+          - name: c_custkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_custkey
+          - name: phone_is_numeric
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "REGEXP_LIKE(customer.c_phone, '[0-9]+')"
+          - name: is_auto_segment
+            expression:
+              dialects:
+                - dialect: POSTGRES
+                  expression: "customer.c_mktsegment ILIKE 'AUTO%'"
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+    metrics:
+      - name: total_revenue
+        description: Total order revenue (portable control expression)
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(orders.o_totalprice)
+      - name: fulfilled_revenue
+        description: Revenue from fulfilled orders
+        expression:
+          dialects:
+            - dialect: SNOWFLAKE
+              expression: "SUM(IFF(orders.o_orderstatus = 'F', orders.o_totalprice, 0))"
+      - name: avg_price_known
+        description: Average order price, treating NULL as zero
+        expression:
+          dialects:
+            - dialect: SNOWFLAKE
+              expression: "AVG(NVL(orders.o_totalprice, 0))"
