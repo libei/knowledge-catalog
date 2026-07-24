@@ -36,6 +36,13 @@ export async function deployBigQuery(client: bq.BigQueryClient,
                                      models: SemanticModel[],
                                      opts: DeployOptions = {}): Promise<DeployResult> {
   const { dryRun, ...generateOpts } = opts;
+
+  // A single graphName applied to every model would make each CREATE OR REPLACE
+  // clobber the previous one, leaving only the last model deployed.
+  if (generateOpts.graphName && models.length > 1) {
+    throw new Error('graphName cannot be set when deploying more than one model; it would overwrite all but the last graph');
+  }
+
   const results: ModelDeployResult[] = [];
 
   for (const model of models) {
@@ -59,6 +66,13 @@ export async function deployBigQuery(client: bq.BigQueryClient,
       const detail = queryErrors?.map(e => e.message).filter(Boolean).join('; ')
         || res.message || `HTTP ${res.status}`;
       result.error = detail;
+      return { ok: false, results };
+    }
+
+    // jobs.query returns jobComplete=false when the statement did not finish
+    // within the synchronous timeout; don't report success for an unconfirmed run.
+    if (res.result?.jobComplete === false) {
+      result.error = `BigQuery did not complete the graph DDL for '${model.name}' synchronously (jobComplete=false)`;
       return { ok: false, results };
     }
 

@@ -105,7 +105,8 @@ export async function push(options: PushOptions): Promise<number> {
     return await pushSemanticModel(manifest.source, options, ctx);
   }
 
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  // Reuse the manifest already loaded above rather than re-loading catalog.yaml.
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx, manifest);
 
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
@@ -125,7 +126,8 @@ export async function push(options: PushOptions): Promise<number> {
 
 
 // Compiles the local semantic model YAML files to BigQuery property-graph DDL and
-// (unless --dry-run) deploys them. Models are read from catalog/<entryGroupId>/.
+// (unless --dry-run/--validate-only) deploys them. Models are read from
+// catalog/<entryGroupId>/.
 async function pushSemanticModel(source: SemanticModelSource, options: PushOptions,
                                  ctx: context.ApiContext): Promise<number> {
   const dir = path.join('catalog', source.entryGroupId);
@@ -140,13 +142,25 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
     return 1;
   }
 
+  // --validate-only ("validate without applying") and --dry-run are equivalent
+  // here: both compile and report but never execute the DDL.
+  const dryRun = !!(options.dryRun || options.validateOnly);
+
   const loadOpts = { defaultProject: options.project, defaultDataset: options.dataset };
   let models: kcmd.semantic.SemanticModel[] = [];
+  const seen = new Set<string>();
   for (const file of files) {
     const text = fs.readFileSync(file, 'utf8');
     const { models: fileModels, warnings } = kcmd.semantic.loadModels(text, loadOpts);
     for (const w of warnings) {
       console.warn(`warning [${path.basename(file)}]: ${w}`);
+    }
+    for (const m of fileModels) {
+      if (seen.has(m.name)) {
+        console.error(`Error: duplicate semantic model name '${m.name}' found in '${dir}'; model names must be unique across files.`);
+        return 1;
+      }
+      seen.add(m.name);
     }
     models.push(...fileModels);
   }
@@ -164,21 +178,21 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
   }
 
   const client = new kcmd.bigquery.BigQueryClient(ctx);
-  console.log(options.dryRun
+  console.log(dryRun
     ? 'Compiling semantic model(s) (dry run)...'
     : 'Pushing semantic model(s) to BigQuery...');
 
   const deployResult = await kcmd.semantic.deployBigQuery(client, models, {
     project: options.project,
     dataset: options.dataset,
-    dryRun: options.dryRun,
+    dryRun,
   });
 
   for (const r of deployResult.results) {
     for (const w of r.warnings) {
       console.warn(`warning [${r.model}]: ${w}`);
     }
-    if (options.dryRun) {
+    if (dryRun) {
       console.log(`\n-- model: ${r.model}\n${r.ddl}`);
     }
     else if (r.executed) {
@@ -192,7 +206,7 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
   if (!deployResult.ok) {
     return 1;
   }
-  if (options.dryRun) {
+  if (dryRun) {
     console.log('\nDry run complete; no changes were applied.');
   }
   return 0;

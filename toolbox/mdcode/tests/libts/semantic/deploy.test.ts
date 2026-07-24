@@ -87,6 +87,27 @@ describe('deployBigQuery executes the generated DDL', () => {
     expect(result.results[0].error).toContain('Not found: Table foo');
   });
 
+  test('an incomplete job (jobComplete=false) is reported as a failure, not success', async () => {
+    const { models } = loadFixture('sales_fanout.yaml');
+    const client = new FakeBigQuery();
+    client.response = { jobComplete: false };
+
+    const result = await deployBigQuery(client, models, { project: 'sqlgen-testing', dataset: 'demo' });
+
+    expect(result.ok).toBe(false);
+    expect(result.results[0].executed).toBe(false);
+    expect(result.results[0].error).toContain('jobComplete=false');
+  });
+
+  test('a shared graphName across multiple models is rejected (would clobber)', async () => {
+    const { models } = loadFixture('sales_fanout.yaml');
+    const client = new FakeBigQuery();
+    const two = [models[0], models[0]];
+
+    await expect(deployBigQuery(client, two, { graphName: 'shared' })).rejects.toThrow(/more than one model/);
+    expect(client.calls).toHaveLength(0);
+  });
+
   test('with no --project override, the job is billed to the entity table project', async () => {
     // sales_fanout tables carry no project in their source; the loader fills the
     // default project, which then becomes the run project when no override is set.
