@@ -29,7 +29,13 @@ export interface GenerateResult {
   warnings: string[];  // skipped metrics, unresolved table refs, etc.
 }
 
-// Aggregate functions BigQuery accepts inside MEASURE(...).
+// Aggregate functions BigQuery accepts inside MEASURE(...). This is the COMPLETE
+// allowed set, not a convenience subset: BigQuery rejects any other aggregate in
+// a measure expression with "Aggregate function <name> is not allowed in a
+// measure expression in BigQuery" (verified live — STDDEV, VARIANCE, COUNTIF,
+// APPROX_COUNT_DISTINCT, ANY_VALUE, LOGICAL_AND/OR, BIT_AND/OR/XOR all rejected).
+// A metric using an aggregate outside this set therefore cannot be a MEASURE and
+// is skipped + warned rather than emitted as DDL BigQuery would reject.
 const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
 
 /**
@@ -214,6 +220,21 @@ function placeMetric(metric: Metric, model: SemanticModel,
     }
     operandExpr = entity.keys[0];
   }
+
+  // The measure is itself exposed as a node property named `metric.name`, so it
+  // must not collide with a field, a prior measure, or a synthesized operand
+  // property — a duplicate property makes BigQuery reject the whole node table.
+  // A clash with an already-taken name is a model error we cannot paper over by
+  // renaming (the measure name is exactly what a reader selects via
+  // GRAPH_EXPAND + AGG(<label>_<name>)), so skip + warn. Reserve it up front so
+  // the operand lowering below never synthesizes a property with the same name.
+  if (lowering.taken.has(metric.name)) {
+    warnings.push(
+      `metric '${metric.name}' collides with an existing property of entity ` +
+      `'${entityName}'; skipped (rename the metric to avoid a duplicate graph property)`);
+    return;
+  }
+  lowering.taken.add(metric.name);
 
   const propName = exposeOperand(lowering, operandExpr, metric.name);
   const aggregate = `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${propName})`;

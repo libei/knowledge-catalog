@@ -300,6 +300,43 @@ describe('measure operand lowering (a MEASURE can only aggregate an exposed prop
     expect(ddl).not.toContain('aov');
     expect(warnings.some(w => w.includes("metric 'aov'") && w.includes('single MEASURE'))).toBe(true);
   });
+
+  test('a metric named after its own synthesized operand does not duplicate a property', () => {
+    // `region` is not a declared field, so lowering would otherwise expose the
+    // operand as a bare property `region` AND alias the measure `AS region` —
+    // two properties named `region` in one node, which BigQuery rejects. The
+    // measure name is reserved first, so the operand lands on a distinct name.
+    const { ddl } = generatePropertyGraph(
+      base([{ name: 'region', expression: 'COUNT(orders.region)' }]), OPTS);
+    expect(ddl).toContain('region AS region_input');
+    expect(ddl).toContain('MEASURE(COUNT(region_input)) AS region');
+    // `region` appears only as the measure alias, never as a bare property line.
+    const bareRegion = ddl.split('\n').filter(l => l.trim().replace(/,$/, '') === 'region').length;
+    expect(bareRegion).toBe(0);
+  });
+
+  test('a metric whose name collides with an existing field is skipped + flagged', () => {
+    // Naming a metric `status` (already a declared field) would alias the measure
+    // `AS status`, duplicating the field property. This is a model error we cannot
+    // fix by renaming (the name is the query-facing measure handle), so skip+warn.
+    const { ddl, warnings } = generatePropertyGraph(
+      base([{ name: 'status', expression: 'COUNT(orders.status)' }]), OPTS);
+    expect(ddl).not.toContain('MEASURE(COUNT(status)) AS status');
+    expect(warnings.some(w => w.includes("metric 'status'") && w.includes('collides'))).toBe(true);
+  });
+
+  test('an aggregate outside the BigQuery-allowed set is skipped + flagged, never emitted', () => {
+    // BigQuery allows only SUM/AVG/COUNT/MIN/MAX inside a MEASURE; STDDEV (and
+    // VARIANCE, APPROX_COUNT_DISTINCT, ...) are rejected live with "Aggregate
+    // function <name> is not allowed in a measure expression". The emitter must
+    // not emit such a measure — it skips + warns instead.
+    const { ddl, warnings } = generatePropertyGraph(
+      base([{ name: 'amount_spread', expression: 'STDDEV(orders.amount)' }]), OPTS);
+    expect(ddl).not.toContain('STDDEV');
+    expect(ddl).not.toContain('amount_spread');
+    expect(warnings.some(w => w.includes("metric 'amount_spread'") && w.includes('supported aggregate')))
+      .toBe(true);
+  });
 });
 
 
