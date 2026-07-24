@@ -18,9 +18,13 @@ Files in this directory:
 
 - The `kcmd` binary. From `toolbox/mdcode`:
   ```bash
+  npm ci                 # install dependencies (skip if node_modules is present)
   npm run build          # produces ./dist/kcmd
   export PATH="$PWD/dist:$PATH"
   ```
+  If you skip `npm ci`, the build's `npx tsc` step can't find a local TypeScript
+  and fetches an unrelated stub package instead, printing
+  *"This is not the tsc command you are looking for"* — run `npm ci` and rebuild.
 - `bq` (the BigQuery CLI), authenticated to a project you can write to.
 - **For `--transpile` only:** a Python interpreter with
   [`sqlglot`](https://pypi.org/project/sqlglot/) installed. `kcmd` shells out to
