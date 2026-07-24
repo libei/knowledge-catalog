@@ -250,7 +250,7 @@ function convertDataset(ds: DatasetDoc, opts: LoadOptions,
 }
 
 function convertField(f: FieldDoc, entityName: string, warnings: string[], dialect: string): Field {
-  const expression = pickDialect(f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
+  const picked = pickDialect(f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
   const ctx = normalizeAiContext(f.ai_context);
 
   // Base the description on the field's own description, falling back to its
@@ -261,9 +261,13 @@ function convertField(f: FieldDoc, entityName: string, warnings: string[], diale
     f.dimension?.is_time ? 'Time dimension.' : undefined,
     examplesLine(ctx.examples));
 
-  const field: Field = { name: f.name, expression };
+  const field: Field = { name: f.name, expression: picked.expression };
   if (description) field.description = description;
   if (ctx.synonyms) field.synonyms = ctx.synonyms;
+  // Record provenance only for a vendor-dialect fallback, so a later transpile
+  // pass (see ./transpile) knows the source dialect. Target/canonical are left
+  // unmarked: they are already valid for the target.
+  if (picked.kind === 'vendor') field.expressionDialect = picked.dialect;
   return field;
 }
 
@@ -311,16 +315,18 @@ function convertRelationship(r: RelationshipDoc, keysByEntity: Map<string, strin
 function convertMetric(mt: MetricDoc, entityNames: string[],
                        warnings: string[], dialect: string): Metric {
   const ctx = `metric '${mt.name}'`;
-  const expression = pickDialect(mt.expression, dialect, ctx, warnings);
-  const entities = referencedEntityNames(expression, entityNames);
+  const picked = pickDialect(mt.expression, dialect, ctx, warnings);
+  const entities = referencedEntityNames(picked.expression, entityNames);
   if (!entities.length) {
     warnings.push(`${ctx}: expression references no known entity; it may not be placeable downstream`);
   }
   const aiCtx = normalizeAiContext(mt.ai_context);
-  const metric: Metric = { name: mt.name, expression, entities };
+  const metric: Metric = { name: mt.name, expression: picked.expression, entities };
   const description = composeDescription(mt.description, aiCtx.instructions, examplesLine(aiCtx.examples));
   if (description) metric.description = description;
   if (aiCtx.synonyms) metric.synonyms = aiCtx.synonyms;
+  // See convertField: mark vendor-dialect provenance for the transpile pass.
+  if (picked.kind === 'vendor') metric.expressionDialect = picked.dialect;
   return metric;
 }
 
@@ -339,13 +345,22 @@ function convertMetric(mt: MetricDoc, entityNames: string[],
 //   - A vendor-specific dialect (e.g. SNOWFLAKE) may use syntax the target does
 //     not accept, so falling back to one is a genuine risk and is warned per
 //     field/metric, naming the dialect.
+// The outcome of collapsing an expression's per-dialect variants: the chosen
+// `expression`, the `dialect` it came from, and which of the three cases applied.
+// `kind` lets callers record provenance for the vendor case (`./transpile`).
+interface PickedDialect {
+  expression: string;
+  dialect: string;
+  kind: 'target' | 'canonical' | 'vendor';
+}
+
 function pickDialect(expr: ExpressionDoc, preferred: string,
-                     ctx: string, warnings: string[]): string {
+                     ctx: string, warnings: string[]): PickedDialect {
   const byName = (name: string) =>
     expr.dialects.find(d => d.dialect.toUpperCase() === name.toUpperCase());
 
   const exact = byName(preferred);
-  if (exact) return exact.expression;
+  if (exact) return { expression: exact.expression, dialect: exact.dialect, kind: 'target' };
 
   const canonical = byName(FALLBACK_DIALECT);
   if (canonical) {
@@ -353,14 +368,14 @@ function pickDialect(expr: ExpressionDoc, preferred: string,
       `note: no '${preferred}' dialect for one or more expressions; using the portable ` +
       `'${FALLBACK_DIALECT}' dialect verbatim ('${preferred}' accepts the ANSI core subset — ` +
       `supply '${preferred}' variants only for ${preferred}-specific SQL)`);
-    return canonical.expression;
+    return { expression: canonical.expression, dialect: canonical.dialect, kind: 'canonical' };
   }
 
   const first = expr.dialects[0];
   warnings.push(
     `${ctx}: no '${preferred}' or '${FALLBACK_DIALECT}' dialect; using '${first.dialect}' ` +
     `expression verbatim (not transpiled to '${preferred}')`);
-  return first.expression;
+  return { expression: first.expression, dialect: first.dialect, kind: 'vendor' };
 }
 
 // Parses a dotted `source` string into a structured table reference. Handles

@@ -37,6 +37,7 @@ const CORPUS = [
   'tpcds_retail.yaml',
   'tpcds_date_edge.yaml',
   'sales_fanout.yaml',
+  'vendor_dialects.yaml',
 ];
 
 // Loads a fixture file and generates its property-graph DDL in one step, so a
