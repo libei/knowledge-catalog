@@ -97,13 +97,15 @@ describe('per-dialect expressions collapse to a single string', () => {
     };
   }
 
-  test('the preferred dialect (BIGQUERY) is chosen with no warning', () => {
+  test('the preferred dialect (BIGQUERY) is chosen with no warning or provenance', () => {
     const { models, warnings } = fromDocument(metricDoc([
       { dialect: 'ANSI_SQL', expression: 'SUM(orders.a)' },
       { dialect: 'BIGQUERY', expression: 'SUM(orders.b)' },
     ]));
     expect(models[0].metrics[0].expression).toBe('SUM(orders.b)');
     expect(warnings.some(w => w.includes('dialect'))).toBe(false);
+    // Target dialect is already valid, so it is not marked for transpilation.
+    expect(models[0].metrics[0].expressionDialect).toBeUndefined();
   });
 
   test('ANSI_SQL is the fallback when the preferred dialect is absent, with an informational note', () => {
@@ -112,14 +114,18 @@ describe('per-dialect expressions collapse to a single string', () => {
     ]));
     expect(models[0].metrics[0].expression).toBe('SUM(orders.a)');
     expect(warnings.some(w => w.startsWith('note:') && w.includes("using the portable 'ANSI_SQL'"))).toBe(true);
+    // The portable canonical dialect targets BigQuery by design, so no provenance.
+    expect(models[0].metrics[0].expressionDialect).toBeUndefined();
   });
 
-  test('otherwise the first listed dialect is used, with a warning', () => {
+  test('otherwise the first listed dialect is used, with a warning and recorded provenance', () => {
     const { models, warnings } = fromDocument(metricDoc([
       { dialect: 'SNOWFLAKE', expression: 'SUM(orders.a)' },
     ]));
     expect(models[0].metrics[0].expression).toBe('SUM(orders.a)');
     expect(warnings.some(w => w.includes("using 'SNOWFLAKE'"))).toBe(true);
+    // A vendor fallback records its source dialect for a later transpile pass.
+    expect(models[0].metrics[0].expressionDialect).toBe('SNOWFLAKE');
   });
 
   test('an explicit dialect option overrides the default preference', () => {
@@ -148,6 +154,8 @@ describe('per-dialect expressions collapse to a single string', () => {
             { name: 'id', expression: expr('orders.id') },
             { name: 'net', expression: {
               dialects: [{ dialect: 'ANSI_SQL', expression: 'orders.gross - orders.tax' }] } },
+            { name: 'label', expression: {
+              dialects: [{ dialect: 'SNOWFLAKE', expression: "IFF(orders.ok, 'y', 'n')" }] } },
           ],
         }],
       }],
@@ -155,9 +163,15 @@ describe('per-dialect expressions collapse to a single string', () => {
     const fields = models[0].entities[0].fields;
     expect(fields[0].expression).toBe('orders.id');                  // BIGQUERY, no fallback
     expect(fields[1].expression).toBe('orders.gross - orders.tax');  // ANSI_SQL fallback
+    expect(fields[2].expression).toBe("IFF(orders.ok, 'y', 'n')");   // SNOWFLAKE vendor fallback
     // The canonical-fallback note is field-agnostic (so it dedupes); the point
     // here is that the two fields still pick their expressions independently.
     expect(warnings.some(w => w.includes("using the portable 'ANSI_SQL'"))).toBe(true);
+    // Provenance is recorded only for the vendor field, so the transpile pass
+    // rewrites just that one.
+    expect(fields[0].expressionDialect).toBeUndefined();
+    expect(fields[1].expressionDialect).toBeUndefined();
+    expect(fields[2].expressionDialect).toBe('SNOWFLAKE');
   });
 });
 

@@ -59,6 +59,11 @@ export interface Field {
   type?: string;                   // logical type; often inferable from source schema
   description?: string;
   synonyms?: string[];
+  // Set only when `expression` was taken verbatim from a non-target, non-canonical
+  // vendor dialect (e.g. 'SNOWFLAKE'): the dialect it was authored in. It marks
+  // the expression as a candidate for transpilation to the target dialect (see
+  // ./transpile), which clears this once the rewrite is applied.
+  expressionDialect?: string;
 }
 
 /**
@@ -110,4 +115,8 @@ export interface Metric {
   entities: string[];    // entities referenced by the metric (>= 1)
   description?: string;
   synonyms?: string[];
+  // As on `Field`: set only when `expression` was taken verbatim from a
+  // non-target, non-canonical vendor dialect. Marks it as a candidate for
+  // transpilation (see ./transpile), which clears this once applied.
+  expressionDialect?: string;
 }

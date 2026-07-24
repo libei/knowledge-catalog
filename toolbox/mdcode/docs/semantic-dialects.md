@@ -2,7 +2,8 @@
 
 Scope: how the semantic-model pipeline (`src/libts/semantic/`) selects a SQL
 expression when the AI-first semantics format supplies several per-dialect
-variants, and the roadmap for actually transpiling to a target dialect.
+variants, and how the opt-in transpile pass rewrites a vendor-dialect expression
+to the target dialect.
 
 ## Background
 
@@ -59,26 +60,56 @@ transpiles named source dialects into GoogleSQL, but it is a poor fit here:
 - Unsupported functions get rewritten to `bqutil.fn.cw_*` helper UDFs the caller
   must deploy — undesirable for MEASURE bodies.
 
-## Roadmap: transpiling the vendor-dialect case (case 3)
+## Transpiling the vendor-dialect case (case 3)
 
-When we want real transpilation, the right tool is **sqlglot** — a local,
-offline, deterministic SQL parser/transpiler with a `bigquery` writer dialect
-(`sqlglot.transpile(expr, read="snowflake", write="bigquery")`). It works on
-fragments and needs no network or auth, so it preserves hermetic tests.
+Case 3 is transpiled to the target dialect by an opt-in pass,
+`transpile.ts:transpileModel`, using **sqlglot** — a local, offline,
+deterministic SQL parser/transpiler with a `bigquery` writer dialect. It works on
+expression fragments and needs no network or auth.
 
-Design constraints:
+The pipeline is: `loadModels` → `transpileModel(model, { target: 'BIGQUERY' })` →
+`generatePropertyGraph`. The pass is **default OFF**: a caller that skips it gets
+today's verbatim-with-a-warning behavior, so existing goldens and hermetic tests
+are unchanged.
 
-- **Emitter, not loader.** Transpiling *to BigQuery* is destination-specific, so
-  it belongs in `bigquery.ts`, not the destination-agnostic loader. The loader
-  keeps choosing a variant + emitting the note/warning; the emitter would
-  transpile the chosen expression when it is a vendor dialect.
-- **Scope to case 3 only.** The canonical ANSI path (case 2) already targets
-  BigQuery by design; leave it verbatim. Transpilation earns its keep only for
-  vendor dialects the target does not accept.
-- **Opt-in + hermetic.** Gate behind a flag and keep it out of the golden e2e
-  path so tests stay offline. sqlglot is Python, so this implies an offline
-  build-time helper (out-of-process) rather than an in-process TS dependency —
-  acceptable, but a real dependency to weigh.
+Design:
 
-Until then, case 3 stays verbatim-with-a-warning, which is honest: the operator
-is told the expression was not transpiled and should be reviewed.
+- **A separate, target-parameterized pass, not the loader or emitter.** The
+  loader stays destination-agnostic (it only records provenance, below);
+  `bigquery.ts` stays sync and untouched. `transpileModel(model, { target,
+  transpiler })` returns a `structuredClone` — the portable IR is never mutated.
+- **Provenance drives it.** The loader sets `expressionDialect` on a `Field`/
+  `Metric` **only** in the vendor-fallback case (case 3). The pass rewrites only
+  those expressions and clears the marker; target/canonical expressions (cases
+  1–2) carry no marker and are left verbatim — the canonical ANSI path already
+  targets BigQuery by design.
+- **Graceful degradation.** sqlglot is Python-only and can't be bundled into the
+  `bun --compile` binary, so it is an **optional** dependency invoked out of
+  process (`$KCMD_PYTHON` or `python3`). A missing interpreter, a missing
+  sqlglot, a non-zero exit, or unparseable output all degrade to verbatim + a
+  per-expression warning — never a throw. Install it with
+  `pip install sqlglot` to enable real transpilation.
+- **Qualifier-preservation guard.** `expr.ts` matches `<Entity>.` qualifiers
+  case-sensitively for measure placement, and sqlglot may re-case or quote an
+  identifier. After transpiling, if the set of referenced entities changed, the
+  rewrite is rejected (kept verbatim + warned) so a metric can never silently
+  drop.
+
+### Testing & verification
+
+- `transpile.test.ts` — hermetic, injected fake transpiler (success, error,
+  guard rejection, no-op, multi-dialect, non-mutation).
+- `transpile.sqlglot.test.ts` — a *mechanism-invariant* test that always runs
+  (asserts the adapter returns one result per request, `sql` XOR `error`, never
+  throws, even with sqlglot absent), plus a transformation test gated on sqlglot.
+- `transpile.e2e.test.ts` — the transpiled golden
+  (`fixtures/vendor_dialects.bigquery.transpiled.golden.sql`), gated on sqlglot.
+- `transpile.bigquery.verify.test.ts` — dry-runs every transpiled expression
+  against a real BigQuery instance; gated on `KCMD_BQ_VERIFY=1`. Every GoogleSQL
+  expression in the transpiled golden was validated this way.
+
+### Out of scope
+
+ANSI:2003 has constructs GoogleSQL renders differently, but the canonical case
+(2) stays verbatim: it is the intended, portable authoring path. Transpiling it
+too could be a future opt-in.
