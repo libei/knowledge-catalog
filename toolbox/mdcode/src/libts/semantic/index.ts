@@ -5,3 +5,4 @@ export * from './ir';
 export * from './loader';
 export * from './bigquery';
 export * from './deploy';
+export * from './transpile';

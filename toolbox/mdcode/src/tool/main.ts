@@ -45,6 +45,7 @@ cli.command('push', 'Push catalog entries')
    .option('--dry-run', 'Validate and print the generated DDL without executing it')
    .option('--project <id>', 'Override the BigQuery project for the property graph')
    .option('--dataset <id>', 'Override the BigQuery dataset for the property graph')
+   .option('--transpile', 'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL via sqlglot before compiling')
    .action(async (options) => {
       let exitCode = 1;
       try {

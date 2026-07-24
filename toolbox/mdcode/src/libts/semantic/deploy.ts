@@ -9,9 +9,16 @@
 import * as bq from '../gcp/bigquery';
 import { SemanticModel } from './ir';
 import { generatePropertyGraph, GenerateOptions } from './bigquery';
+import { transpileModel, SqlTranspiler } from './transpile';
 
 export interface DeployOptions extends GenerateOptions {
   dryRun?: boolean;   // compile + report only; do not execute against BigQuery
+  // When set, vendor-dialect expressions (those the loader marked with a source
+  // dialect) are rewritten to GoogleSQL via the transpile pass before the DDL is
+  // generated. Default off, so a model authored entirely in GoogleSQL/ANSI is
+  // unaffected. See ./transpile.
+  transpile?: boolean;
+  transpiler?: SqlTranspiler;  // override the transpile mechanism (tests); default sqlglot
 }
 
 export interface ModelDeployResult {
@@ -35,7 +42,7 @@ export interface DeployResult {
 export async function deployBigQuery(client: bq.BigQueryClient,
                                      models: SemanticModel[],
                                      opts: DeployOptions = {}): Promise<DeployResult> {
-  const { dryRun, ...generateOpts } = opts;
+  const { dryRun, transpile, transpiler, ...generateOpts } = opts;
 
   // A single graphName applied to every model would make each CREATE OR REPLACE
   // clobber the previous one, leaving only the last model deployed.
@@ -46,8 +53,20 @@ export async function deployBigQuery(client: bq.BigQueryClient,
   const results: ModelDeployResult[] = [];
 
   for (const model of models) {
-    const { ddl, warnings } = generatePropertyGraph(model, generateOpts);
-    const result: ModelDeployResult = { model: model.name, ddl, warnings, executed: false };
+    // Rewrite vendor-dialect expressions to GoogleSQL first (opt-in). Transpile
+    // warnings precede compile warnings since they explain what the emitter saw.
+    let source = model;
+    const transpileWarnings: string[] = [];
+    if (transpile) {
+      const t = await transpileModel(model, { target: 'BIGQUERY', transpiler });
+      source = t.model;
+      transpileWarnings.push(...t.warnings);
+    }
+
+    const { ddl, warnings } = generatePropertyGraph(source, generateOpts);
+    const result: ModelDeployResult = {
+      model: model.name, ddl, warnings: [...transpileWarnings, ...warnings], executed: false,
+    };
     results.push(result);
 
     if (dryRun) {
