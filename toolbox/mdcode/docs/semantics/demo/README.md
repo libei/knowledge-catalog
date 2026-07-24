@@ -34,6 +34,10 @@ Files in this directory:
   /tmp/sqlglot-venv/bin/pip install sqlglot
   export KCMD_PYTHON=/tmp/sqlglot-venv/bin/python
   ```
+  If `pip` defaults to a private/airlocked index that lacks `sqlglot`
+  (`No matching distribution found`), point it at public PyPI:
+  `pip install --index-url https://pypi.org/simple sqlglot`.
+
   Without it, `--transpile` degrades gracefully: each vendor expression is left
   verbatim and flagged with a warning (the graph then likely fails to deploy).
 
