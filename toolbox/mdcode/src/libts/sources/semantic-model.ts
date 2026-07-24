@@ -1,14 +1,15 @@
 // Semantic model as Metadata Source
 //
-// A `semantic-model` scope targets an existing Dataplex EntryGroup
-// (<project>.<location>.<entryGroup>), the same shape as an entryGroup scope. The
-// entry group is validated on init/load and otherwise reserved for the (deferred)
-// Knowledge Catalog push path. The current BigQuery push path compiles the local
-// model YAML directly and never enumerates service entries, so the entry-sync
-// members below are intentionally unsupported.
+// A `semantic-model` scope is written as <project>.<location>.<entryGroup> (the
+// same shape as an entryGroup scope), but it deploys to BigQuery and does NOT
+// touch the Knowledge Catalog: nothing here is validated against Dataplex. The
+// three parts are just labels, and the entryGroup segment doubles as the local
+// workspace directory name (catalog/<entryGroup>/). The BigQuery push path
+// compiles the local model YAML directly and never enumerates service entries,
+// so the entry-sync members below are intentionally unsupported (they belong to
+// the deferred KC push).
 
 import * as gcp from '../gcp';
-import * as dataplex from '../gcp/dataplex';
 import { Layouts } from '../layout';
 import { CatalogSource } from '../source';
 
@@ -21,10 +22,7 @@ export class SemanticModelSource implements CatalogSource {
 
   private readonly _name: string[];
 
-  // `_entryGroup` is accepted (and validated by the caller via getEntryGroup) to
-  // confirm the target exists, but the BigQuery push path does not read it; the
-  // deferred KC push will.
-  constructor(type: string, name: string, _entryGroup: dataplex.EntryGroup) {
+  constructor(type: string, name: string) {
     this.type = type;
     this.name = name;
 

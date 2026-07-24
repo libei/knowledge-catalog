@@ -122,14 +122,14 @@ describe('deployBigQuery executes the generated DDL', () => {
 
 
 describe('semantic-model manifest scope', () => {
-  test('initWithSemanticModel builds a semantic-model source with the right scope', async () => {
-    const spy = spyOn(gcp.CatalogClient.prototype, 'getEntryGroup').mockResolvedValue({
-      status: 200,
-      result: { name: 'projects/my-proj/locations/us-central1/entryGroups/sales-group' },
-    });
+  test('initWithSemanticModel builds the scope WITHOUT any Dataplex/KC lookup', async () => {
+    // The semantic-model path must not touch the Knowledge Catalog: init resolves
+    // the scope purely from its name, with no getEntryGroup call.
+    const spy = spyOn(gcp.CatalogClient.prototype, 'getEntryGroup');
 
     const manifest = await CatalogManifest.initWithSemanticModel('my-proj.us-central1.sales-group', CTX);
 
+    expect(spy).not.toHaveBeenCalled();
     expect(manifest.source).toBeInstanceOf(SemanticModelSource);
     expect(manifest.source.type).toBe('semantic-model');
     // What save() serializes into catalog.yaml: `${type}.${name}`.
@@ -141,7 +141,7 @@ describe('semantic-model manifest scope', () => {
   });
 
   test('the entry-sync members are unsupported (KC push deferred)', () => {
-    const source = new SemanticModelSource('semantic-model', 'p.us.eg', { name: 'x' });
+    const source = new SemanticModelSource('semantic-model', 'p.us.eg');
     expect(() => source.localName({} as gcp.Entry)).toThrow(/does not support entry sync/);
     expect(() => source.serviceName('x')).toThrow(/does not support entry sync/);
   });

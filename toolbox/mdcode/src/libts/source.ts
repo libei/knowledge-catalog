@@ -82,8 +82,11 @@ export async function createSource(type: string, name: string,
       const knowledgeBase = await getEntryGroup(name, ctx);
       return new KnowledgeBaseSource(Sources.KB, name, knowledgeBase);
     case Sources.SEMANTIC_MODEL:
-      const semanticEntryGroup = await getEntryGroup(name, ctx);
-      return new SemanticModelSource(Sources.SEMANTIC_MODEL, name, semanticEntryGroup);
+      // A semantic-model scope deploys to BigQuery and does not touch the
+      // Knowledge Catalog, so (unlike entryGroup/kb) it performs NO Dataplex
+      // entry-group lookup. The scope's <project>.<location>.<entryGroup> is used
+      // only as labels and as the local workspace directory name.
+      return new SemanticModelSource(Sources.SEMANTIC_MODEL, name);
     default:
       throw new Error(`Unknown source type: ${type}`);
   }
