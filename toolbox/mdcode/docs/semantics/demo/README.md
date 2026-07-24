@@ -42,9 +42,14 @@ Files in this directory:
   Without it, `--transpile` degrades gracefully: each vendor expression is left
   verbatim and flagged with a warning (the graph then likely fails to deploy).
 
-## 0. Pick a project and dataset
+## 0. Enter the demo directory and pick a project/dataset
+
+The remaining steps run from this demo directory and reference `seed.sql` /
+`vendor_sales.yaml` by relative path, so `cd` here first (from `toolbox/mdcode`,
+where you built `kcmd`):
 
 ```bash
+cd docs/semantics/demo
 export PROJECT=your-project
 export DATASET=uss_transpile_demo
 ```
