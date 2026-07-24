@@ -238,6 +238,11 @@ export const sqlglotTranspiler: SqlTranspiler = (requests, target) => {
     let settled = false;
     const done = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
 
+    // Decode as UTF-8 via the stream's StringDecoder so a multibyte character
+    // split across two chunks is reassembled correctly (concatenating raw
+    // Buffers would decode each half independently and corrupt it).
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     child.stdout.on('data', d => { stdout += d; });
     child.stderr.on('data', d => { stderr += d; });
     child.on('error', err => done(() => fail(`could not run '${python}': ${err?.message ?? err}`)));

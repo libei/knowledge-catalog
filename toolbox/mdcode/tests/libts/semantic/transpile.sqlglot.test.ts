@@ -64,4 +64,15 @@ describe('sqlglot performs the expected Snowflake -> BigQuery transformation', (
     expect(res.sql).not.toContain('IFF(');
     expect(res.sql).toContain('orders.o_orderstatus');
   });
+
+  test.skipIf(!sqlglotAvailable())('a multibyte string literal round-trips undamaged through stdout', async () => {
+    // Guards the UTF-8 decoding of the subprocess stdout: a non-ASCII literal must
+    // survive verbatim (a raw-Buffer concat would corrupt bytes split across chunks).
+    const literal = "'café — naïve — 日本語 — 😀'";
+    const [res] = await sqlglotTranspiler(
+      [{ id: '0', dialect: 'SNOWFLAKE', expression: `NVL(orders.o_clerk, ${literal})` }],
+      'BIGQUERY');
+    expect(res.error).toBeUndefined();
+    expect(res.sql).toContain(literal);
+  });
 });
