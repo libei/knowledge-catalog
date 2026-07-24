@@ -34,8 +34,11 @@ export class ApiContext {
     const project = cp.execSync(GCLOUD_PROJECT_CMD).toString().trim();
     const location = cp.execSync(GCLOUD_LOCATION_CMD).toString().trim();
     const token = cp.execSync(GCLOUD_TOKEN_CMD).toString().trim();
-    if (!project || !location || !token) {
-      throw new Error('Unable to retrieve project, location, or token. Ensure gcloud is configured.');
+    // `location` (gcloud compute/region) is not required: Dataplex sources derive
+    // their location from the scope name and the BigQuery path does not use it, so
+    // an unset region must not block a BigQuery-only push.
+    if (!project || !token) {
+      throw new Error('Unable to retrieve project or token. Ensure gcloud is configured.');
     }
 
     return new ApiContext(project, location, token);
