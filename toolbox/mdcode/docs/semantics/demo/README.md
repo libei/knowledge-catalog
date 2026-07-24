@@ -31,12 +31,13 @@ Files in this directory:
   it out of process; point `$KCMD_PYTHON` at it (defaults to `python3`):
   ```bash
   python3 -m venv /tmp/sqlglot-venv
-  /tmp/sqlglot-venv/bin/pip install sqlglot
+  /tmp/sqlglot-venv/bin/pip install --index-url https://pypi.org/simple sqlglot
   export KCMD_PYTHON=/tmp/sqlglot-venv/bin/python
   ```
-  If `pip` defaults to a private/airlocked index that lacks `sqlglot`
-  (`No matching distribution found`), point it at public PyPI:
-  `pip install --index-url https://pypi.org/simple sqlglot`.
+  (`--index-url https://pypi.org/simple` names the public PyPI index explicitly;
+  it's a no-op on a machine that already defaults there, and it avoids a
+  `No matching distribution found` error when `pip` defaults to a private or
+  airlocked index that lacks `sqlglot`.)
 
   Without it, `--transpile` degrades gracefully: each vendor expression is left
   verbatim and flagged with a warning (the graph then likely fails to deploy).
