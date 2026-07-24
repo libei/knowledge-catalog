@@ -7,7 +7,7 @@
 // marked expressions to the target dialect and clears the provenance; expressions
 // already in the target or in the portable canonical dialect are left untouched.
 //
-// Design (see docs/semantic-dialects.md):
+// Design (see docs/semantics/semantic-dialects.md):
 //   - Target-agnostic: `transpileModel(model, {target, transpiler})`. The actual
 //     mechanism is injectable so tests can run hermetically; the default adapter
 //     shells out to Python's `sqlglot` out of process.
