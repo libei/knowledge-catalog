@@ -11,6 +11,9 @@ import * as path from 'path';
 
 import { loadModels } from '../../../src/libts/semantic/loader';
 import { generatePropertyGraph, deployBigQuery } from '../../../src/libts/semantic';
+import {
+  SqlTranspiler, TranspileRequest, TranspileResponse,
+} from '../../../src/libts/semantic/transpile';
 import * as bq from '../../../src/libts/gcp/bigquery';
 import * as gcp from '../../../src/libts/gcp';
 import { CatalogManifest } from '../../../src/libts/manifest';
@@ -149,5 +152,97 @@ describe('semantic-model manifest scope', () => {
   test('the semantic-model layout is not yet constructible (multi-file deferred)', () => {
     expect(() => createLayout(Layouts.SEMANTIC_MODEL, '/tmp/catalog'))
       .toThrow(/multi-file layout deferred/);
+  });
+});
+
+
+// A fake transpiler driven by a fixed expression->GoogleSQL map, so this stays
+// hermetic (no Python/sqlglot; that mechanism has its own tests). Records the
+// batches it was called with.
+function fakeTranspiler(map: Record<string, string>): SqlTranspiler & { calls: TranspileRequest[][] } {
+  const fn = ((requests: TranspileRequest[], _target: string): Promise<TranspileResponse[]> => {
+    fn.calls.push(requests);
+    return Promise.resolve(requests.map(r =>
+      r.expression in map
+        ? { id: r.id, sql: map[r.expression] }
+        : { id: r.id, error: 'no mapping' }));
+  }) as SqlTranspiler & { calls: TranspileRequest[][] };
+  fn.calls = [];
+  return fn;
+}
+
+// A model authored in Snowflake: one vendor field label and one vendor metric,
+// which the loader marks with `expressionDialect` for the transpile pass.
+const VENDOR_YAML = `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: vendor_demo
+    datasets:
+      - name: orders
+        source: orders
+        primary_key: [o_orderkey]
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: o_orderkey}]
+          - name: status_label
+            expression:
+              dialects: [{dialect: SNOWFLAKE, expression: "IFF(orders.o_orderstatus = 'F', 'done', 'open')"}]
+    metrics:
+      - name: fulfilled_revenue
+        expression:
+          dialects: [{dialect: SNOWFLAKE, expression: "SUM(IFF(orders.o_orderstatus = 'F', orders.o_totalprice, 0))"}]
+`;
+
+describe('deployBigQuery --transpile rewrites vendor-dialect expressions', () => {
+  const GOOGLE_SQL = {
+    "IFF(orders.o_orderstatus = 'F', 'done', 'open')":
+      "IF(orders.o_orderstatus = 'F', 'done', 'open')",
+    "SUM(IFF(orders.o_orderstatus = 'F', orders.o_totalprice, 0))":
+      "SUM(IF(orders.o_orderstatus = 'F', orders.o_totalprice, 0))",
+  };
+
+  test('with transpile on, the emitted DDL contains GoogleSQL, not the vendor SQL', async () => {
+    const { models } = loadModels(VENDOR_YAML, { defaultProject: 'sqlgen-testing', defaultDataset: 'demo' });
+    const client = new FakeBigQuery();
+    const transpiler = fakeTranspiler(GOOGLE_SQL);
+
+    const result = await deployBigQuery(client, models, {
+      project: 'sqlgen-testing', dataset: 'demo', dryRun: true, transpile: true, transpiler,
+    });
+
+    expect(result.ok).toBe(true);
+    // The transpiler saw both vendor expressions in a single batch.
+    expect(transpiler.calls).toHaveLength(1);
+    expect(transpiler.calls[0]).toHaveLength(2);
+
+    // The emitter strips the `orders.` qualifier inside PROPERTIES, so the
+    // transpiled GoogleSQL appears unqualified in the DDL.
+    const ddl = result.results[0].ddl;
+    expect(ddl).toContain("IF(o_orderstatus = 'F', 'done', 'open')");
+    // The metric's inline IF() is lowered to a derived property; BigQuery rejects
+    // an expression directly inside MEASURE (x20 record §A2).
+    expect(ddl).toContain("IF(o_orderstatus = 'F', o_totalprice, 0) AS fulfilled_revenue_input");
+    expect(ddl).toContain('MEASURE(SUM(fulfilled_revenue_input)) AS fulfilled_revenue');
+    // The vendor form must be gone, and no inline expression survives in a MEASURE.
+    expect(ddl).not.toContain('IFF(');
+    expect(ddl).not.toContain('MEASURE(SUM(IF(');
+
+    // Transpile provenance surfaces as warnings, before any compile warnings.
+    expect(result.results[0].warnings.some(w => /transpiled 'SNOWFLAKE' -> 'BIGQUERY'/.test(w))).toBe(true);
+  });
+
+  test('with transpile off (default), the vendor SQL is left verbatim and no transpiler runs', async () => {
+    const { models } = loadModels(VENDOR_YAML, { defaultProject: 'sqlgen-testing', defaultDataset: 'demo' });
+    const client = new FakeBigQuery();
+    const transpiler = fakeTranspiler(GOOGLE_SQL);
+
+    const result = await deployBigQuery(client, models, {
+      project: 'sqlgen-testing', dataset: 'demo', dryRun: true, transpiler,  // transpile omitted
+    });
+
+    expect(result.ok).toBe(true);
+    expect(transpiler.calls).toHaveLength(0);
+    expect(result.results[0].ddl).toContain('IFF(');
   });
 });

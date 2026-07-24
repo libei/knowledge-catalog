@@ -28,6 +28,7 @@ export interface PushOptions {
   dryRun?: boolean;    // compile + print the DDL without executing
   project?: string;    // override the BigQuery project for the graph + table refs
   dataset?: string;    // override the BigQuery dataset for the graph + table refs
+  transpile?: boolean; // rewrite vendor-dialect expressions to GoogleSQL first
 }
 
 
@@ -153,6 +154,10 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
     const text = fs.readFileSync(file, 'utf8');
     const { models: fileModels, warnings } = kcmd.semantic.loadModels(text, loadOpts);
     for (const w of warnings) {
+      // When transpiling, the loader's per-expression "using ... verbatim (not
+      // transpiled to ...)" notes are superseded by the transpile pass's own
+      // outcome lines; printing both is contradictory, so drop them here.
+      if (options.transpile && w.includes('(not transpiled to')) continue;
       console.warn(`warning [${path.basename(file)}]: ${w}`);
     }
     for (const m of fileModels) {
@@ -186,6 +191,7 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
     project: options.project,
     dataset: options.dataset,
     dryRun,
+    transpile: options.transpile,
   });
 
   for (const r of deployResult.results) {
