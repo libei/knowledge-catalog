@@ -42,9 +42,12 @@ cli.command('push', 'Push catalog entries')
    .option('--force', 'Force push changes')
    .option('--validate-only', 'Only validate changes without applying')
    .option('--semantic-model <name>', 'Semantic model name to push (default: all models in the workspace)')
+   .option('--target <target>', 'Deploy destination: bq, kc, both (default: bq)')
    .option('--dry-run', 'Validate and print the generated DDL without executing it')
-   .option('--project <id>', 'Override the BigQuery project for the property graph')
+   .option('--project <id>', 'Override the destination project (shared by bq and kc)')
    .option('--dataset <id>', 'Override the BigQuery dataset for the property graph')
+   .option('--location <id>', 'Override the Knowledge Catalog location')
+   .option('--entry-group <id>', 'Override the Knowledge Catalog entry group')
    .option('--transpile', 'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL via sqlglot before compiling')
    .action(async (options) => {
       let exitCode = 1;

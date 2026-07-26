@@ -23,12 +23,57 @@ export interface InitOptions {
 export interface PushOptions {
   force?: boolean;
   validateOnly?: boolean;
-  // Semantic-model (BigQuery) push options:
+  // Semantic-model push options:
   semanticModel?: string;  // limit to a single model by name (default: all)
-  dryRun?: boolean;    // compile + print the DDL without executing
-  project?: string;    // override the BigQuery project for the graph + table refs
-  dataset?: string;    // override the BigQuery dataset for the graph + table refs
+  target?: string;     // deploy destination: bq | kc | both (default: bq)
+  dryRun?: boolean;    // compile + report without executing
+  project?: string;    // shared: override the destination project (bq + kc)
+  dataset?: string;    // BigQuery only: override the dataset for the graph + table refs
+  location?: string;   // KC only: override the Knowledge Catalog location
+  entryGroup?: string; // KC only: override the Knowledge Catalog entry group
   transpile?: boolean; // rewrite vendor-dialect expressions to GoogleSQL first
+}
+
+
+// A concrete, single deploy destination. `--target both` expands to both, in
+// BigQuery-first order.
+export type DeployTarget = 'bigquery' | 'kc';
+
+// Parses the `--target` flag into the ordered list of destinations to deploy to.
+// Accepts `bq`/`bigquery`, `kc`, and `both`; defaults to BigQuery when unset. The
+// `both` order (BigQuery first) encodes the fail-fast rule: if BigQuery fails, KC
+// is never attempted.
+export function resolveTargets(raw?: string): DeployTarget[] {
+  switch (raw) {
+    case undefined:
+    case 'bq':
+    case 'bigquery':
+      return ['bigquery'];
+    case 'kc':
+      return ['kc'];
+    case 'both':
+      return ['bigquery', 'kc'];
+    default:
+      throw new Error(`--target must be one of: bq, kc, both (got '${raw}')`);
+  }
+}
+
+
+export interface KcCoords {
+  project: string;
+  location: string;
+  entryGroup: string;
+}
+
+// Resolves the Knowledge Catalog destination for a push: each segment is the
+// push-time flag if given, else the corresponding part of the catalog.yaml scope
+// triple (the default). The scope is a default, not a lock.
+export function resolveKcCoords(source: SemanticModelSource, o: PushOptions): KcCoords {
+  return {
+    project: o.project ?? source.projectId,
+    location: o.location ?? source.locationId,
+    entryGroup: o.entryGroup ?? source.entryGroupId,
+  };
 }
 
 
@@ -126,11 +171,15 @@ export async function push(options: PushOptions): Promise<number> {
 }
 
 
-// Compiles the local semantic model YAML files to BigQuery property-graph DDL and
-// (unless --dry-run/--validate-only) deploys them. Models are read from
-// catalog/<entryGroupId>/.
+// Loads the local semantic model YAML files and deploys each model to the
+// selected target(s) (`--target bq|kc|both`, default bq). Models are read from
+// catalog/<entryGroupId>/. Targets run in BigQuery-first order; a target failure
+// stops the push before the next target (so a BigQuery failure skips KC).
 async function pushSemanticModel(source: SemanticModelSource, options: PushOptions,
                                  ctx: context.ApiContext): Promise<number> {
+  // Validate the target selection first, so a bad `--target` fails fast.
+  const targets = resolveTargets(options.target);
+
   const dir = path.join('catalog', source.entryGroupId);
   if (!fs.existsSync(dir)) {
     console.error(`Error: semantic model directory '${dir}' does not exist. Run 'kcmd init --semantic-model' first.`);
@@ -182,9 +231,46 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
     return 1;
   }
 
+  // Warn about coordinate flags that don't apply to the selected target(s).
+  // `--project` is shared, so it is never warned.
+  const targetSet = new Set(targets);
+  if (!targetSet.has('bigquery') && options.dataset !== undefined) {
+    console.warn('warning: --dataset is ignored for the kc target');
+  }
+  if (!targetSet.has('kc')) {
+    if (options.location !== undefined) {
+      console.warn('warning: --location is ignored for the bigquery target');
+    }
+    if (options.entryGroup !== undefined) {
+      console.warn('warning: --entry-group is ignored for the bigquery target');
+    }
+  }
+
+  for (const target of targets) {
+    const ok = target === 'bigquery'
+      ? await pushToBigQuery(models, options, ctx, dryRun)
+      : await pushToKnowledgeCatalog(source, models, options, dryRun);
+    // Fail-fast: because targets run BigQuery-first, a BigQuery failure stops the
+    // push before Knowledge Catalog is attempted.
+    if (!ok) {
+      return 1;
+    }
+  }
+
+  if (dryRun) {
+    console.log('\nDry run complete; no changes were applied.');
+  }
+  return 0;
+}
+
+
+// Deploys the models to BigQuery and reports per-model results. Returns whether
+// the whole target succeeded.
+async function pushToBigQuery(models: kcmd.semantic.SemanticModel[], options: PushOptions,
+                              ctx: context.ApiContext, dryRun: boolean): Promise<boolean> {
   const client = new kcmd.bigquery.BigQueryClient(ctx);
   console.log(dryRun
-    ? 'Compiling semantic model(s) (dry run)...'
+    ? 'Compiling semantic model(s) for BigQuery (dry run)...'
     : 'Pushing semantic model(s) to BigQuery...');
 
   const deployResult = await kcmd.semantic.deployBigQuery(client, models, {
@@ -209,11 +295,31 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
     }
   }
 
-  if (!deployResult.ok) {
-    return 1;
+  return deployResult.ok;
+}
+
+
+// Deploys the models to Knowledge Catalog and reports per-model results. Returns
+// whether the whole target succeeded. The destination is the catalog.yaml scope
+// triple with any `--project`/`--location`/`--entry-group` overrides applied.
+async function pushToKnowledgeCatalog(source: SemanticModelSource,
+                                      models: kcmd.semantic.SemanticModel[],
+                                      options: PushOptions, dryRun: boolean): Promise<boolean> {
+  const coords = resolveKcCoords(source, options);
+  console.log(dryRun
+    ? 'Compiling semantic model(s) for Knowledge Catalog (dry run)...'
+    : 'Pushing semantic model(s) to Knowledge Catalog...');
+
+  const deployResult = await kcmd.semantic.deployKnowledgeCatalog(models, { ...coords, dryRun });
+
+  for (const r of deployResult.results) {
+    for (const w of r.warnings) {
+      console.warn(`warning [${r.model}]: ${w}`);
+    }
+    if (r.error) {
+      console.error(`Failed to deploy model '${r.model}' to Knowledge Catalog: ${r.error}`);
+    }
   }
-  if (dryRun) {
-    console.log('\nDry run complete; no changes were applied.');
-  }
-  return 0;
+
+  return deployResult.ok;
 }
