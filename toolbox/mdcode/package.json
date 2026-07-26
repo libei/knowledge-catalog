@@ -11,14 +11,15 @@
     ".": "./build/ts/kcmd/index.js"
   },
   "scripts": {
-    "build:libts": "npx tsc -p src/libts/tsconfig.json",
-    "build:tool": "npx bun build --compile --outfile dist/kcmd src/tool/main.ts",
+    "setup": "npm install && npm run build",
+    "build:libts": "tsc -p src/libts/tsconfig.json",
+    "build:tool": "bun build --compile --outfile dist/kcmd src/tool/main.ts",
     "build": "npm run build:libts && npm run build:tool",
-    "compile": "npx tsc --noEmit",
-    "test:libts": "npx bun test ./tests/libts/scenarios.ts",
-    "test:semantic": "npx bun test ./tests/libts/semantic/",
+    "compile": "tsc --noEmit",
+    "test:libts": "bun test ./tests/libts/scenarios.ts",
+    "test:semantic": "bun test ./tests/libts/semantic/",
     "test": "npm run test:libts && npm run test:semantic",
-    "x:mcp": "npx @modelcontextprotocol/inspector dist/kcmd mcp"
+    "x:mcp": "mcp-inspector dist/kcmd mcp"
   },
   "keywords": [],
   "author": "",

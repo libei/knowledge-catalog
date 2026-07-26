@@ -6,6 +6,26 @@ Users and agents can author, manage, and enrich metadata artifacts using develop
 
 More details are in the [docs/concept.md](docs/concept.md).
 
+## Getting started
+
+Build the `kcmd` CLI from source and put it on your PATH:
+
+```bash
+git clone https://github.com/googlecloudplatform/knowledge-catalog
+cd knowledge-catalog/toolbox/mdcode
+
+npm install          # install dependencies (required before building)
+npm run build        # type-check + compile the standalone ./dist/kcmd binary
+npm link             # expose `kcmd` on your PATH (symlinks the built binary)
+
+gcloud auth application-default login   # kcmd uses gcloud for auth tokens
+kcmd --help
+```
+
+`npm run setup` is shorthand for `npm install && npm run build`. If you'd rather
+not `npm link`, add the build output to your PATH instead:
+`export PATH="$PWD/dist:$PATH"`.
+
 ## Key Features
 
 * Intuitive human and agent-friendly representation of metadata as source code in YAML and markdown files. Artifacts are organized in a hierarchical manner mirroring the resource hierarchy of data and metadata assets.
@@ -198,16 +218,17 @@ NOTE: The server uses `gcloud` to obtain authentication tokens, so ensure you ar
 
 ### Setup
 
+See [Getting started](#getting-started) to clone, install, and build. In one
+step from `toolbox/mdcode`:
+
 ```bash
-git clone https://github.com/googlecloudplatform/knowledge-catalog
-cd toolbox/mdcode
-npm install
+npm run setup        # npm install && npm run build
 ```
 
 ### Build
 
 ```bash
-npm run build
+npm run build        # or: npm run compile   (type-check only, no binary)
 ```
 
 ### Test
