@@ -4,7 +4,7 @@
 // network, no GCP clients.
 
 import { describe, test, expect } from 'bun:test';
-import { resolveTargets, resolveKcCoords, PushOptions } from '../../../src/tool/commands';
+import { resolveTargets, resolveKcCoords, unusedFlagWarnings, PushOptions } from '../../../src/tool/commands';
 import { SemanticModelSource } from '../../../src/libts/sources/semantic-model';
 import { deployKnowledgeCatalog } from '../../../src/libts/semantic/kc';
 import { SemanticModel } from '../../../src/libts/semantic/ir';
@@ -66,6 +66,37 @@ describe('resolveKcCoords', () => {
     expect(resolveKcCoords(scope(), o)).toEqual({
       project: 'flag-proj', location: 'us', entryGroup: 'eg2',
     });
+  });
+});
+
+describe('unusedFlagWarnings', () => {
+  test('no warnings when no coordinate flags are set', () => {
+    expect(unusedFlagWarnings(['bigquery'], {})).toEqual([]);
+    expect(unusedFlagWarnings(['kc'], {})).toEqual([]);
+  });
+
+  test('bigquery-only flags warn on a kc-only target', () => {
+    expect(unusedFlagWarnings(['kc'], { dataset: 'ds', transpile: true })).toEqual([
+      '--dataset is ignored for the kc target',
+      '--transpile is ignored for the kc target',
+    ]);
+  });
+
+  test('kc-only flags warn on a bigquery-only target', () => {
+    expect(unusedFlagWarnings(['bigquery'], { location: 'eu', entryGroup: 'eg' })).toEqual([
+      '--location is ignored for the bigquery target',
+      '--entry-group is ignored for the bigquery target',
+    ]);
+  });
+
+  test('both target warns for nothing — every flag applies somewhere', () => {
+    expect(unusedFlagWarnings(['bigquery', 'kc'],
+      { dataset: 'ds', transpile: true, location: 'eu', entryGroup: 'eg' })).toEqual([]);
+  });
+
+  test('--project is shared and never warned', () => {
+    expect(unusedFlagWarnings(['bigquery'], { project: 'p' })).toEqual([]);
+    expect(unusedFlagWarnings(['kc'], { project: 'p' })).toEqual([]);
   });
 });
 

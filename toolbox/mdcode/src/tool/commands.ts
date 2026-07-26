@@ -77,6 +77,25 @@ export function resolveKcCoords(source: SemanticModelSource, o: PushOptions): Kc
 }
 
 
+// Returns the messages for flags that don't apply to any selected target, so the
+// user learns a flag had no effect. `--project` is shared by both targets, so it
+// is never warned; `--dataset`/`--transpile` are BigQuery-only and `--location`/
+// `--entry-group` are Knowledge Catalog-only.
+export function unusedFlagWarnings(targets: DeployTarget[], o: PushOptions): string[] {
+  const set = new Set(targets);
+  const warnings: string[] = [];
+  if (!set.has('bigquery')) {
+    if (o.dataset !== undefined) warnings.push('--dataset is ignored for the kc target');
+    if (o.transpile) warnings.push('--transpile is ignored for the kc target');
+  }
+  if (!set.has('kc')) {
+    if (o.location !== undefined) warnings.push('--location is ignored for the bigquery target');
+    if (o.entryGroup !== undefined) warnings.push('--entry-group is ignored for the bigquery target');
+  }
+  return warnings;
+}
+
+
 export async function init(options: InitOptions): Promise<number> {
   const ctx = context.ApiContext.default();
 
@@ -231,19 +250,9 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
     return 1;
   }
 
-  // Warn about coordinate flags that don't apply to the selected target(s).
-  // `--project` is shared, so it is never warned.
-  const targetSet = new Set(targets);
-  if (!targetSet.has('bigquery') && options.dataset !== undefined) {
-    console.warn('warning: --dataset is ignored for the kc target');
-  }
-  if (!targetSet.has('kc')) {
-    if (options.location !== undefined) {
-      console.warn('warning: --location is ignored for the bigquery target');
-    }
-    if (options.entryGroup !== undefined) {
-      console.warn('warning: --entry-group is ignored for the bigquery target');
-    }
+  // Warn about flags that don't apply to the selected target(s).
+  for (const w of unusedFlagWarnings(targets, options)) {
+    console.warn(`warning: ${w}`);
   }
 
   for (const target of targets) {
