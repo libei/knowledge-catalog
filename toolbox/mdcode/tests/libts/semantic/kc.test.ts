@@ -140,7 +140,7 @@ describe('undefined-valued fields are omitted, set ones are kept', () => {
 
 
 describe('dangling and empty references are warned, not silently dropped', () => {
-  test('a relationship to an unknown entity is omitted with a warning', () => {
+  test('a relationship to an unknown entity is dropped from both the links and the model aspect', () => {
     const model: SemanticModel = {
       ...SALES,
       relationships: [
@@ -149,10 +149,13 @@ describe('dangling and empty references are warned, not silently dropped', () =>
           destination: { entity: 'unknown', joinKeys: { relationshipColumns: ['y'], entityColumns: ['y'] } } },
       ],
     };
-    const { entryLinks, warnings } = generateCatalogResources(model, OPTS);
+    const { entries, entryLinks, warnings } = generateCatalogResources(model, OPTS);
     expect(entryLinks).toHaveLength(0);
+    // The model aspect must not advertise an edge whose endpoint has no entry.
+    const anchor = entries.find(e => e.entryType.endsWith('/semantic-model'))!;
+    expect(anchor.aspects?.['dataplex-types.global.semantic-model'].data?.relationships).toBeUndefined();
     expect(warnings).toContain(
-      "relationship 'bad': references unknown entity 'unknown'; entry link omitted");
+      "relationship 'bad': references unknown entity 'unknown'; relationship omitted (no entry link, absent from model aspect)");
   });
 
   test('a measure referencing an unknown entity is still emitted, with a warning', () => {
@@ -174,6 +177,50 @@ describe('dangling and empty references are warned, not silently dropped', () =>
     const { warnings } = generateCatalogResources(model, OPTS);
     expect(warnings).toContain(
       "entity 'e': no keys; the semantic-entity aspect will have an empty key list");
+  });
+});
+
+
+describe('colliding entry/link ids are skipped, not silently overwritten', () => {
+  test('two entities whose names normalize to the same id emit only one entry, with a warning', () => {
+    // 'order items' and 'order_items' both slug to 'order_items' -> the same
+    // entry id. Emitting both would have the second overwrite the first on write.
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [
+        { name: 'order items', dataSource: { table: 'a' }, keys: ['k'], fields: [] },
+        { name: 'order_items', dataSource: { table: 'b' }, keys: ['k'], fields: [] },
+      ],
+      relationships: [], metrics: [],
+    };
+    const { entries, warnings } = generateCatalogResources(model, OPTS);
+    const collided = entries.filter(e => e.name.endsWith('/entries/m.entities.order_items'));
+    expect(collided).toHaveLength(1);
+    expect(warnings).toContain(
+      "entity 'order_items': generated entry id 'm.entities.order_items' duplicates an earlier one; " +
+      "skipped (rename to avoid overwriting it on publish)");
+  });
+
+  test('two relationships whose names normalize to the same id emit only one link, with a warning', () => {
+    const model: SemanticModel = {
+      ...SALES,
+      relationships: [
+        { name: 'orders customers',
+          source:      { entity: 'orders',    joinKeys: { relationshipColumns: ['customer_id'], entityColumns: ['customer_id'] } },
+          destination: { entity: 'customers', joinKeys: { relationshipColumns: ['customer_id'], entityColumns: ['customer_id'] } } },
+        { name: 'orders_customers',
+          source:      { entity: 'orders',    joinKeys: { relationshipColumns: ['customer_id'], entityColumns: ['customer_id'] } },
+          destination: { entity: 'customers', joinKeys: { relationshipColumns: ['customer_id'], entityColumns: ['customer_id'] } } },
+      ],
+    };
+    const { entries, entryLinks, warnings } = generateCatalogResources(model, OPTS);
+    expect(entryLinks).toHaveLength(1);
+    // The model aspect stays consistent with the emitted links: only one accepted.
+    const anchor = entries.find(e => e.entryType.endsWith('/semantic-model'))!;
+    expect(anchor.aspects?.['dataplex-types.global.semantic-model'].data?.relationships).toHaveLength(1);
+    expect(warnings).toContain(
+      "relationship 'orders_customers': generated entry link id 'sales.relationships.orders_customers' " +
+      "duplicates an earlier one; skipped (rename to avoid overwriting it on publish)");
   });
 });
 
