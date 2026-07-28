@@ -84,31 +84,35 @@ export function generateCatalogResources(model: SemanticModel,
 
   const names = new Namer(opts);
   const known = new Set(entities.map(e => e.name));
+
+  // Entry and entry-link IDs must be unique within their Dataplex collection
+  // (entries / entryLinks). Two source names that normalize to the same id (see
+  // slug), or exact duplicates the loader did not reject, would otherwise emit
+  // two resources with the same name — and the later write would silently
+  // overwrite the earlier. Track emitted ids and skip a collision with a warning
+  // rather than publish an overwrite.
+  const seenEntryIds = new Set<string>();
+  const seenLinkIds = new Set<string>();
+
+  // The model entry is the anchor and the parent of every entity/measure entry,
+  // so it must be created first. That ordering is encoded structurally: it is
+  // always entries[0] (unshifted in below), and the publisher creates entries in
+  // array order. Its id is reserved up front so nothing else can claim it.
+  const modelEntryName = names.entry(names.modelId(model));
+  claim(seenEntryIds, names.modelId(model), 'entry', `model '${model.name}'`, warnings);
+
   const entries: Entry[] = [];
 
-  // The model entry is the anchor/parent for the entity and measure entries. Its
-  // aspect also carries the model-level relationship structure (join keys, edge
-  // properties) that an EntryLink cannot hold.
-  const modelEntry: Entry = {
-    name: names.entry(names.modelId(model)),
-    entryType: names.typeName('entry', 'semantic-model'),
-    entrySource: source(model.name, model.description),
-    aspects: aspectMap(names, 'semantic-model', compact({
-      name: model.name,
-      description: model.description,
-      relationships: relationships.length ? relationships.map(relationshipData) : undefined,
-    })),
-  };
-  entries.push(modelEntry);
-
   for (const entity of entities) {
+    const entityId = names.entityId(model, entity);
+    if (!claim(seenEntryIds, entityId, 'entry', `entity '${entity.name}'`, warnings)) continue;
     if (!entity.keys || !entity.keys.length) {
       warnings.push(`entity '${entity.name}': no keys; the semantic-entity aspect will have an empty key list`);
     }
     entries.push({
-      name: names.entry(names.entityId(model, entity)),
+      name: names.entry(entityId),
       entryType: names.typeName('entry', 'semantic-entity'),
-      parentEntry: modelEntry.name,
+      parentEntry: modelEntryName,
       entrySource: source(entity.name, entity.description),
       aspects: aspectMap(names, 'semantic-entity', compact({
         keys: entity.keys ?? [],
@@ -121,6 +125,8 @@ export function generateCatalogResources(model: SemanticModel,
   }
 
   for (const metric of metrics) {
+    const measureId = names.measureId(model, metric);
+    if (!claim(seenEntryIds, measureId, 'entry', `metric '${metric.name}'`, warnings)) continue;
     // A measure names the entities it spans. Flag references the model does not
     // declare rather than silently emitting a dangling entry reference.
     const refs = (metric.entities ?? []);
@@ -131,9 +137,9 @@ export function generateCatalogResources(model: SemanticModel,
         `${unknown.map(e => `'${e}'`).join(', ')}; still emitted (reference may not resolve)`);
     }
     entries.push({
-      name: names.entry(names.measureId(model, metric)),
+      name: names.entry(measureId),
       entryType: names.typeName('entry', 'semantic-measure'),
-      parentEntry: modelEntry.name,
+      parentEntry: modelEntryName,
       entrySource: source(metric.name, metric.description),
       aspects: aspectMap(names, 'semantic-measure', compact({
         expression: metric.expression,
@@ -145,21 +151,27 @@ export function generateCatalogResources(model: SemanticModel,
     });
   }
 
-  // Each relationship becomes one EntryLink (the KC-native graph edge). The join
-  // keys / edge properties already travel in the model aspect above; the link is
-  // the traversable structure. Drop (with a warning) a link whose endpoints the
-  // model does not declare, since the reference could not resolve.
+  // Each relationship becomes one EntryLink (the KC-native graph edge). Only a
+  // relationship whose endpoints both resolve to a declared entity is emitted; one
+  // with an unknown endpoint is dropped from BOTH the links and the model aspect
+  // (below), so the model aspect never advertises an edge to an entity that has no
+  // entry. The accepted set feeds the model aspect's join-key detail, which the
+  // endpoint-only EntryLink cannot carry.
   const entryLinks: EntryLink[] = [];
+  const acceptedRels: Relationship[] = [];
   for (const rel of relationships) {
     const dangling = [rel.source?.entity, rel.destination?.entity].filter(e => !e || !known.has(e));
     if (dangling.length) {
       warnings.push(
         `relationship '${rel.name}': references unknown entity ` +
-        `${dangling.map(e => `'${e ?? ''}'`).join(', ')}; entry link omitted`);
+        `${dangling.map(e => `'${e ?? ''}'`).join(', ')}; relationship omitted (no entry link, absent from model aspect)`);
       continue;
     }
+    const linkId = names.relationshipId(model, rel);
+    if (!claim(seenLinkIds, linkId, 'entry link', `relationship '${rel.name}'`, warnings)) continue;
+    acceptedRels.push(rel);
     entryLinks.push({
-      name: names.link(names.relationshipId(model, rel)),
+      name: names.link(linkId),
       entryLinkType: names.typeName('entryLink', 'semantic-relationship'),
       entryReferences: [
         { name: names.entry(names.entityIdFor(model, rel.source.entity)), type: 'SOURCE' },
@@ -167,6 +179,22 @@ export function generateCatalogResources(model: SemanticModel,
       ],
     });
   }
+
+  // The anchor carries the model-level relationship structure (join keys, edge
+  // properties) an EntryLink cannot hold, built from the accepted set so it stays
+  // consistent with the emitted links. Unshifted so it is created before its
+  // children (see the ordering note above).
+  const modelEntry: Entry = {
+    name: modelEntryName,
+    entryType: names.typeName('entry', 'semantic-model'),
+    entrySource: source(model.name, model.description),
+    aspects: aspectMap(names, 'semantic-model', compact({
+      name: model.name,
+      description: model.description,
+      relationships: acceptedRels.length ? acceptedRels.map(relationshipData) : undefined,
+    })),
+  };
+  entries.unshift(modelEntry);
 
   return { entries, entryLinks, warnings: dedupe(warnings) };
 }
@@ -270,6 +298,13 @@ function sourceData(ds: DataSource | undefined): Record<string, any> | undefined
 
 // Wraps one aspect's data as the single-entry aspect map keyed by the client's
 // `project.location.type` reference form, with the fully-qualified aspectType.
+//
+// NOTE: the `data` field names produced by the callers (e.g. `joinKeys`,
+// `relationshipColumns`, `expressionDialect`, `dataSource`) are the emitter's
+// contract with the server-side `semantic-*` aspect-type schemas. Those schemas
+// do not exist yet; when they land, the field names here must match them exactly
+// or writes will fail aspect-schema validation. The golden tests pin this shape
+// so any schema-driven rename is a visible, reviewable diff.
 function aspectMap(names: Namer, type: string, data: Record<string, any>): Record<string, Aspect> {
   return { [names.aspectRef(type)]: { aspectType: names.typeName('aspect', type), data } };
 }
@@ -289,6 +324,21 @@ function compact<T extends Record<string, any>>(obj: T): T {
     if (v !== undefined) out[k] = v;
   }
   return out as T;
+}
+
+// Records a generated resource id in `seen`, returning true when it is new. On a
+// repeat it warns and returns false so the caller can skip that resource: two
+// resources sharing one name would otherwise have the later write silently
+// overwrite the earlier one on publish.
+function claim(seen: Set<string>, id: string, kind: string, label: string, warnings: string[]): boolean {
+  if (seen.has(id)) {
+    warnings.push(
+      `${label}: generated ${kind} id '${id}' duplicates an earlier one; ` +
+      `skipped (rename to avoid overwriting it on publish)`);
+    return false;
+  }
+  seen.add(id);
+  return true;
 }
 
 // Entry/link IDs allow letters, numbers, underscores, hyphens, and periods; map
