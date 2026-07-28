@@ -1,0 +1,247 @@
+{
+  "entries": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-model",
+      "entrySource": {
+        "displayName": "vendor_sales",
+        "description": "Orders and customers with vendor-dialect expressions"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-model": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
+          "data": {
+            "name": "vendor_sales",
+            "description": "Orders and customers with vendor-dialect expressions",
+            "relationships": [
+              {
+                "name": "orders_to_customer",
+                "source": {
+                  "entity": "orders",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "o_orderkey"
+                    ],
+                    "entityColumns": [
+                      "o_orderkey"
+                    ]
+                  }
+                },
+                "destination": {
+                  "entity": "customer",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "o_custkey"
+                    ],
+                    "entityColumns": [
+                      "c_custkey"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.entities.orders",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales",
+      "entrySource": {
+        "displayName": "orders",
+        "description": "One row per order"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "o_orderkey"
+            ],
+            "description": "One row per order",
+            "source": {
+              "project": "samples",
+              "dataset": "tpch",
+              "table": "orders"
+            },
+            "fields": [
+              {
+                "name": "o_orderkey",
+                "expression": "o_orderkey"
+              },
+              {
+                "name": "o_custkey",
+                "expression": "o_custkey"
+              },
+              {
+                "name": "order_status_label",
+                "expression": "IFF(orders.o_orderstatus = 'F', 'fulfilled', 'open')",
+                "description": "Human-readable order status",
+                "expressionDialect": "SNOWFLAKE"
+              },
+              {
+                "name": "clerk_name",
+                "expression": "NVL(orders.o_clerk, 'unknown')",
+                "expressionDialect": "SNOWFLAKE"
+              },
+              {
+                "name": "comment_text",
+                "expression": "orders.o_comment::text",
+                "expressionDialect": "POSTGRES"
+              },
+              {
+                "name": "price_float",
+                "expression": "orders.o_totalprice::double",
+                "expressionDialect": "DATABRICKS"
+              },
+              {
+                "name": "due_date",
+                "expression": "DATEADD(day, 7, orders.o_orderdate)",
+                "expressionDialect": "SNOWFLAKE"
+              },
+              {
+                "name": "ship_days",
+                "expression": "DATEDIFF(day, orders.o_orderdate, orders.o_shipdate)",
+                "expressionDialect": "SNOWFLAKE"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.entities.customer",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales",
+      "entrySource": {
+        "displayName": "customer"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "c_custkey"
+            ],
+            "source": {
+              "project": "samples",
+              "dataset": "tpch",
+              "table": "customer"
+            },
+            "fields": [
+              {
+                "name": "c_custkey",
+                "expression": "c_custkey"
+              },
+              {
+                "name": "phone_is_numeric",
+                "expression": "REGEXP_LIKE(customer.c_phone, '[0-9]+')",
+                "expressionDialect": "SNOWFLAKE"
+              },
+              {
+                "name": "is_auto_segment",
+                "expression": "customer.c_mktsegment ILIKE 'AUTO%'",
+                "expressionDialect": "POSTGRES"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.measures.total_revenue",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales",
+      "entrySource": {
+        "displayName": "total_revenue",
+        "description": "Total order revenue (portable control expression)"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(orders.o_totalprice)",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.entities.orders"
+            ],
+            "description": "Total order revenue (portable control expression)"
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.measures.fulfilled_revenue",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales",
+      "entrySource": {
+        "displayName": "fulfilled_revenue",
+        "description": "Revenue from fulfilled orders"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(IFF(orders.o_orderstatus = 'F', orders.o_totalprice, 0))",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.entities.orders"
+            ],
+            "description": "Revenue from fulfilled orders",
+            "expressionDialect": "SNOWFLAKE"
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.measures.avg_price_known",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales",
+      "entrySource": {
+        "displayName": "avg_price_known",
+        "description": "Average order price, treating NULL as zero"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "AVG(NVL(orders.o_totalprice, 0))",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.entities.orders"
+            ],
+            "description": "Average order price, treating NULL as zero",
+            "expressionDialect": "SNOWFLAKE"
+          }
+        }
+      }
+    }
+  ],
+  "entryLinks": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/vendor_sales.relationships.orders_to_customer",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.entities.orders",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/vendor_sales.entities.customer",
+          "type": "TARGET"
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    "note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)",
+    "field 'orders.order_status_label': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'SNOWFLAKE' expression verbatim (not transpiled to 'BIGQUERY')",
+    "field 'orders.clerk_name': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'SNOWFLAKE' expression verbatim (not transpiled to 'BIGQUERY')",
+    "field 'orders.comment_text': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'POSTGRES' expression verbatim (not transpiled to 'BIGQUERY')",
+    "field 'orders.price_float': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'DATABRICKS' expression verbatim (not transpiled to 'BIGQUERY')",
+    "field 'orders.due_date': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'SNOWFLAKE' expression verbatim (not transpiled to 'BIGQUERY')",
+    "field 'orders.ship_days': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'SNOWFLAKE' expression verbatim (not transpiled to 'BIGQUERY')",
+    "field 'customer.phone_is_numeric': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'SNOWFLAKE' expression verbatim (not transpiled to 'BIGQUERY')",
+    "field 'customer.is_auto_segment': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'POSTGRES' expression verbatim (not transpiled to 'BIGQUERY')",
+    "metric 'fulfilled_revenue': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'SNOWFLAKE' expression verbatim (not transpiled to 'BIGQUERY')",
+    "metric 'avg_price_known': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'SNOWFLAKE' expression verbatim (not transpiled to 'BIGQUERY')"
+  ]
+}
