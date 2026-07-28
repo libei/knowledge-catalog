@@ -1,0 +1,243 @@
+{
+  "entries": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-model",
+      "entrySource": {
+        "displayName": "sales_graph"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-model": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
+          "data": {
+            "name": "sales_graph",
+            "relationships": [
+              {
+                "name": "orders_customers",
+                "source": {
+                  "entity": "orders",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "order_id"
+                    ],
+                    "entityColumns": [
+                      "order_id"
+                    ]
+                  }
+                },
+                "destination": {
+                  "entity": "customers",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "customer_id"
+                    ],
+                    "entityColumns": [
+                      "customer_id"
+                    ]
+                  }
+                }
+              },
+              {
+                "name": "orderitems_orders",
+                "source": {
+                  "entity": "order_items",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "order_item_id"
+                    ],
+                    "entityColumns": [
+                      "order_item_id"
+                    ]
+                  }
+                },
+                "destination": {
+                  "entity": "orders",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "order_id"
+                    ],
+                    "entityColumns": [
+                      "order_id"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.entities.customers",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph",
+      "entrySource": {
+        "displayName": "customers"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "customer_id"
+            ],
+            "source": {
+              "project": "sqlgen-testing",
+              "dataset": "demo",
+              "table": "customers"
+            },
+            "fields": [
+              {
+                "name": "customer_id",
+                "expression": "customers.customer_id"
+              },
+              {
+                "name": "region",
+                "expression": "customers.region"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.entities.orders",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph",
+      "entrySource": {
+        "displayName": "orders"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "order_id"
+            ],
+            "source": {
+              "project": "sqlgen-testing",
+              "dataset": "demo",
+              "table": "orders"
+            },
+            "fields": [
+              {
+                "name": "order_id",
+                "expression": "orders.order_id"
+              },
+              {
+                "name": "customer_id",
+                "expression": "orders.customer_id"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.entities.order_items",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph",
+      "entrySource": {
+        "displayName": "order_items"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "order_item_id"
+            ],
+            "source": {
+              "project": "sqlgen-testing",
+              "dataset": "demo",
+              "table": "order_items"
+            },
+            "fields": [
+              {
+                "name": "order_item_id",
+                "expression": "order_items.order_item_id"
+              },
+              {
+                "name": "order_id",
+                "expression": "order_items.order_id"
+              },
+              {
+                "name": "amount",
+                "expression": "order_items.amount"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.measures.total_revenue",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph",
+      "entrySource": {
+        "displayName": "total_revenue"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(order_items.amount)",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.entities.order_items"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.measures.order_count",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph",
+      "entrySource": {
+        "displayName": "order_count"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "COUNT(orders.order_id)",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.entities.orders"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "entryLinks": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/sales_graph.relationships.orders_customers",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.entities.orders",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.entities.customers",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/sales_graph.relationships.orderitems_orders",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.entities.order_items",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales_graph.entities.orders",
+          "type": "TARGET"
+        }
+      ]
+    }
+  ],
+  "warnings": []
+}

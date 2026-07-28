@@ -1,0 +1,757 @@
+{
+  "entries": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-model",
+      "entrySource": {
+        "displayName": "tpcds_retail_model",
+        "description": "TPC-DS retail semantic model for sales and customer analytics\n\nUse this semantic model for retail analytics. It provides comprehensive sales, customer, product, and store data. The model supports time-based analysis, customer segmentation, product performance, and store operations metrics."
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-model": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
+          "data": {
+            "name": "tpcds_retail_model",
+            "description": "TPC-DS retail semantic model for sales and customer analytics\n\nUse this semantic model for retail analytics. It provides comprehensive sales, customer, product, and store data. The model supports time-based analysis, customer segmentation, product performance, and store operations metrics.",
+            "relationships": [
+              {
+                "name": "store_sales_to_date",
+                "synonyms": [
+                  "sales date relationship",
+                  "when sale occurred"
+                ],
+                "source": {
+                  "entity": "store_sales",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "ss_item_sk",
+                      "ss_ticket_number"
+                    ],
+                    "entityColumns": [
+                      "ss_item_sk",
+                      "ss_ticket_number"
+                    ]
+                  }
+                },
+                "destination": {
+                  "entity": "date_dim",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "ss_sold_date_sk"
+                    ],
+                    "entityColumns": [
+                      "d_date_sk"
+                    ]
+                  }
+                }
+              },
+              {
+                "name": "store_sales_to_customer",
+                "synonyms": [
+                  "customer purchase relationship",
+                  "who bought"
+                ],
+                "source": {
+                  "entity": "store_sales",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "ss_item_sk",
+                      "ss_ticket_number"
+                    ],
+                    "entityColumns": [
+                      "ss_item_sk",
+                      "ss_ticket_number"
+                    ]
+                  }
+                },
+                "destination": {
+                  "entity": "customer",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "ss_customer_sk"
+                    ],
+                    "entityColumns": [
+                      "c_customer_sk"
+                    ]
+                  }
+                }
+              },
+              {
+                "name": "store_sales_to_item",
+                "synonyms": [
+                  "product sold relationship",
+                  "what was sold"
+                ],
+                "source": {
+                  "entity": "store_sales",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "ss_item_sk",
+                      "ss_ticket_number"
+                    ],
+                    "entityColumns": [
+                      "ss_item_sk",
+                      "ss_ticket_number"
+                    ]
+                  }
+                },
+                "destination": {
+                  "entity": "item",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "ss_item_sk"
+                    ],
+                    "entityColumns": [
+                      "i_item_sk"
+                    ]
+                  }
+                }
+              },
+              {
+                "name": "store_sales_to_store",
+                "synonyms": [
+                  "store location relationship",
+                  "where sale occurred"
+                ],
+                "source": {
+                  "entity": "store_sales",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "ss_item_sk",
+                      "ss_ticket_number"
+                    ],
+                    "entityColumns": [
+                      "ss_item_sk",
+                      "ss_ticket_number"
+                    ]
+                  }
+                },
+                "destination": {
+                  "entity": "store",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "ss_store_sk"
+                    ],
+                    "entityColumns": [
+                      "s_store_sk"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "store_sales",
+        "description": "Fact table containing all store sales transactions"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "ss_item_sk",
+              "ss_ticket_number"
+            ],
+            "description": "Fact table containing all store sales transactions",
+            "synonyms": [
+              "sales transactions",
+              "store purchases",
+              "retail sales",
+              "POS data"
+            ],
+            "source": {
+              "project": "tpcds",
+              "dataset": "public",
+              "table": "store_sales"
+            },
+            "fields": [
+              {
+                "name": "ss_sold_date_sk",
+                "expression": "ss_sold_date_sk",
+                "description": "Foreign key to date dimension",
+                "synonyms": [
+                  "sale date",
+                  "transaction date"
+                ]
+              },
+              {
+                "name": "ss_item_sk",
+                "expression": "ss_item_sk",
+                "description": "Foreign key to item dimension",
+                "synonyms": [
+                  "product",
+                  "item"
+                ]
+              },
+              {
+                "name": "ss_customer_sk",
+                "expression": "ss_customer_sk",
+                "description": "Foreign key to customer dimension",
+                "synonyms": [
+                  "customer",
+                  "buyer"
+                ]
+              },
+              {
+                "name": "ss_store_sk",
+                "expression": "ss_store_sk",
+                "description": "Foreign key to store dimension",
+                "synonyms": [
+                  "store",
+                  "location"
+                ]
+              },
+              {
+                "name": "ss_quantity",
+                "expression": "ss_quantity",
+                "description": "Quantity of items sold",
+                "synonyms": [
+                  "units sold",
+                  "quantity"
+                ]
+              },
+              {
+                "name": "ss_sales_price",
+                "expression": "ss_sales_price",
+                "description": "Sales price per unit",
+                "synonyms": [
+                  "unit price",
+                  "price"
+                ]
+              },
+              {
+                "name": "ss_ext_sales_price",
+                "expression": "ss_ext_sales_price",
+                "description": "Extended sales price (quantity * price)",
+                "synonyms": [
+                  "total price",
+                  "line total"
+                ]
+              },
+              {
+                "name": "ss_net_profit",
+                "expression": "ss_net_profit",
+                "description": "Net profit from the sale",
+                "synonyms": [
+                  "profit",
+                  "margin"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.date_dim",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "date_dim",
+        "description": "Date dimension with calendar attributes"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "d_date_sk"
+            ],
+            "description": "Date dimension with calendar attributes",
+            "synonyms": [
+              "calendar",
+              "dates",
+              "time periods"
+            ],
+            "source": {
+              "project": "tpcds",
+              "dataset": "public",
+              "table": "date_dim"
+            },
+            "fields": [
+              {
+                "name": "d_date_sk",
+                "expression": "d_date_sk",
+                "description": "Surrogate key for date"
+              },
+              {
+                "name": "d_date",
+                "expression": "d_date",
+                "description": "Actual date value\n\nTime dimension.",
+                "synonyms": [
+                  "date",
+                  "calendar date"
+                ]
+              },
+              {
+                "name": "d_year",
+                "expression": "d_year",
+                "description": "Year\n\nTime dimension.",
+                "synonyms": [
+                  "year"
+                ]
+              },
+              {
+                "name": "d_quarter_name",
+                "expression": "d_quarter_name",
+                "description": "Quarter name (e.g., 2024Q1)\n\nTime dimension.",
+                "synonyms": [
+                  "quarter",
+                  "fiscal quarter"
+                ]
+              },
+              {
+                "name": "d_month_name",
+                "expression": "d_month_name",
+                "description": "Month name\n\nTime dimension.",
+                "synonyms": [
+                  "month"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.customer",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "customer",
+        "description": "Customer dimension with demographic information"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "c_customer_sk"
+            ],
+            "description": "Customer dimension with demographic information",
+            "synonyms": [
+              "customers",
+              "shoppers",
+              "buyers"
+            ],
+            "source": {
+              "project": "tpcds",
+              "dataset": "public",
+              "table": "customer"
+            },
+            "fields": [
+              {
+                "name": "c_customer_sk",
+                "expression": "c_customer_sk",
+                "description": "Surrogate key for customer"
+              },
+              {
+                "name": "c_customer_id",
+                "expression": "c_customer_id",
+                "description": "Business key for customer",
+                "synonyms": [
+                  "customer ID",
+                  "customer number"
+                ]
+              },
+              {
+                "name": "c_first_name",
+                "expression": "c_first_name",
+                "description": "Customer first name"
+              },
+              {
+                "name": "c_last_name",
+                "expression": "c_last_name",
+                "description": "Customer last name"
+              },
+              {
+                "name": "customer_full_name",
+                "expression": "c_first_name || ' ' || c_last_name",
+                "description": "Customer full name (computed field)",
+                "synonyms": [
+                  "full name",
+                  "customer name"
+                ]
+              },
+              {
+                "name": "c_email_address",
+                "expression": "c_email_address",
+                "description": "Customer email address",
+                "synonyms": [
+                  "email",
+                  "contact"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.item",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "item",
+        "description": "Item/Product dimension with product attributes"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "i_item_sk"
+            ],
+            "description": "Item/Product dimension with product attributes",
+            "synonyms": [
+              "products",
+              "items",
+              "merchandise"
+            ],
+            "source": {
+              "project": "tpcds",
+              "dataset": "public",
+              "table": "item"
+            },
+            "fields": [
+              {
+                "name": "i_item_sk",
+                "expression": "i_item_sk",
+                "description": "Surrogate key for item"
+              },
+              {
+                "name": "i_item_id",
+                "expression": "i_item_id",
+                "description": "Business key for item",
+                "synonyms": [
+                  "item ID",
+                  "product ID",
+                  "SKU"
+                ]
+              },
+              {
+                "name": "i_item_desc",
+                "expression": "i_item_desc",
+                "description": "Item description",
+                "synonyms": [
+                  "product description",
+                  "item name"
+                ]
+              },
+              {
+                "name": "i_brand",
+                "expression": "i_brand",
+                "description": "Brand name",
+                "synonyms": [
+                  "brand",
+                  "manufacturer"
+                ]
+              },
+              {
+                "name": "i_category",
+                "expression": "i_category",
+                "description": "Item category",
+                "synonyms": [
+                  "product category",
+                  "department"
+                ]
+              },
+              {
+                "name": "i_current_price",
+                "expression": "i_current_price",
+                "description": "Current price of the item",
+                "synonyms": [
+                  "price",
+                  "list price"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "store",
+        "description": "Store dimension with location and store attributes"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "s_store_sk"
+            ],
+            "description": "Store dimension with location and store attributes",
+            "synonyms": [
+              "stores",
+              "retail locations",
+              "branches"
+            ],
+            "source": {
+              "project": "tpcds",
+              "dataset": "public",
+              "table": "store"
+            },
+            "fields": [
+              {
+                "name": "s_store_sk",
+                "expression": "s_store_sk",
+                "description": "Surrogate key for store"
+              },
+              {
+                "name": "s_store_id",
+                "expression": "s_store_id",
+                "description": "Business key for store",
+                "synonyms": [
+                  "store ID",
+                  "store number"
+                ]
+              },
+              {
+                "name": "s_store_name",
+                "expression": "s_store_name",
+                "description": "Store name",
+                "synonyms": [
+                  "store name",
+                  "location name"
+                ]
+              },
+              {
+                "name": "s_city",
+                "expression": "s_city",
+                "description": "City where store is located",
+                "synonyms": [
+                  "city",
+                  "location"
+                ]
+              },
+              {
+                "name": "s_state",
+                "expression": "s_state",
+                "description": "State where store is located",
+                "synonyms": [
+                  "state",
+                  "region"
+                ]
+              },
+              {
+                "name": "s_number_employees",
+                "expression": "s_number_employees",
+                "description": "Number of employees at the store",
+                "synonyms": [
+                  "employee count",
+                  "staff size"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.measures.total_sales",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "total_sales",
+        "description": "Total sales revenue across all transactions"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(store_sales.ss_ext_sales_price)",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales"
+            ],
+            "description": "Total sales revenue across all transactions",
+            "synonyms": [
+              "total revenue",
+              "gross sales",
+              "sales amount"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.measures.total_profit",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "total_profit",
+        "description": "Total net profit from store sales"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(store_sales.ss_net_profit)",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales"
+            ],
+            "description": "Total net profit from store sales",
+            "synonyms": [
+              "net profit",
+              "total earnings",
+              "profit"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.measures.customer_lifetime_value",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "customer_lifetime_value",
+        "description": "Average lifetime sales value per customer"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(store_sales.ss_ext_sales_price) / COUNT(DISTINCT customer.c_customer_sk)",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales",
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.customer"
+            ],
+            "description": "Average lifetime sales value per customer",
+            "synonyms": [
+              "CLV",
+              "LTV",
+              "customer value",
+              "lifetime revenue"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.measures.sales_by_brand",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "sales_by_brand",
+        "description": "Total sales by brand (requires grouping by item.i_brand)"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(store_sales.ss_ext_sales_price)",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales"
+            ],
+            "description": "Total sales by brand (requires grouping by item.i_brand)",
+            "synonyms": [
+              "brand sales",
+              "brand performance",
+              "brand revenue"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.measures.store_productivity",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model",
+      "entrySource": {
+        "displayName": "store_productivity",
+        "description": "Sales per employee across stores"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(store_sales.ss_ext_sales_price) / NULLIF(SUM(store.s_number_employees), 0)",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales",
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store"
+            ],
+            "description": "Sales per employee across stores",
+            "synonyms": [
+              "sales per employee",
+              "employee productivity",
+              "revenue per employee"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "entryLinks": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds_retail_model.relationships.store_sales_to_date",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.date_dim",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds_retail_model.relationships.store_sales_to_customer",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.customer",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds_retail_model.relationships.store_sales_to_item",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.item",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds_retail_model.relationships.store_sales_to_store",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store_sales",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/tpcds_retail_model.entities.store",
+          "type": "TARGET"
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    "note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)"
+  ]
+}

@@ -1,0 +1,163 @@
+{
+  "entries": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-model",
+      "entrySource": {
+        "displayName": "lineitem",
+        "description": "Line item shipping metrics"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-model": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
+          "data": {
+            "name": "lineitem",
+            "description": "Line item shipping metrics",
+            "relationships": [
+              {
+                "name": "lineitem_to_orders",
+                "source": {
+                  "entity": "lineitem",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "l_orderkey"
+                    ],
+                    "entityColumns": [
+                      "l_orderkey"
+                    ]
+                  }
+                },
+                "destination": {
+                  "entity": "orders",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "l_orderkey"
+                    ],
+                    "entityColumns": [
+                      "o_orderkey"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem.entities.lineitem",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem",
+      "entrySource": {
+        "displayName": "lineitem"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [],
+            "source": {
+              "project": "samples",
+              "dataset": "tpch",
+              "table": "lineitem"
+            },
+            "fields": [
+              {
+                "name": "line_number",
+                "expression": "l_linenumber",
+                "expressionDialect": "DATABRICKS"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem.entities.orders",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem",
+      "entrySource": {
+        "displayName": "orders"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [],
+            "source": {
+              "project": "samples",
+              "dataset": "tpch",
+              "table": "orders"
+            },
+            "fields": []
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem.measures.revenue",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem",
+      "entrySource": {
+        "displayName": "revenue",
+        "description": "Net revenue"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(l_extendedprice * (1 - l_discount))",
+            "entities": [],
+            "description": "Net revenue",
+            "expressionDialect": "DATABRICKS"
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem.measures.order_count",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem",
+      "entrySource": {
+        "displayName": "order_count"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "COUNT(DISTINCT l_orderkey)",
+            "entities": [],
+            "expressionDialect": "DATABRICKS"
+          }
+        }
+      }
+    }
+  ],
+  "entryLinks": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/lineitem.relationships.lineitem_to_orders",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem.entities.lineitem",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/lineitem.entities.orders",
+          "type": "TARGET"
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    "dataset 'lineitem': no primary_key; the entity's KEY will be empty (invalid for graph generation)",
+    "field 'lineitem.line_number': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'DATABRICKS' expression verbatim (not transpiled to 'BIGQUERY')",
+    "dataset 'orders': no primary_key; the entity's KEY will be empty (invalid for graph generation)",
+    "metric 'revenue': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'DATABRICKS' expression verbatim (not transpiled to 'BIGQUERY')",
+    "metric 'revenue': expression references no known entity; it may not be placeable downstream",
+    "metric 'order_count': no 'BIGQUERY' or 'ANSI_SQL' dialect; using 'DATABRICKS' expression verbatim (not transpiled to 'BIGQUERY')",
+    "metric 'order_count': expression references no known entity; it may not be placeable downstream",
+    "entity 'lineitem': no keys; the semantic-entity aspect will have an empty key list",
+    "entity 'orders': no keys; the semantic-entity aspect will have an empty key list"
+  ]
+}

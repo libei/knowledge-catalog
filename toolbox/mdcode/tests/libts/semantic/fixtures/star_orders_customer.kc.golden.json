@@ -1,0 +1,195 @@
+{
+  "entries": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-model",
+      "entrySource": {
+        "displayName": "sales",
+        "description": "Sales orders with customer attributes\n\nUse this model for order analysis."
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-model": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
+          "data": {
+            "name": "sales",
+            "description": "Sales orders with customer attributes\n\nUse this model for order analysis.",
+            "relationships": [
+              {
+                "name": "orders_to_customer",
+                "source": {
+                  "entity": "orders",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "o_orderkey"
+                    ],
+                    "entityColumns": [
+                      "o_orderkey"
+                    ]
+                  }
+                },
+                "destination": {
+                  "entity": "customer",
+                  "joinKeys": {
+                    "relationshipColumns": [
+                      "o_custkey"
+                    ],
+                    "entityColumns": [
+                      "c_custkey"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales.entities.orders",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "orders",
+        "description": "One row per order"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "o_orderkey"
+            ],
+            "description": "One row per order",
+            "source": {
+              "project": "samples",
+              "dataset": "tpch",
+              "table": "orders"
+            },
+            "fields": [
+              {
+                "name": "o_orderkey",
+                "expression": "o_orderkey",
+                "description": "Order identifier"
+              },
+              {
+                "name": "o_custkey",
+                "expression": "o_custkey"
+              },
+              {
+                "name": "o_orderdate",
+                "expression": "o_orderdate",
+                "description": "Order Date\n\nTime dimension.",
+                "synonyms": [
+                  "order date",
+                  "date"
+                ]
+              },
+              {
+                "name": "o_totalprice",
+                "expression": "o_totalprice"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales.entities.customer",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "customer"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "keys": [
+              "c_custkey"
+            ],
+            "source": {
+              "project": "samples",
+              "dataset": "tpch",
+              "table": "customer"
+            },
+            "fields": [
+              {
+                "name": "c_custkey",
+                "expression": "c_custkey"
+              },
+              {
+                "name": "c_name",
+                "expression": "c_name",
+                "description": "Customer name"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales.measures.total_revenue",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "total_revenue",
+        "description": "Total order revenue"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "SUM(orders.o_totalprice)",
+            "entities": [
+              "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales.entities.orders"
+            ],
+            "description": "Total order revenue",
+            "synonyms": [
+              "revenue",
+              "sales"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales.measures.order_count",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-measure",
+      "parentEntry": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "order_count",
+        "description": "Number of orders"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-measure": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-measure",
+          "data": {
+            "expression": "COUNT(*)",
+            "entities": [],
+            "description": "Number of orders"
+          }
+        }
+      }
+    }
+  ],
+  "entryLinks": [
+    {
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/sales.relationships.orders_to_customer",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales.entities.orders",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entries/sales.entities.customer",
+          "type": "TARGET"
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    "note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)",
+    "metric 'order_count': expression references no known entity; it may not be placeable downstream"
+  ]
+}
