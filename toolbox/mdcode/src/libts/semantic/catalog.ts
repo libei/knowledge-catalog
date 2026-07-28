@@ -22,6 +22,20 @@
 //   * An EntryLink carries only its endpoints; a relationship's join keys and edge
 //     properties therefore travel in the `semantic-model` aspect's `relationships`
 //     list (the model-level structure sink) so nothing is dropped.
+//   * EntryLink ids are more restricted than entry ids (lowercase letters, digits,
+//     and hyphens only, starting with a letter) — verified against the live
+//     Dataplex API, which accepts the dotted/underscored `slug` ids for entries
+//     but rejects them for entry links — so link ids use a separate `linkSlug`.
+//
+// Live validation (against real Dataplex): the aspect-data shapes below were
+// confirmed writable — the `semantic-*` aspect types accept them and the nested
+// model-aspect relationship (join keys included) round-trips through a write+read.
+// Two constraints remain server-side: aspect types validate a CLOSED schema (an
+// undeclared data field is rejected), and the `semantic-relationship` entry link
+// *type* is a system type that is not user-creatable and not yet provisioned, so
+// the directed relationship edges emitted here cannot be written until it lands
+// (no predefined link type is both directed and valid over `semantic-entity`
+// endpoints). See kc.ts.
 //
 
 import type { Entry, Aspect } from '../gcp/dataplex';
@@ -49,9 +63,12 @@ export interface EntryReference {
   type: 'SOURCE' | 'TARGET';
 }
 
-// A directed catalog edge between two entries. Not yet part of the Dataplex
-// client surface (no createEntryLink) — defined here so the emitter is complete
-// and the orchestration layer has a typed value to write once the verb lands.
+// A directed catalog edge between two entries. The Dataplex REST API does expose
+// entryLinks.create (verified live), but our CatalogClient does not wrap it yet
+// and the `semantic-relationship` entryLinkType it references is a server-side
+// system type that is not user-creatable and not yet provisioned — so writing
+// these edges is deferred to the orchestration layer. Defined here so the emitter
+// is complete and produces a typed value to write once that type lands.
 export interface EntryLink {
   name: string;                 // full entryLink resource name
   entryLinkType: string;        // full entryLinkType resource name
@@ -248,7 +265,9 @@ class Namer {
     return `${slug(model.name)}.measures.${slug(metric.name)}`;
   }
   relationshipId(model: SemanticModel, rel: Relationship): string {
-    return `${slug(model.name)}.relationships.${slug(rel.name)}`;
+    // Entry link ids are stricter than entry ids (see linkSlug): the dotted
+    // `<model>.relationships.<rel>` form used for entries is rejected for links.
+    return linkSlug(`${model.name}-relationships-${rel.name}`);
   }
 }
 
@@ -341,11 +360,22 @@ function claim(seen: Set<string>, id: string, kind: string, label: string, warni
   return true;
 }
 
-// Entry/link IDs allow letters, numbers, underscores, hyphens, and periods; map
+// Entry IDs allow letters, numbers, underscores, hyphens, and periods; map
 // anything else to an underscore so a model/entity name with spaces or other
 // characters still yields a valid, stable ID.
 function slug(s: string): string {
   return s.replace(/[^A-Za-z0-9_.-]/g, '_');
+}
+
+// Entry LINK IDs are more restricted than entry IDs (confirmed against the live
+// Dataplex API): lowercase letters, digits, and hyphens only, must start with a
+// letter and end alphanumeric. Lowercase, replace every other run with a single
+// hyphen, trim edge hyphens, and prefix a letter if what remains does not start
+// with one. Distinct source names can still collapse to the same id; the caller's
+// collision guard (claim) catches that.
+function linkSlug(s: string): string {
+  const body = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return /^[a-z]/.test(body) ? body : `x-${body}`.replace(/-+$/g, '');
 }
 
 function plural(n: number, one: string, many: string): string {

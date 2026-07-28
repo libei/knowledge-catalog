@@ -211,7 +211,7 @@
   ],
   "entryLinks": [
     {
-      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/sales_graph.relationships.orders_customers",
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/sales-graph-relationships-orders-customers",
       "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
       "entryReferences": [
         {
@@ -225,7 +225,7 @@
       ]
     },
     {
-      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/sales_graph.relationships.orderitems_orders",
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/sales-graph-relationships-orderitems-orders",
       "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
       "entryReferences": [
         {

@@ -351,7 +351,7 @@
   ],
   "entryLinks": [
     {
-      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds_model.relationships.store_sales_to_date_dim",
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds-model-relationships-store-sales-to-date-dim",
       "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
       "entryReferences": [
         {
@@ -365,7 +365,7 @@
       ]
     },
     {
-      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds_model.relationships.store_sales_to_customer",
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds-model-relationships-store-sales-to-customer",
       "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
       "entryReferences": [
         {
@@ -379,7 +379,7 @@
       ]
     },
     {
-      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds_model.relationships.store_sales_to_item",
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds-model-relationships-store-sales-to-item",
       "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
       "entryReferences": [
         {
@@ -393,7 +393,7 @@
       ]
     },
     {
-      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds_model.relationships.store_sales_to_store",
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/tpcds-model-relationships-store-sales-to-store",
       "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
       "entryReferences": [
         {

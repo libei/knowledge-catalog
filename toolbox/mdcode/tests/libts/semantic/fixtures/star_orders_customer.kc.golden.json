@@ -174,7 +174,7 @@
   ],
   "entryLinks": [
     {
-      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/sales.relationships.orders_to_customer",
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/sales-relationships-orders-to-customer",
       "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
       "entryReferences": [
         {
