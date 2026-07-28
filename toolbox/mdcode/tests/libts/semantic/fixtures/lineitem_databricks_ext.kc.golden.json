@@ -135,7 +135,7 @@
   ],
   "entryLinks": [
     {
-      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/lineitem.relationships.lineitem_to_orders",
+      "name": "projects/sqlgen-testing/locations/us-central1/entryGroups/semantic/entryLinks/lineitem-relationships-lineitem-to-orders",
       "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-relationship",
       "entryReferences": [
         {

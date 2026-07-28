@@ -106,7 +106,9 @@ describe('relationships: an EntryLink edge plus join keys in the model aspect', 
   test('one EntryLink per relationship, with SOURCE and TARGET endpoints', () => {
     expect(entryLinks).toHaveLength(1);
     const link = entryLinks[0];
-    expect(link.name).toBe(`${ENTRY_PREFIX}/entryLinks/sales.relationships.orders_customers`);
+    // Entry link ids use the stricter link slug (lowercase, hyphens), not the
+    // dotted entry-id form — the live API rejects dots/underscores in link ids.
+    expect(link.name).toBe(`${ENTRY_PREFIX}/entryLinks/sales-relationships-orders-customers`);
     expect(link.entryLinkType).toBe(`${TYPE_PREFIX}/entryLinkTypes/semantic-relationship`);
     expect(link.entryReferences).toEqual([
       { name: `${ENTRY_PREFIX}/entries/sales.entities.orders`, type: 'SOURCE' },
@@ -219,8 +221,31 @@ describe('colliding entry/link ids are skipped, not silently overwritten', () =>
     const anchor = entries.find(e => e.entryType.endsWith('/semantic-model'))!;
     expect(anchor.aspects?.['dataplex-types.global.semantic-model'].data?.relationships).toHaveLength(1);
     expect(warnings).toContain(
-      "relationship 'orders_customers': generated entry link id 'sales.relationships.orders_customers' " +
+      "relationship 'orders_customers': generated entry link id 'sales-relationships-orders-customers' " +
       "duplicates an earlier one; skipped (rename to avoid overwriting it on publish)");
+  });
+});
+
+
+describe('entry link ids satisfy the (stricter) Dataplex link-id rule', () => {
+  // Verified live: entry link ids allow only lowercase letters, digits, and
+  // hyphens, must start with a letter and end alphanumeric — unlike entry ids,
+  // which accept dots and underscores.
+  const LINK_ID = /^[a-z][a-z0-9-]*[a-z0-9]$/;
+
+  test('a relationship name with spaces, dots, and case yields a compliant link id', () => {
+    const model: SemanticModel = {
+      ...SALES,
+      relationships: [
+        { name: 'Orders.To Customers',
+          source:      { entity: 'orders',    joinKeys: { relationshipColumns: ['customer_id'], entityColumns: ['customer_id'] } },
+          destination: { entity: 'customers', joinKeys: { relationshipColumns: ['customer_id'], entityColumns: ['customer_id'] } } },
+      ],
+    };
+    const { entryLinks } = generateCatalogResources(model, OPTS);
+    const id = entryLinks[0].name.split('/entryLinks/')[1];
+    expect(id).toBe('sales-relationships-orders-to-customers');
+    expect(id).toMatch(LINK_ID);
   });
 });
 

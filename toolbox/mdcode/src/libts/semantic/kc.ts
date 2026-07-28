@@ -12,6 +12,19 @@
 // The seam reports the resolved destination so the plumbing is observable and
 // testable; the actual publish path (and its server-side system types) lands
 // later. See the plan's Follow-ups.
+//
+// What a live run against real Dataplex confirmed the publisher will need (see
+// catalog.ts and the KC-emitter validation notes):
+//   * The `semantic-*` entry/aspect types must be provisioned first; aspect types
+//     validate a CLOSED schema, so their metadataTemplate must match the emitter's
+//     aspect-data field names exactly.
+//   * Entries write via entries.create in array order (model anchor before its
+//     children); a freshly created entry type can lag a few seconds before
+//     entries.create sees it (retry the "may not exist" window).
+//   * Relationship edges need the `semantic-relationship` entry link type, which
+//     is not user-creatable and not yet provisioned — no predefined link type is
+//     both directed and valid over `semantic-entity` endpoints, so the edges wait
+//     on that system type. entries.create is synchronous; type creates are LROs.
 
 import { SemanticModel } from './ir';
 import { DeployResult, ModelDeployResult } from './deploy';
