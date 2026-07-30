@@ -226,8 +226,16 @@ async function pullSemanticModel(source: SemanticModelSource, options: PullOptio
   if (!dryRun) {
     fs.mkdirSync(dir, { recursive: true });
   }
+  const written = new Map<string, string>();  // file path -> first model that claimed it
   for (const model of models) {
     const file = path.join(dir, `${modelFileName(model.name)}.yaml`);
+    // Two distinct model names can slug to the same file (e.g. 'a b' and 'a/b');
+    // warn rather than let the later write silently clobber the earlier one.
+    const claimant = written.get(file);
+    if (claimant !== undefined) {
+      console.warn(`warning: models '${claimant}' and '${model.name}' both map to ${file}; overwriting`);
+    }
+    written.set(file, model.name);
     const yamlText = kcmd.semantic.serializeModel(model);
     if (dryRun) {
       console.log(`\n# ${file}\n${yamlText}`);

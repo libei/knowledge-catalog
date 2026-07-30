@@ -117,6 +117,13 @@ function expressionDoc(expression: string, dialect: string | undefined): Record<
 // Composes the dotted `source` shorthand from the structured DataSource,
 // inverting loader.parseSource. Omits absent project/dataset parts.
 function sourceString(ds: DataSource): string {
+  // A whitespace-bearing table is a verbatim query (loader.parseSource keeps such
+  // a source as-is and never splits it on dots). Emit it verbatim, without a
+  // project/dataset prefix, so it reloads to the same table rather than gluing the
+  // prefix into the query text.
+  if (/\s/.test(ds.table)) {
+    return ds.table;
+  }
   return [ds.project, ds.dataset, ds.table]
     .filter((p): p is string => p !== undefined && p !== '')
     .join('.');

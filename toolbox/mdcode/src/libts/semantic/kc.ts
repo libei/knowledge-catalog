@@ -88,22 +88,37 @@ export interface KcPullResult {
   warnings: string[];
 }
 
+// Upper bound on in-flight aspect-hydration fetches during a pull.
+const HYDRATE_CONCURRENCY = 8;
+
 export async function pullKnowledgeCatalog(
     client: CatalogClient,
     opts: KcPullOptions): Promise<KcPullResult> {
   const destination = `${opts.project}.${opts.location}.${opts.entryGroup}`;
   const warnings: string[] = [];
 
-  const hydrated: Entry[] = [];
+  // Enumerate the group (paging is inherently sequential) and pick the semantic
+  // entries, then hydrate their aspects concurrently: a BASIC list omits aspect
+  // data, so each entry needs its own lookupEntry, and those fetches are
+  // independent. The pool preserves input order so warnings stay deterministic.
+  const targets: { entry: Entry; aspectType: string }[] = [];
   for await (const entry of client.listEntries(opts.project, opts.location, opts.entryGroup)) {
     const aspectType = semanticAspectType(entry.entryType);
-    if (!aspectType) continue;   // not part of a semantic model
+    if (aspectType) targets.push({ entry, aspectType });   // else: not part of a semantic model
+  }
+
+  const fetched = await mapConcurrent(targets, HYDRATE_CONCURRENCY, async ({ entry, aspectType }) => {
     const res = await client.lookupEntry(opts.project, opts.location, entry.name, [aspectType]);
     if (res.status !== 200 || !res.result) {
-      warnings.push(`failed to fetch entry '${entry.name}' (status ${res.status}); skipped`);
-      continue;
+      return { warning: `failed to fetch entry '${entry.name}' (status ${res.status}); skipped` };
     }
-    hydrated.push(res.result);
+    return { entry: res.result };
+  });
+
+  const hydrated: Entry[] = [];
+  for (const r of fetched) {
+    if (r.entry) hydrated.push(r.entry);
+    else if (r.warning) warnings.push(r.warning);
   }
 
   const read = modelsFromCatalogResources(hydrated);
@@ -118,6 +133,23 @@ export async function pullKnowledgeCatalog(
   }
 
   return { models, warnings };
+}
+
+// Maps `items` through `fn` with at most `limit` calls in flight, returning
+// results in input order (so downstream ordering stays deterministic).
+async function mapConcurrent<T, R>(items: T[], limit: number,
+    fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
 }
 
 // The `semantic-*` aspect type name for a semantic entry, derived from its entry

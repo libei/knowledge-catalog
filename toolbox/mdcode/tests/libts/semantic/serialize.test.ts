@@ -119,4 +119,23 @@ describe('serializeModel document shape', () => {
     expect(vdoc.semantic_model[0].metrics[0].expression)
       .toEqual({ dialects: [{ dialect: 'SNOWFLAKE', expression: 'ZEROIFNULL(x)' }] });
   });
+
+  test('emits a verbatim-query source without a project/dataset prefix', () => {
+    // A whitespace-bearing dataSource.table is a query the loader kept verbatim
+    // (and still defaulted project/dataset onto). Serializing must not glue the
+    // prefix into the query with dots, or the reload corrupts the table.
+    const queryModel: SemanticModel = {
+      name: 'q',
+      entities: [{
+        name: 'recent', keys: ['id'], fields: [],
+        dataSource: { project: 'p', dataset: 'd', table: 'SELECT * FROM p.d.raw WHERE ts > 0' },
+      }],
+      relationships: [], metrics: [],
+    };
+    const qdoc = modelDocument(queryModel) as any;
+    expect(qdoc.semantic_model[0].datasets[0].source).toBe('SELECT * FROM p.d.raw WHERE ts > 0');
+
+    const reloaded = loadModels(serializeModel(queryModel), LOAD).models[0];
+    expect(reloaded.entities[0].dataSource.table).toBe('SELECT * FROM p.d.raw WHERE ts > 0');
+  });
 });
