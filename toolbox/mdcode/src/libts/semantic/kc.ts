@@ -26,8 +26,10 @@
 //     both directed and valid over `semantic-entity` endpoints, so the edges wait
 //     on that system type. entries.create is synchronous; type creates are LROs.
 
+import type { CatalogClient, Entry } from '../gcp/dataplex';
 import { SemanticModel } from './ir';
 import { DeployResult, ModelDeployResult } from './deploy';
+import { modelsFromCatalogResources } from './catalog';
 
 export interface KcDeployOptions {
   // The resolved Knowledge Catalog destination (flag overrides applied over the
@@ -59,4 +61,73 @@ export async function deployKnowledgeCatalog(
   }));
 
   return { ok: false, results };
+}
+
+
+// ---------------------------------------------------------------------------
+// Pull: Knowledge Catalog -> Semantic Model IR
+//
+// The read counterpart of the (still-stubbed) publisher above and the inverse of
+// `push`. Unlike the deploy stub this path is live: reading the `semantic-*`
+// entries back needs no server-side type provisioning, only that the entries
+// exist. It enumerates the destination entry group, hydrates each semantic
+// entry's aspect (a BASIC list omits aspect data, so each entry is re-fetched
+// with its aspect type, mirroring CatalogSync.pull), and hands the hydrated
+// entries to the pure reader (catalog.modelsFromCatalogResources).
+// ---------------------------------------------------------------------------
+
+export interface KcPullOptions {
+  project: string;
+  location: string;
+  entryGroup: string;
+  model?: string;   // limit to a single model by name (default: all)
+}
+
+export interface KcPullResult {
+  models: SemanticModel[];
+  warnings: string[];
+}
+
+export async function pullKnowledgeCatalog(
+    client: CatalogClient,
+    opts: KcPullOptions): Promise<KcPullResult> {
+  const destination = `${opts.project}.${opts.location}.${opts.entryGroup}`;
+  const warnings: string[] = [];
+
+  const hydrated: Entry[] = [];
+  for await (const entry of client.listEntries(opts.project, opts.location, opts.entryGroup)) {
+    const aspectType = semanticAspectType(entry.entryType);
+    if (!aspectType) continue;   // not part of a semantic model
+    const res = await client.lookupEntry(opts.project, opts.location, entry.name, [aspectType]);
+    if (res.status !== 200 || !res.result) {
+      warnings.push(`failed to fetch entry '${entry.name}' (status ${res.status}); skipped`);
+      continue;
+    }
+    hydrated.push(res.result);
+  }
+
+  const read = modelsFromCatalogResources(hydrated);
+  warnings.push(...read.warnings);
+
+  let models = read.models;
+  if (opts.model) {
+    models = models.filter(m => m.name === opts.model);
+    if (!models.length) {
+      warnings.push(`no semantic model named '${opts.model}' found in ${destination}`);
+    }
+  }
+
+  return { models, warnings };
+}
+
+// The `semantic-*` aspect type name for a semantic entry, derived from its entry
+// type (the aspect type is the parallel resource in the same project/location).
+// Returns undefined for entries that are not part of a semantic model.
+function semanticAspectType(entryType: string): string | undefined {
+  for (const t of ['semantic-model', 'semantic-entity', 'semantic-measure']) {
+    if (entryType?.endsWith(`/entryTypes/${t}`)) {
+      return entryType.replace('/entryTypes/', '/aspectTypes/');
+    }
+  }
+  return undefined;
 }

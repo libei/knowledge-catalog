@@ -25,16 +25,21 @@ cli.command('init', 'Initialize a new catalog snapshot')
 
 
 cli.command('pull', 'Pull catalog entries')
-   .action(async () => {
+   .option('--semantic-model <name>', 'Semantic model name to pull (default: all models in the entry group)')
+   .option('--dry-run', 'Read and print the serialized YAML without writing files (semantic-model scope)')
+   .option('--project <id>', 'Override the Knowledge Catalog project (semantic-model scope)')
+   .option('--location <id>', 'Override the Knowledge Catalog location (semantic-model scope)')
+   .option('--entry-group <id>', 'Override the Knowledge Catalog entry group (semantic-model scope)')
+   .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.pull();
+        exitCode = await commands.pull(options);
       }
       catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;
       }
-      
+
       process.exit(exitCode);
    });
 
