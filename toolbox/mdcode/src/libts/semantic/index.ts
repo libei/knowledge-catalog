@@ -7,4 +7,5 @@ export * from './bigquery';
 export * from './catalog';
 export * from './deploy';
 export * from './kc';
+export * from './serialize';
 export * from './transpile';

@@ -72,6 +72,9 @@ export class CatalogManifest {
   }
 
   static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
+    if (!fs.existsSync(path)) {
+      throw new Error(`Cannot find catalog manifest at '${path}'`);
+    }
     const content = fs.readFileSync(path, 'utf8');
     const parsed = yaml.parse(content);
     

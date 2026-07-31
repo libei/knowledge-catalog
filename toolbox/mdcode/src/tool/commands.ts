@@ -35,6 +35,16 @@ export interface PushOptions {
 }
 
 
+export interface PullOptions {
+  // Semantic-model (Knowledge Catalog) pull options:
+  semanticModel?: string;  // limit to a single model by name (default: all)
+  dryRun?: boolean;    // read + print the serialized YAML without writing files
+  project?: string;    // override the Knowledge Catalog project
+  location?: string;   // override the Knowledge Catalog location
+  entryGroup?: string; // override the Knowledge Catalog entry group
+}
+
+
 // A concrete, single deploy destination. `--target both` expands to both, in
 // BigQuery-first order.
 export type DeployTarget = 'bigquery' | 'kc';
@@ -65,10 +75,17 @@ export interface KcCoords {
   entryGroup: string;
 }
 
-// Resolves the Knowledge Catalog destination for a push: each segment is the
-// push-time flag if given, else the corresponding part of the catalog.yaml scope
-// triple (the default). The scope is a default, not a lock.
-export function resolveKcCoords(source: SemanticModelSource, o: PushOptions): KcCoords {
+// The subset of push/pull flags that override a Knowledge Catalog coordinate.
+export interface KcCoordOverrides {
+  project?: string;
+  location?: string;
+  entryGroup?: string;
+}
+
+// Resolves the Knowledge Catalog destination for a push/pull: each segment is the
+// command-time flag if given, else the corresponding part of the catalog.yaml
+// scope triple (the default). The scope is a default, not a lock.
+export function resolveKcCoords(source: SemanticModelSource, o: KcCoordOverrides): KcCoords {
   return {
     project: o.project ?? source.projectId,
     location: o.location ?? source.locationId,
@@ -141,9 +158,16 @@ export async function init(options: InitOptions): Promise<number> {
 }
 
 
-export async function pull(): Promise<number> {
+export async function pull(options: PullOptions = {}): Promise<number> {
   const ctx = context.ApiContext.default();
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+
+  const manifest = await kcmd.CatalogManifest.load('catalog.yaml', ctx);
+  if (manifest.source instanceof SemanticModelSource) {
+    return await pullSemanticModel(manifest.source, options, ctx);
+  }
+
+  // Reuse the manifest already loaded above rather than re-loading catalog.yaml.
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx, manifest);
 
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
@@ -159,6 +183,80 @@ export async function pull(): Promise<number> {
     console.error('Error pulling catalog entries:', result.details);
     return 1;
   }
+}
+
+
+// Reads the semantic model(s) back from Knowledge Catalog and writes each as a
+// YAML file in catalog/<entryGroupId>/ (the workspace layout `push` reads from).
+// The destination is the catalog.yaml scope triple with any
+// `--project`/`--location`/`--entry-group` overrides applied.
+//
+// Overwrite policy mirrors the core `pull`: each model file is regenerated from
+// the service (last-write-wins). Locally-authored formatting the loader does not
+// carry into the IR (per-dialect variants, ai_context structure, comments) is not
+// reproduced; `--dry-run` prints the YAML so the overwrite can be previewed
+// before it is applied.
+async function pullSemanticModel(source: SemanticModelSource, options: PullOptions,
+                                 ctx: context.ApiContext): Promise<number> {
+  const coords = resolveKcCoords(source, options);
+  const destination = `${coords.project}.${coords.location}.${coords.entryGroup}`;
+  const dir = path.join('catalog', source.entryGroupId);
+  const dryRun = !!options.dryRun;
+
+  const client = new dataplex.CatalogClient(ctx);
+  console.log(dryRun
+    ? `Reading semantic model(s) from Knowledge Catalog (dry run) [${destination}]...`
+    : `Pulling semantic model(s) from Knowledge Catalog [${destination}]...`);
+
+  const { models, warnings } = await kcmd.semantic.pullKnowledgeCatalog(client, {
+    project: coords.project,
+    location: coords.location,
+    entryGroup: coords.entryGroup,
+    model: options.semanticModel,
+  });
+  for (const w of warnings) {
+    console.warn(`warning: ${w}`);
+  }
+
+  if (!models.length) {
+    console.error(`Error: no semantic models found in ${destination}.`);
+    return 1;
+  }
+
+  if (!dryRun) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const written = new Map<string, string>();  // file path -> first model that claimed it
+  for (const model of models) {
+    const file = path.join(dir, `${modelFileName(model.name)}.yaml`);
+    // Two distinct model names can slug to the same file (e.g. 'a b' and 'a/b');
+    // warn rather than let the later write silently clobber the earlier one.
+    const claimant = written.get(file);
+    if (claimant !== undefined) {
+      console.warn(`warning: models '${claimant}' and '${model.name}' both map to ${file}; overwriting`);
+    }
+    written.set(file, model.name);
+    const yamlText = kcmd.semantic.serializeModel(model);
+    if (dryRun) {
+      console.log(`\n# ${file}\n${yamlText}`);
+    }
+    else {
+      fs.writeFileSync(file, yamlText);
+      console.log(`Wrote ${file}`);
+    }
+  }
+
+  if (dryRun) {
+    console.log('\nDry run complete; no files were written.');
+  }
+  return 0;
+}
+
+
+// Maps a model name to a safe file stem, matching the emitter's entry-id slug so
+// a pulled workspace mirrors the published resource names.
+function modelFileName(name: string): string {
+  return name.replace(/[^A-Za-z0-9_.-]/g, '_');
 }
 
 

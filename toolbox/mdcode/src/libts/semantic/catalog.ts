@@ -40,7 +40,7 @@
 
 import type { Entry, Aspect } from '../gcp/dataplex';
 import { SemanticModel, Entity, Field, Relationship, RelationshipEnd, Metric, DataSource } from './ir';
-import { dedupe } from './expr';
+import { dedupe, referencedEntityNames } from './expr';
 
 // Where the `semantic-*` system entry/aspect/link types live. Option 1 of the KC
 // semantic-model design lands the system types in project `dataplex-types`,
@@ -380,4 +380,202 @@ function linkSlug(s: string): string {
 
 function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
+}
+
+
+// ---------------------------------------------------------------------------
+// Reader: Knowledge Catalog resources -> Semantic Model IR
+//
+// The inverse of generateCatalogResources, used by the `pull` path (kc.ts reads
+// the entries+aspects from Dataplex, this reconstructs the IR, serialize.ts
+// writes it back to YAML). It is a PURE function of already-hydrated entries: the
+// caller is responsible for fetching each entry's `semantic-*` aspect (BASIC list
+// views omit aspect data). Resources are matched by type-name suffix, so a reader
+// does not need to know the system-type project/location the emitter used.
+//
+// Fidelity mirrors the emitter: everything the emitter persisted in aspect data
+// round-trips (keys, data sources, fields, join keys, expressions,
+// expressionDialect, synonyms, descriptions). A measure's `entities` list is
+// re-derived from its expression (as the loader does), not read from the aspect.
+// ---------------------------------------------------------------------------
+
+export interface ReadResult {
+  models: SemanticModel[];
+  warnings: string[];
+}
+
+/**
+ * Reconstructs the Semantic Model IR from Knowledge Catalog entries.
+ *
+ * Groups `semantic-entity` / `semantic-measure` entries under their
+ * `semantic-model` anchor (via `parentEntry`), reading each entry's `semantic-*`
+ * aspect. Entries of other types are ignored. Returns one model per anchor plus
+ * any warnings (missing anchor, orphaned children, entries without their aspect).
+ */
+export function modelsFromCatalogResources(entries: Entry[]): ReadResult {
+  const warnings: string[] = [];
+
+  const anchors = entries.filter(e => semanticType(e) === 'semantic-model');
+  const entityEntries = entries.filter(e => semanticType(e) === 'semantic-entity');
+  const measureEntries = entries.filter(e => semanticType(e) === 'semantic-measure');
+
+  if (!anchors.length) {
+    warnings.push('no semantic-model entry found; nothing to reconstruct');
+    return { models: [], warnings: dedupe(warnings) };
+  }
+
+  // A child belongs to its anchor by parentEntry. When there is exactly one
+  // anchor, children whose parentEntry does not resolve (e.g. a project-id
+  // normalization mismatch) are still attached to it rather than dropped.
+  const anchorNames = new Set(anchors.map(a => a.name));
+  const soleAnchor = anchors.length === 1 ? anchors[0].name : undefined;
+  const childrenOf = (anchorName: string, pool: Entry[]) => pool.filter(e =>
+    e.parentEntry === anchorName || (soleAnchor === anchorName && !anchorNames.has(e.parentEntry ?? '')));
+
+  const models = anchors.map(anchor => {
+    const data = semanticData(anchor, 'semantic-model');
+    const name = (data.name as string) ?? anchor.entrySource?.displayName ?? anchor.name;
+
+    const entities = childrenOf(anchor.name, entityEntries).map(e => readEntity(e, warnings));
+    const entityNames = entities.map(e => e.name);
+    const metrics = childrenOf(anchor.name, measureEntries).map(
+      e => readMetric(e, entityNames, warnings));
+    const relationships = (asArray(data.relationships)).map(readRelationship);
+
+    const model: SemanticModel = { name, entities, relationships, metrics };
+    if (data.description !== undefined) model.description = data.description as string;
+    return model;
+  });
+
+  // Flag children that resolved to no anchor at all (only possible with multiple
+  // anchors, where the sole-anchor fallback does not apply).
+  for (const child of [...entityEntries, ...measureEntries]) {
+    if (!child.parentEntry || !anchorNames.has(child.parentEntry)) {
+      if (!soleAnchor) {
+        warnings.push(`entry '${child.name}' has no resolvable parent semantic-model; omitted`);
+      }
+    }
+  }
+
+  return { models, warnings: dedupe(warnings) };
+}
+
+
+function readEntity(entry: Entry, warnings: string[]): Entity {
+  const data = semanticData(entry, 'semantic-entity');
+  const name = entry.entrySource?.displayName ?? entry.name;
+  if (!data || !Object.keys(data).length) {
+    warnings.push(`entity '${name}': no semantic-entity aspect data (fetch with the aspect type)`);
+  }
+
+  const entity: Entity = {
+    name,
+    dataSource: readDataSource(data.source),
+    keys: asStringArray(data.keys),
+    fields: asArray(data.fields).map(readField),
+  };
+  if (data.description !== undefined) entity.description = data.description as string;
+  if (asArray(data.synonyms).length) entity.synonyms = asStringArray(data.synonyms);
+  return entity;
+}
+
+
+function readMetric(entry: Entry, entityNames: string[], warnings: string[]): Metric {
+  const data = semanticData(entry, 'semantic-measure');
+  const name = entry.entrySource?.displayName ?? entry.name;
+  if (data.expression === undefined) {
+    warnings.push(`metric '${name}': no expression in semantic-measure aspect`);
+  }
+  const expression = (data.expression as string) ?? '';
+
+  const metric: Metric = {
+    name,
+    expression,
+    // Re-derived from the expression, exactly as the loader computes it, rather
+    // than read from the aspect's (fully-qualified entry-name) references.
+    entities: referencedEntityNames(expression, entityNames),
+  };
+  if (data.description !== undefined) metric.description = data.description as string;
+  if (asArray(data.synonyms).length) metric.synonyms = asStringArray(data.synonyms);
+  if (data.expressionDialect !== undefined) metric.expressionDialect = data.expressionDialect as string;
+  return metric;
+}
+
+
+function readRelationship(rd: any): Relationship {
+  const rel: Relationship = {
+    name: rd.name,
+    source: readEnd(rd.source),
+    destination: readEnd(rd.destination),
+  };
+  if (rd.description !== undefined) rel.description = rd.description;
+  if (asArray(rd.synonyms).length) rel.synonyms = asStringArray(rd.synonyms);
+  if (asArray(rd.keys).length) rel.keys = asStringArray(rd.keys);
+  if (rd.dataSource) rel.dataSource = readDataSource(rd.dataSource);
+  if (asArray(rd.fields).length) rel.fields = asArray(rd.fields).map(readField);
+  return rel;
+}
+
+
+function readEnd(end: any): RelationshipEnd {
+  return {
+    entity: end.entity,
+    joinKeys: {
+      relationshipColumns: asStringArray(end?.joinKeys?.relationshipColumns),
+      entityColumns: asStringArray(end?.joinKeys?.entityColumns),
+    },
+  };
+}
+
+
+function readField(fd: any): Field {
+  const field: Field = { name: fd.name, expression: fd.expression };
+  if (fd.type !== undefined) field.type = fd.type;
+  if (fd.description !== undefined) field.description = fd.description;
+  if (asArray(fd.synonyms).length) field.synonyms = asStringArray(fd.synonyms);
+  if (fd.expressionDialect !== undefined) field.expressionDialect = fd.expressionDialect;
+  return field;
+}
+
+
+function readDataSource(source: any): DataSource {
+  const ds: DataSource = { table: source?.table ?? '' };
+  if (source?.project !== undefined) ds.project = source.project;
+  if (source?.dataset !== undefined) ds.dataset = source.dataset;
+  return ds;
+}
+
+
+// The bare `semantic-*` type name of an entry, matched by entryType suffix so the
+// system-type project/location need not be known. Returns undefined for entries
+// that are not part of a semantic model.
+function semanticType(entry: Entry): 'semantic-model' | 'semantic-entity' | 'semantic-measure' | undefined {
+  for (const t of ['semantic-model', 'semantic-entity', 'semantic-measure'] as const) {
+    if (entry.entryType?.endsWith(`/entryTypes/${t}`)) return t;
+  }
+  return undefined;
+}
+
+
+// The `data` payload of an entry's `semantic-<type>` aspect, matched by the
+// aspect key's `.<type>` suffix or the aspectType's `/aspectTypes/<type>` suffix
+// (robust to whichever system-type project/location the emitter used). Returns an
+// empty object when the aspect is absent.
+function semanticData(entry: Entry, type: string): Record<string, any> {
+  const aspects = entry.aspects ?? {};
+  for (const [key, aspect] of Object.entries(aspects)) {
+    if (key.endsWith(`.${type}`) || aspect.aspectType?.endsWith(`/aspectTypes/${type}`)) {
+      return aspect.data ?? {};
+    }
+  }
+  return {};
+}
+
+
+function asArray(value: any): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asStringArray(value: any): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
 }
