@@ -53,6 +53,8 @@ cli.command('push', 'Push catalog entries')
    .option('--dataset <id>', 'Override the BigQuery dataset for the property graph')
    .option('--location <id>', 'Override the Knowledge Catalog location')
    .option('--entry-group <id>', 'Override the Knowledge Catalog entry group')
+   .option('--type-project <id>', 'Project for the custom semantic-* entry/aspect types (kc target; default: the destination project)')
+   .option('--type-location <id>', 'Location for the custom semantic-* entry/aspect types (kc target; default: global)')
    .option('--transpile', 'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL via sqlglot before compiling')
    .action(async (options) => {
       let exitCode = 1;

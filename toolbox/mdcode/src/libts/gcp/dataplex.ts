@@ -54,6 +54,17 @@ interface EntryList {
   nextPageToken?: string;
 }
 
+// A Dataplex long-running operation. aspectTypes/entryTypes/entryGroups creates
+// return one (they complete in seconds); entries/entryLinks creates are
+// synchronous and return the resource directly.
+export interface Operation {
+  name: string;
+  done?: boolean;
+  error?: { code?: number; message?: string };
+  response?: any;
+  metadata?: any;
+}
+
 
 export class CatalogClient extends api.ApiClient {
 
@@ -193,16 +204,80 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
-  async createEntryGroup(project: string, location: string, 
+  async createEntryGroup(project: string, location: string,
                          entryGroupId: string, entryGroup?: EntryGroup): Promise<api.ApiResult<EntryGroup>> {
     const parent = catalogContainer(project, location);
     const resourceName = `${parent}/entryGroups`;
 
     const params: Record<string, any> = { entryGroupId };
 
-    const res = await this._post<EntryGroup>(resourceName, entryGroup, params);
+    const res = await this._post<Operation>(resourceName, entryGroup ?? {}, params);
+    return this._awaitCreate<EntryGroup>(res);
+  }
 
-    return res;
+  // Creates a custom aspect type. The metadataTemplate defines the CLOSED schema
+  // that aspect data of this type is validated against, so it must match the
+  // shape of the aspects written for it (see semantic/catalog.ts). This is an LRO.
+  async createAspectType(project: string, location: string, aspectTypeId: string,
+                         aspectType: Partial<AspectType>): Promise<api.ApiResult<AspectType>> {
+    const parent = catalogContainer(project, location);
+    const resourceName = `${parent}/aspectTypes`;
+
+    const res = await this._post<Operation>(resourceName, aspectType, { aspectTypeId });
+    return this._awaitCreate<AspectType>(res);
+  }
+
+  // Creates a custom entry type. This is an LRO. A freshly created entry type can
+  // lag a few seconds before entries.create sees it (callers should retry the
+  // "may not exist" propagation window).
+  async createEntryType(project: string, location: string, entryTypeId: string,
+                        entryType: Partial<EntryType> = {}): Promise<api.ApiResult<EntryType>> {
+    const parent = catalogContainer(project, location);
+    const resourceName = `${parent}/entryTypes`;
+
+    const res = await this._post<Operation>(resourceName, entryType, { entryTypeId });
+    return this._awaitCreate<EntryType>(res);
+  }
+
+  // Creates an entry link between two entries in an entry group. Synchronous
+  // (no LRO), like createEntry.
+  async createEntryLink(project: string, location: string, entryGroup: string,
+                        entryLinkId: string, entryLink: Record<string, any>): Promise<api.ApiResult<any>> {
+    const parent = catalogContainer(project, location, entryGroup);
+    const resourceName = `${parent}/entryLinks`;
+
+    return this._post<any>(resourceName, entryLink, { entryLinkId });
+  }
+
+  // Polls a long-running operation until it completes, then returns an ApiResult
+  // shaped like the synchronous creates: the created resource on success, or the
+  // operation's error mapped to a status/message. A response that is not an
+  // operation (e.g. a resource returned directly) is passed through unchanged.
+  async awaitOperation<T>(op: Operation | undefined,
+                          { tries = 40, delayMs = 1500 } = {}): Promise<api.ApiResult<T>> {
+    if (!op?.name || !op.name.includes('/operations/')) {
+      return { status: 200, result: op as unknown as T };
+    }
+    for (let i = 0; i < tries; i++) {
+      const res = await this._get<Operation>(op.name);
+      if (res.status !== 200) return { status: res.status, message: res.message };
+      const done = res.result;
+      if (done?.done) {
+        if (done.error) {
+          return { status: done.error.code ?? 500, message: done.error.message ?? 'operation failed' };
+        }
+        return { status: 200, result: (done.response ?? done) as T };
+      }
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+    return { status: 504, message: `operation timed out: ${op.name}` };
+  }
+
+  // Bridges an LRO-create POST to the resource result: if the POST itself failed
+  // (e.g. 409 ALREADY_EXISTS), return it verbatim; otherwise await the operation.
+  private async _awaitCreate<T>(res: api.ApiResult<Operation>): Promise<api.ApiResult<T>> {
+    if (res.status !== 200) return { status: res.status, message: res.message };
+    return this.awaitOperation<T>(res.result);
   }
 
 }

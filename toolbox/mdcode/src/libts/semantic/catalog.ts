@@ -56,6 +56,116 @@ export interface KcGenerateOptions {
   systemTypeLocation?: string;  // default 'global'
 }
 
+// The bare type ids of the semantic types push provisions and references. Entry
+// types and aspect types share these ids (the aspect type is the parallel
+// resource of the same name); there is one aspect metadataTemplate per id below.
+export const SEMANTIC_TYPE_IDS = ['semantic-model', 'semantic-entity', 'semantic-measure'] as const;
+
+// ---------------------------------------------------------------------------
+// Aspect-type metadataTemplates
+//
+// A Dataplex aspect type validates its aspects against a CLOSED schema (an
+// undeclared data field is rejected). These metadataTemplates are that schema for
+// the `semantic-*` aspect data emitted above — their field names and nesting must
+// match aspectMap's `data` payloads EXACTLY (keys/description/synonyms/source/
+// fields, expression/entities/expressionDialect, name/relationships/join keys).
+// They are the write-side counterpart of the read-side aspect shapes; the live
+// KC-emitter validation confirmed these exact templates accept the emitted data
+// and round-trip it. They live here, beside the emitter, so a schema change and
+// the aspect shape it must match are one reviewable diff.
+// ---------------------------------------------------------------------------
+
+// A metadataTemplate field for an array of strings.
+function tplStrArray(name: string, index: number): Record<string, any> {
+  return { name, type: 'array', index, arrayItems: { name: `${name}_item`, type: 'string' } };
+}
+
+// A record of {project, dataset, table} — the DataSource shape (sourceData).
+function tplSourceRecord(name: string, index: number): Record<string, any> {
+  return {
+    name, type: 'record', index, recordFields: [
+      { name: 'project', type: 'string', index: 1 },
+      { name: 'dataset', type: 'string', index: 2 },
+      { name: 'table', type: 'string', index: 3 },
+    ],
+  };
+}
+
+// A field record — the Field shape (fieldData).
+function tplFieldRecord(index: number, itemName = 'field'): Record<string, any> {
+  return {
+    name: itemName, type: 'record', index, recordFields: [
+      { name: 'name', type: 'string', index: 1 },
+      { name: 'expression', type: 'string', index: 2 },
+      { name: 'type', type: 'string', index: 3 },
+      { name: 'description', type: 'string', index: 4 },
+      tplStrArray('synonyms', 5),
+      { name: 'expressionDialect', type: 'string', index: 6 },
+    ],
+  };
+}
+
+// A relationship end — the RelationshipEnd shape (endData): entity + join keys.
+function tplEndRecord(name: string, index: number): Record<string, any> {
+  return {
+    name, type: 'record', index, recordFields: [
+      { name: 'entity', type: 'string', index: 1 },
+      {
+        name: 'joinKeys', type: 'record', index: 2, recordFields: [
+          tplStrArray('relationshipColumns', 1),
+          tplStrArray('entityColumns', 2),
+        ],
+      },
+    ],
+  };
+}
+
+// The metadataTemplate for each `semantic-*` aspect type, keyed by type id. The
+// publisher (kc.ts) passes the entry for a given id to createAspectType.
+export function aspectTypeTemplates(): Record<string, any> {
+  return {
+    'semantic-measure': {
+      type: 'record', name: 'semantic_measure', recordFields: [
+        { name: 'expression', type: 'string', index: 1 },
+        tplStrArray('entities', 2),
+        { name: 'description', type: 'string', index: 3 },
+        tplStrArray('synonyms', 4),
+        { name: 'expressionDialect', type: 'string', index: 5 },
+      ],
+    },
+    'semantic-entity': {
+      type: 'record', name: 'semantic_entity', recordFields: [
+        tplStrArray('keys', 1),
+        { name: 'description', type: 'string', index: 2 },
+        tplStrArray('synonyms', 3),
+        tplSourceRecord('source', 4),
+        { name: 'fields', type: 'array', index: 5, arrayItems: tplFieldRecord(1) },
+      ],
+    },
+    'semantic-model': {
+      type: 'record', name: 'semantic_model', recordFields: [
+        { name: 'name', type: 'string', index: 1 },
+        { name: 'description', type: 'string', index: 2 },
+        {
+          name: 'relationships', type: 'array', index: 3, arrayItems: {
+            name: 'relationship', type: 'record', recordFields: [
+              { name: 'name', type: 'string', index: 1 },
+              { name: 'description', type: 'string', index: 2 },
+              tplStrArray('synonyms', 3),
+              tplEndRecord('source', 4),
+              tplEndRecord('destination', 5),
+              tplStrArray('keys', 6),
+              tplSourceRecord('dataSource', 7),
+              { name: 'fields', type: 'array', index: 8, arrayItems: tplFieldRecord(1) },
+            ],
+          },
+        },
+      ],
+    },
+  };
+}
+
+
 // One endpoint of an EntryLink. Dataplex EntryLinks carry only references, not
 // free-form data, so relationship metadata lives elsewhere (see file header).
 export interface EntryReference {

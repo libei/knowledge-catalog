@@ -1,13 +1,15 @@
 // Behavior specification for the semantic push target selection: the `--target`
 // parser and the Knowledge Catalog coordinate resolution (src/tool/commands.ts),
-// plus the KC deploy seam stub (src/libts/semantic/kc.ts). All hermetic: no
-// network, no GCP clients.
+// plus the KC deploy seam's dry-run behavior (src/libts/semantic/kc.ts). All
+// hermetic: no network. The full deploy path (provisioning + entry creation
+// against a fake service) is covered in kc.push.test.ts.
 
 import { describe, test, expect } from 'bun:test';
 import { resolveTargets, resolveKcCoords, unusedFlagWarnings, PushOptions } from '../../../src/tool/commands';
 import { SemanticModelSource } from '../../../src/libts/sources/semantic-model';
 import { deployKnowledgeCatalog } from '../../../src/libts/semantic/kc';
 import { SemanticModel } from '../../../src/libts/semantic/ir';
+import { CatalogClientMock } from '../mocks';
 
 function scope(): SemanticModelSource {
   return new SemanticModelSource('semantic-model', 'scope-proj.us.scope_eg');
@@ -100,29 +102,36 @@ describe('unusedFlagWarnings', () => {
   });
 });
 
-describe('deployKnowledgeCatalog (stub seam)', () => {
-  test('reports not-yet-available and echoes the resolved destination', async () => {
-    const res = await deployKnowledgeCatalog(models('sales'),
-      { project: 'p', location: 'us', entryGroup: 'eg' });
-    expect(res.ok).toBe(false);
+describe('deployKnowledgeCatalog (dry run)', () => {
+  test('succeeds, writes nothing, and reports a plan per model', async () => {
+    const client = new CatalogClientMock();
+    const res = await deployKnowledgeCatalog(client, models('sales'),
+      { project: 'p', location: 'us', entryGroup: 'eg', dryRun: true });
+    expect(res.ok).toBe(true);
     expect(res.results).toHaveLength(1);
     expect(res.results[0].model).toBe('sales');
     expect(res.results[0].executed).toBe(false);
-    expect(res.results[0].error).toContain('not yet available');
-    expect(res.results[0].error).toContain("would deploy 'sales' to p.us.eg");
+    expect(res.results[0].error).toBeUndefined();
+    // The plan names the destination and the (default) custom-type coordinates.
+    expect(res.results[0].ddl).toContain('p.us.eg');
+    expect(res.results[0].ddl).toContain('custom types in p.global');
+    // A dry run touches nothing.
+    expect(client.mockEntries).toHaveLength(0);
   });
 
-  test('dry run echoes the destination in a dry-run-styled message', async () => {
-    const res = await deployKnowledgeCatalog(models('sales'),
-      { project: 'p', location: 'us', entryGroup: 'eg', dryRun: true });
-    expect(res.ok).toBe(false);
-    expect(res.results[0].error).toContain('dry run');
-    expect(res.results[0].error).toContain('p.us.eg');
+  test('--type-project/--type-location surface in the plan', async () => {
+    const client = new CatalogClientMock();
+    const res = await deployKnowledgeCatalog(client, models('sales'), {
+      project: 'p', location: 'us', entryGroup: 'eg', dryRun: true,
+      typeProject: 'types-proj', typeLocation: 'us-central1',
+    });
+    expect(res.results[0].ddl).toContain('custom types in types-proj.us-central1');
   });
 
   test('reports one result per model', async () => {
-    const res = await deployKnowledgeCatalog(models('a', 'b'),
-      { project: 'p', location: 'us', entryGroup: 'eg' });
+    const client = new CatalogClientMock();
+    const res = await deployKnowledgeCatalog(client, models('a', 'b'),
+      { project: 'p', location: 'us', entryGroup: 'eg', dryRun: true });
     expect(res.results.map(r => r.model)).toEqual(['a', 'b']);
   });
 });
