@@ -10,6 +10,12 @@ export class CatalogClientMock extends gcp.CatalogClient {
   public mockEntryGroups: Map<string, gcp.EntryGroup> = new Map();
   public mockEntryTypes: Map<string, gcp.EntryType> = new Map();
   public mockAspectTypes: Map<string, gcp.AspectType> = new Map();
+  public mockEntryLinks: any[] = [];
+  // Ids of types/groups newly created via the create* methods, in call order —
+  // so a test can assert what provisioning did.
+  public createdAspectTypes: string[] = [];
+  public createdEntryTypes: string[] = [];
+  public createdEntryGroups: string[] = [];
 
   constructor() {
     super(TEST_API_CONTEXT);
@@ -117,7 +123,7 @@ export class CatalogClientMock extends gcp.CatalogClient {
         if (!existingEntry.aspects) {
           existingEntry.aspects = {};
         }
-        for (const f in aspectKeys ?? []) {
+        for (const f of aspectKeys ?? []) {
           if (entry.aspects?.[f]) {
             existingEntry.aspects[f] = entry.aspects[f];
           }
@@ -138,6 +144,45 @@ export class CatalogClientMock extends gcp.CatalogClient {
       return { status: 200, result: entry };
     }
     return {status: 404, message: 'Not found' };
+  }
+
+  async createEntryGroup(project: string, location: string, entryGroupId: string, entryGroup?: gcp.EntryGroup): Promise<gcp.ApiResult<gcp.EntryGroup>> {
+    const name = `projects/${project}/locations/${location}/entryGroups/${entryGroupId}`;
+    if (this.mockEntryGroups.has(name)) {
+      return { status: 409, message: 'Entry group already exists' };
+    }
+    const group = { name, ...(entryGroup ?? {}) } as gcp.EntryGroup;
+    this.mockEntryGroups.set(name, group);
+    this.createdEntryGroups.push(entryGroupId);
+    return { status: 200, result: group };
+  }
+
+  async createAspectType(project: string, location: string, aspectTypeId: string, aspectType: Partial<gcp.AspectType>): Promise<gcp.ApiResult<gcp.AspectType>> {
+    const name = `projects/${project}/locations/${location}/aspectTypes/${aspectTypeId}`;
+    if (this.mockAspectTypes.has(name)) {
+      return { status: 409, message: 'Aspect type already exists' };
+    }
+    const res = { name, ...(aspectType ?? {}) } as gcp.AspectType;
+    this.mockAspectTypes.set(name, res);
+    this.createdAspectTypes.push(aspectTypeId);
+    return { status: 200, result: res };
+  }
+
+  async createEntryType(project: string, location: string, entryTypeId: string, entryType: Partial<gcp.EntryType> = {}): Promise<gcp.ApiResult<gcp.EntryType>> {
+    const name = `projects/${project}/locations/${location}/entryTypes/${entryTypeId}`;
+    if (this.mockEntryTypes.has(name)) {
+      return { status: 409, message: 'Entry type already exists' };
+    }
+    const res = { name, requiredAspects: [], ...(entryType ?? {}) } as gcp.EntryType;
+    this.mockEntryTypes.set(name, res);
+    this.createdEntryTypes.push(entryTypeId);
+    return { status: 200, result: res };
+  }
+
+  async createEntryLink(project: string, location: string, entryGroup: string, entryLinkId: string, entryLink: Record<string, any>): Promise<gcp.ApiResult<any>> {
+    const link = { entryLinkId, ...entryLink };
+    this.mockEntryLinks.push(link);
+    return { status: 200, result: link };
   }
 }
 

@@ -32,6 +32,10 @@ export interface PushOptions {
   location?: string;   // KC only: override the Knowledge Catalog location
   entryGroup?: string; // KC only: override the Knowledge Catalog entry group
   transpile?: boolean; // rewrite vendor-dialect expressions to GoogleSQL first
+  // KC only: where the custom semantic-* entry/aspect types are created and
+  // referenced. Default: the destination project, location 'global'.
+  typeProject?: string;
+  typeLocation?: string;
 }
 
 
@@ -108,6 +112,8 @@ export function unusedFlagWarnings(targets: DeployTarget[], o: PushOptions): str
   if (!set.has('kc')) {
     if (o.location !== undefined) warnings.push('--location is ignored for the bigquery target');
     if (o.entryGroup !== undefined) warnings.push('--entry-group is ignored for the bigquery target');
+    if (o.typeProject !== undefined) warnings.push('--type-project is ignored for the bigquery target');
+    if (o.typeLocation !== undefined) warnings.push('--type-location is ignored for the bigquery target');
   }
   return warnings;
 }
@@ -356,7 +362,7 @@ async function pushSemanticModel(source: SemanticModelSource, options: PushOptio
   for (const target of targets) {
     const ok = target === 'bigquery'
       ? await pushToBigQuery(models, options, ctx, dryRun)
-      : await pushToKnowledgeCatalog(source, models, options, dryRun);
+      : await pushToKnowledgeCatalog(source, models, options, ctx, dryRun);
     // Fail-fast: because targets run BigQuery-first, a BigQuery failure stops the
     // push before Knowledge Catalog is attempted.
     if (!ok) {
@@ -411,19 +417,33 @@ async function pushToBigQuery(models: kcmd.semantic.SemanticModel[], options: Pu
 // triple with any `--project`/`--location`/`--entry-group` overrides applied.
 async function pushToKnowledgeCatalog(source: SemanticModelSource,
                                       models: kcmd.semantic.SemanticModel[],
-                                      options: PushOptions, dryRun: boolean): Promise<boolean> {
+                                      options: PushOptions, ctx: context.ApiContext,
+                                      dryRun: boolean): Promise<boolean> {
   const coords = resolveKcCoords(source, options);
+  const destination = `${coords.project}.${coords.location}.${coords.entryGroup}`;
+  const client = new dataplex.CatalogClient(ctx);
   console.log(dryRun
-    ? 'Compiling semantic model(s) for Knowledge Catalog (dry run)...'
-    : 'Pushing semantic model(s) to Knowledge Catalog...');
+    ? `Compiling semantic model(s) for Knowledge Catalog (dry run) [${destination}]...`
+    : `Pushing semantic model(s) to Knowledge Catalog [${destination}]...`);
 
-  const deployResult = await kcmd.semantic.deployKnowledgeCatalog(models, { ...coords, dryRun });
+  const deployResult = await kcmd.semantic.deployKnowledgeCatalog(client, models, {
+    ...coords,
+    typeProject: options.typeProject,
+    typeLocation: options.typeLocation,
+    dryRun,
+  });
 
   for (const r of deployResult.results) {
     for (const w of r.warnings) {
       console.warn(`warning [${r.model}]: ${w}`);
     }
-    if (r.error) {
+    if (dryRun) {
+      console.log(`\n-- model: ${r.model}\n${r.ddl}`);
+    }
+    else if (r.executed) {
+      console.log(`Published semantic model '${r.model}' to Knowledge Catalog.`);
+    }
+    else if (r.error) {
       console.error(`Failed to deploy model '${r.model}' to Knowledge Catalog: ${r.error}`);
     }
   }
