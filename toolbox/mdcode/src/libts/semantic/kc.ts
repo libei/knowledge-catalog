@@ -136,42 +136,60 @@ interface ProvisionResult {
 // closed-schema metadataTemplate the emitted aspect data validates against.
 async function provision(client: CatalogClient, opts: KcDeployOptions,
                          typeProject: string, typeLocation: string): Promise<ProvisionResult> {
-  let created = false;
   const templates = aspectTypeTemplates();
 
-  const eg = await client.createEntryGroup(opts.project, opts.location, opts.entryGroup, {} as any);
-  if (isOk(eg)) created = true;
-  else if (!isExists(eg)) return { created, error: `entry group '${opts.entryGroup}': ${errText(eg)}` };
+  // Every create here is independent (entry types carry no required aspects), so
+  // run them concurrently and fold the results rather than serializing 7 LROs.
+  const creates: Array<{ label: string; run: () => Promise<{ status: number; message?: string }> }> = [
+    { label: `entry group '${opts.entryGroup}'`,
+      run: () => client.createEntryGroup(opts.project, opts.location, opts.entryGroup, {} as any) },
+    ...SEMANTIC_TYPE_IDS.map(id => ({
+      label: `aspect type '${id}'`,
+      run: () => client.createAspectType(typeProject, typeLocation, id, { metadataTemplate: templates[id] }),
+    })),
+    ...SEMANTIC_TYPE_IDS.map(id => ({
+      label: `entry type '${id}'`,
+      run: () => client.createEntryType(typeProject, typeLocation, id, {}),
+    })),
+  ];
 
-  for (const id of SEMANTIC_TYPE_IDS) {
-    const res = await client.createAspectType(typeProject, typeLocation, id, { metadataTemplate: templates[id] });
-    if (isOk(res)) created = true;
-    else if (!isExists(res)) return { created, error: `aspect type '${id}': ${errText(res)}` };
-  }
-  for (const id of SEMANTIC_TYPE_IDS) {
-    const res = await client.createEntryType(typeProject, typeLocation, id, {});
-    if (isOk(res)) created = true;
-    else if (!isExists(res)) return { created, error: `entry type '${id}': ${errText(res)}` };
-  }
+  const outcomes = await Promise.all(creates.map(async c => ({ label: c.label, res: await c.run() })));
 
-  return { created };
+  let created = false;
+  let error: string | undefined;
+  for (const { label, res } of outcomes) {
+    if (isOk(res)) created = true;
+    else if (!isExists(res) && !error) error = `${label}: ${errText(res)}`;
+  }
+  return { created, error };
 }
 
-// Creates a model's entries in the given (anchor-first) order. An entry that
-// already exists is updated in place (idempotent re-push). Returns the first
-// error message, or undefined if all entries were written.
+// Creates a model's entries. The anchor (entries[0]) is the parent of every
+// child, so it is written first; the remaining entries are independent and are
+// written concurrently. An entry that already exists is updated in place
+// (idempotent re-push). Returns the first error message, or undefined on success.
 async function createEntries(client: CatalogClient, opts: KcDeployOptions,
                              entries: Entry[]): Promise<string | undefined> {
-  for (const entry of entries) {
-    const entryId = idOf(entry.name);
-    let res = await createEntryWithRetry(client, opts, entryId, entry);
-    if (isExists(res)) {
-      // Idempotent re-push: refresh the existing entry's source + aspects.
-      res = await client.updateEntry(entry, ['entry_source', 'aspects'],
-                                     Object.keys(entry.aspects ?? {}));
-    }
-    if (!isOk(res)) return `entry '${entryId}': ${errText(res)}`;
+  if (!entries.length) return undefined;
+  const [anchor, ...children] = entries;
+  const anchorErr = await writeEntry(client, opts, anchor);
+  if (anchorErr) return anchorErr;
+  const childErrs = await Promise.all(children.map(e => writeEntry(client, opts, e)));
+  return childErrs.find(e => e !== undefined);
+}
+
+// Writes one entry: create, retrying the type-propagation window, then fall back
+// to update-in-place if it already exists. Returns an error message or undefined.
+async function writeEntry(client: CatalogClient, opts: KcDeployOptions,
+                          entry: Entry): Promise<string | undefined> {
+  const entryId = idOf(entry.name);
+  let res = await createEntryWithRetry(client, opts, entryId, entry);
+  if (isExists(res)) {
+    // Idempotent re-push: refresh the existing entry's source + aspects.
+    res = await client.updateEntry(entry, ['entry_source', 'aspects'],
+                                   Object.keys(entry.aspects ?? {}));
   }
+  if (!isOk(res)) return `entry '${entryId}': ${errText(res)}`;
   return undefined;
 }
 
@@ -208,7 +226,7 @@ function planSummary(resources: KcResources, opts: KcDeployOptions,
   const lines = [
     `Knowledge Catalog plan (destination ${dest}, custom types in ${types}):`,
     `  ${resources.entries.length} entr${resources.entries.length === 1 ? 'y' : 'ies'}:`,
-    ...resources.entries.map(e => `    - ${idOf(e.name)} (${typeId(e.entryType)})`),
+    ...resources.entries.map(e => `    - ${idOf(e.name)} (${idOf(e.entryType)})`),
   ];
   if (resources.entryLinks.length) {
     lines.push(`  ${resources.entryLinks.length} relationship edge(s) deferred (see warnings)`);
@@ -222,11 +240,6 @@ function idOf(name: string): string {
   return name.split('/').pop() ?? name;
 }
 
-// The bare type id of a full entryType resource name.
-function typeId(entryType: string): string {
-  return entryType.split('/').pop() ?? entryType;
-}
-
 function isOk(res: { status: number }): boolean {
   return res.status === 200;
 }
@@ -237,9 +250,12 @@ function isExists(res: { status: number; message?: string }): boolean {
   return res.status === 409 || /already exists|alreadyexists/i.test(res.message ?? '');
 }
 
-// A transient "type not visible yet" error worth retrying.
+// A transient "entry type not visible yet" error worth retrying. Matches the
+// propagation phrasing specifically, not a bare "not found" (which also covers a
+// genuinely missing entry group or aspect type — a real, non-transient failure).
 function isPropagating(res: { message?: string }): boolean {
-  return /may not exist|not found/i.test(res.message ?? '');
+  const msg = res.message ?? '';
+  return /may not exist/i.test(msg) || /entry type .*(not found|does not exist)/i.test(msg);
 }
 
 function errText(res: { status: number; message?: string }): string {

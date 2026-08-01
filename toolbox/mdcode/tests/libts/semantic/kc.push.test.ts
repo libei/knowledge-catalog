@@ -144,6 +144,40 @@ describe('deployKnowledgeCatalog (fake service)', () => {
     expect(res.results[0].executed).toBe(false);
     expect(res.results[0].error).toContain('permission denied');
   });
+
+  test('re-push updates existing entries in place with the new aspect data', async () => {
+    // A client that conflicts once an entry exists, so the second push takes the
+    // deployer's update-in-place branch instead of creating a duplicate entry.
+    class ConflictingEntries extends CatalogClientMock {
+      async createEntry(project: string, location: string, entryGroup: string,
+                        entryId: string, entry?: gcp.Entry): Promise<gcp.ApiResult<gcp.Entry>> {
+        const name = `projects/${project}/locations/${location}/entryGroups/${entryGroup}/entries/${entryId}`;
+        if (this.mockEntries.some(e => e.name === name)) {
+          return { status: 409, message: 'Entry already exists' };
+        }
+        return super.createEntry(project, location, entryGroup, entryId, entry);
+      }
+    }
+    const client = new ConflictingEntries();
+    const first = await deployKnowledgeCatalog(client, [salesModel()], OPTS);
+    expect(first.ok).toBe(true);
+    const countAfterFirst = client.mockEntries.length;
+
+    // Second push with the same ids but changed aspect content.
+    const changed = salesModel();
+    changed.description = 'Sales model v2';
+    const second = await deployKnowledgeCatalog(client, [changed], OPTS);
+    expect(second.ok).toBe(true);
+    expect(second.results[0].executed).toBe(true);
+
+    // Updated in place: no duplicate entries, and the new aspect data pulls back.
+    expect(client.mockEntries).toHaveLength(countAfterFirst);
+    const { models } = await pullKnowledgeCatalog(client, {
+      project: OPTS.project, location: OPTS.location, entryGroup: OPTS.entryGroup,
+    });
+    expect(models).toHaveLength(1);
+    expect(models[0].description).toBe('Sales model v2');
+  });
 });
 
 

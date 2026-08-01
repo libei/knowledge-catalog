@@ -258,19 +258,29 @@ export class CatalogClient extends api.ApiClient {
     if (!op?.name || !op.name.includes('/operations/')) {
       return { status: 200, result: op as unknown as T };
     }
+    // A transient poll error (5xx/429) must not fail an in-progress operation:
+    // remember it and keep polling, surfacing it only if the tries run out.
+    let lastErr: api.ApiResult<T> = { status: 504, message: `operation timed out: ${op.name}` };
     for (let i = 0; i < tries; i++) {
       const res = await this._get<Operation>(op.name);
-      if (res.status !== 200) return { status: res.status, message: res.message };
-      const done = res.result;
-      if (done?.done) {
-        if (done.error) {
-          return { status: done.error.code ?? 500, message: done.error.message ?? 'operation failed' };
+      if (res.status === 200) {
+        const done = res.result;
+        if (done?.done) {
+          if (done.error) {
+            return { status: done.error.code ?? 500, message: done.error.message ?? 'operation failed' };
+          }
+          return { status: 200, result: (done.response ?? done) as T };
         }
-        return { status: 200, result: (done.response ?? done) as T };
+      }
+      else if (res.status >= 500 || res.status === 429) {
+        lastErr = { status: res.status, message: res.message };
+      }
+      else {
+        return { status: res.status, message: res.message };
       }
       await new Promise(r => setTimeout(r, delayMs));
     }
-    return { status: 504, message: `operation timed out: ${op.name}` };
+    return lastErr;
   }
 
   // Bridges an LRO-create POST to the resource result: if the POST itself failed

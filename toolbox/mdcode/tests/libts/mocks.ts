@@ -123,7 +123,7 @@ export class CatalogClientMock extends gcp.CatalogClient {
         if (!existingEntry.aspects) {
           existingEntry.aspects = {};
         }
-        for (const f in aspectKeys ?? []) {
+        for (const f of aspectKeys ?? []) {
           if (entry.aspects?.[f]) {
             existingEntry.aspects[f] = entry.aspects[f];
           }
