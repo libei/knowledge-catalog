@@ -1,0 +1,55 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# Exercises the Google-specific and richer-typed loader paths that the other
+# fixtures don't: a model-level GOOGLE custom_extensions block carrying
+# `deploymentTargets`, per-field `datatype`, and a dataset `unique_keys` set.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: sales_typed
+    description: Sales orders with typed fields and a deployment target
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph"]}'
+    datasets:
+      - name: orders
+        source: demo.sales.orders
+        primary_key: [o_orderkey]
+        unique_keys:
+          - [o_orderkey]
+          - [o_ordernumber]
+        fields:
+          - name: o_orderkey
+            datatype: Integer
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderkey
+          - name: o_ordernumber
+            datatype: String
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_ordernumber
+          - name: o_orderdate
+            datatype: Date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderdate
+            dimension:
+              is_time: true
+          - name: o_totalprice
+            datatype: Decimal
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_totalprice
+    metrics:
+      - name: total_revenue
+        datatype: Decimal
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(orders.o_totalprice)
