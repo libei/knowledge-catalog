@@ -39,6 +39,9 @@ const CORPUS = [
   'tpcds_date_edge.yaml',
   'sales_fanout.yaml',
   'vendor_dialects.yaml',
+  'measure_lowering.yaml',
+  'metric_skips.yaml',
+  'keyless_dimension.yaml',
 ];
 
 // Loads a fixture file and generates its property-graph DDL in one step, so a
@@ -184,6 +187,50 @@ describe('a field with no metadata is emitted bare', () => {
     expect(ddl).not.toContain('o_custkey OPTIONS');
   });
 });
+
+
+describe(
+    'measure lowering exposes each operand once (a golden shows the shape; this pins the reuse)',
+    () => {
+      test(
+          'an identical inline operand is exposed as one derived property, reused by both measures',
+          () => {
+            // `fulfilled` and `avg_fulfilled` share the same IF(...) operand;
+            // it must be lowered to a single `fulfilled_input` property, not
+            // duplicated per metric.
+            const {ddl, loadWarnings, genWarnings} =
+                build('measure_lowering.yaml');
+            expect(ddl.match(/AS fulfilled_input/g)?.length).toBe(1);
+            expect(ddl).toContain('MEASURE(SUM(fulfilled_input)) AS fulfilled');
+            expect(ddl).toContain(
+                'MEASURE(AVG(fulfilled_input)) AS avg_fulfilled');
+            expect(ddl).not.toContain('avg_fulfilled_input');
+            // A qualifier inside a string literal is preserved, not stripped as
+            // a column.
+            expect(ddl).toContain('\'orders.note\'');
+            // A single, fully-specified entity places every metric cleanly.
+            expect([...loadWarnings, ...genWarnings]).toEqual([]);
+          });
+    });
+
+
+describe(
+    'unplaceable metrics are skipped with a specific reason (pinned beyond the golden)',
+    () => {
+      test('each skip reason is surfaced verbatim', () => {
+        const {genWarnings} = build('metric_skips.yaml');
+        expect(genWarnings)
+            .toContain(
+                'metric \'clv\' spans multiple tables (orders, customers); skipped (cannot be a single MEASURE)');
+        expect(genWarnings)
+            .toContain(
+                'metric \'status\' collides with an existing property of entity \'orders\'; skipped (rename the metric to avoid a duplicate graph property)');
+        expect(genWarnings.some(
+                   w => w.includes('metric \'spread\'') &&
+                       w.includes('not a single supported aggregate')))
+            .toBe(true);
+      });
+    });
 
 
 describe(
