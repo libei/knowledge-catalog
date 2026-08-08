@@ -180,4 +180,36 @@ describe('pullKnowledgeCatalog: filtering and robustness', () => {
                w => /failed to fetch/i.test(w) && w.includes(metricEntry.name)))
         .toBe(true);
   });
+
+  test('--model hydrates only the target model\'s entries', async () => {
+    const other: SemanticModel = {
+      name: 'inventory',
+      entities:
+          [{name: 'items', dataSource: 'p.d.items', keys: [], fields: []}],
+      relationships: [],
+      metrics: [],
+    };
+    const entries = [...entriesFor(SALES), ...entriesFor(other)];
+    const {lookup} = stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    const {models} = await pullKnowledgeCatalog(cat, {...OPTS, model: 'sales'});
+    expect(models.map(m => m.name)).toEqual(['sales']);
+    // SALES has 3 entries (model + entity + metric); inventory's are never
+    // fetched -- the flag scopes hydration, not just the final result.
+    expect(lookup).toHaveBeenCalledTimes(3);
+  });
+
+  test('--model with no match fetches nothing and warns', async () => {
+    const entries = entriesFor(SALES);
+    const {lookup} = stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    const {models, warnings} =
+        await pullKnowledgeCatalog(cat, {...OPTS, model: 'nope'});
+    expect(models).toHaveLength(0);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(warnings.some(w => /no semantic model named 'nope'/i.test(w)))
+        .toBe(true);
+  });
 });

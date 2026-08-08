@@ -228,3 +228,63 @@ describe('lossy edges are flagged', () => {
         expect(relDoc.from_columns).toEqual(['id']);
       });
 });
+
+
+describe('serialize flags loader-invalid reconstructions', () => {
+  test('a model with no entities warns that datasets is required', () => {
+    const model: SemanticModel = {
+      name: 'empty',
+      entities: [],
+      relationships: [],
+      metrics: [],
+    };
+    const {warnings} = serializeModel(model);
+    expect(warnings.some(w => /no datasets/i.test(w))).toBe(true);
+  });
+
+  test('a field with no expression warns that one is required', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.t',
+        keys: [],
+        fields: [{name: 'orphan'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const {warnings} = serializeModel(model);
+    expect(warnings.some(w => /field 'orphan'.*no expression/i.test(w)))
+        .toBe(true);
+  });
+
+  test(
+      'an imported dialect colliding with the canonical label is relabeled',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [{
+            name: 'orders',
+            dataSource: 'p.d.t',
+            keys: [],
+            fields: [{
+              name: 'amt',
+              expression: 'orders.amt',
+              importedExpression: 'orders.AMT',
+              importedDialect: 'BIGQUERY',
+            }],
+          }],
+          relationships: [],
+          metrics: [],
+        };
+        const doc = modelDocument(model) as any;
+        const labels: string[] =
+            doc.semantic_model[0].datasets[0].fields[0].expression.dialects.map(
+                (d: any) => d.dialect);
+        // No duplicate dialect label: the imported form is relabeled off
+        // BIGQUERY so the loader does not pick between two BIGQUERY entries.
+        expect(new Set(labels).size).toBe(labels.length);
+        expect(labels).toContain('BIGQUERY');
+      });
+});

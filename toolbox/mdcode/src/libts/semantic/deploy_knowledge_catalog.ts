@@ -385,8 +385,25 @@ export async function pullKnowledgeCatalog(
     // else: not part of a semantic model; ignore it.
   }
 
+  // When scoped to one model, hydrate only that model's entries -- its anchor
+  // (matched by name) plus the children pointing at it. A list already carries
+  // entrySource + parentEntry, so this avoids fetching every other model's
+  // aspects. No match short-circuits with just the not-found warning.
+  let scoped = targets;
+  if (opts.model) {
+    scoped = scopeToModel(targets, opts.model);
+    if (!scoped.length) {
+      return {
+        models: [],
+        warnings: [
+          `no semantic model named '${opts.model}' found in ${destination}`
+        ],
+      };
+    }
+  }
+
   const fetched = await mapConcurrent(
-      targets, HYDRATE_CONCURRENCY, async ({entry, aspectTypes}) => {
+      scoped, HYDRATE_CONCURRENCY, async ({entry, aspectTypes}) => {
         const res = await cat.lookupEntry(
             opts.project, opts.location, entry.name, aspectTypes);
         if (res.status !== 200 || !res.result) {
@@ -409,6 +426,8 @@ export async function pullKnowledgeCatalog(
   const read = modelsFromCatalogResources(hydrated);
   warnings.push(...read.warnings);
 
+  // Defense in depth: keep only the requested model even if the reader surfaced
+  // another anchor (e.g. a child whose parentEntry pointed outside the scope).
   let models = read.models;
   if (opts.model) {
     models = models.filter(m => m.name === opts.model);
@@ -444,6 +463,29 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
     default:
       return undefined;
   }
+}
+
+
+// Restricts hydration targets to a single model: the semantic-model anchor
+// whose name (entrySource.displayName, else the entry id) matches `model`, plus
+// every child entry whose parentEntry is that anchor. Uses only list-level
+// fields (no aspect data), so it runs before hydration and avoids fetching
+// unrelated models' aspects. Returns [] when no anchor matches.
+function scopeToModel(
+    targets: {entry: Entry; aspectTypes: string[]}[],
+    model: string): {entry: Entry; aspectTypes: string[]}[] {
+  const anchorNames = new Set(
+      targets
+          .filter(
+              t => t.entry.entryType?.endsWith('/entryTypes/semantic-model'))
+          .filter(
+              t => (t.entry.entrySource?.displayName ?? idOf(t.entry.name)) ===
+                  model)
+          .map(t => t.entry.name));
+  if (!anchorNames.size) return [];
+  return targets.filter(
+      t => anchorNames.has(t.entry.name) ||
+          anchorNames.has(t.entry.parentEntry ?? ''));
 }
 
 

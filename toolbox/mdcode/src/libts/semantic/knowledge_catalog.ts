@@ -553,7 +553,15 @@ function readMetric(
   }
   const exprForRefs = data.expression ?? data.importedExpression ?? '';
   const referenced = referencedEntityNames(exprForRefs, entityNames);
-  if (referenced.length === 1) metric.entity = referenced[0];
+  if (referenced.length === 1) {
+    metric.entity = referenced[0];
+  } else if (exprForRefs && !referenced.length) {
+    // Parity with the loader's convertMetric: an expression that qualifies no
+    // known entity is flagged as potentially unplaceable downstream.
+    warnings.push(
+        `metric '${name}': expression references no known entity; it may not ` +
+        `be placeable downstream`);
+  }
   // The emitter writes a required dataType (defaulting to STRING); STRING maps
   // back to un-typed so the common no-datatype case round-trips to the loader's
   // usual output rather than a spurious explicit String.

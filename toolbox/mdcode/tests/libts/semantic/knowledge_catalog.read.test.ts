@@ -235,3 +235,22 @@ describe('anchor / parent grouping', () => {
     expect(byName.get('b')!.entities.map(e => e.name)).toEqual(['eb']);
   });
 });
+
+
+describe('metric expression referencing no known entity', () => {
+  test('warns that the metric may be unplaceable and leaves it unattached',
+       () => {
+         const model: SemanticModel = {
+           name: 'm',
+           entities:
+               [{name: 'orders', dataSource: 'p.d.o', keys: [], fields: []}],
+           relationships: [],
+           // References `widgets`, which is not an entity of this model.
+           metrics: [{name: 'bogus', expression: 'SUM(widgets.qty)'}],
+         };
+         const {models, warnings} = roundTrip(model);
+         expect(models[0].metrics[0].entity).toBeUndefined();
+         expect(warnings.some(w => /bogus.*references no known entity/i.test(w)))
+             .toBe(true);
+       });
+});

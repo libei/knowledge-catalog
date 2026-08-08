@@ -80,20 +80,30 @@ export function modelDocument(
 
 function modelDoc(
     model: SemanticModel, warnings: string[]): Record<string, any> {
+  // `datasets` is required (min 1) by the loader. A reconstructed model with no
+  // entities (e.g. every entity fetch failed during a pull) would serialize to
+  // a document the loader rejects; emit the (empty) array but flag it so the
+  // lossy edge is visible rather than surfacing later as an opaque load error.
+  const datasets = (model.entities ?? []).map(e => datasetDoc(e, warnings));
+  if (!datasets.length) {
+    warnings.push(
+        `model '${model.name}': no datasets (entities); the document requires ` +
+        `at least one and will not load until an entity is present.`);
+  }
   return compact({
     name: model.name,
     description: model.description,
     ai_context: aiContextDoc(model.aiContext),
     custom_extensions: customExtensionsDoc(model.customExtensions),
-    // `datasets` is required (min 1) by the loader; always emit the array.
-    datasets: (model.entities ?? []).map(datasetDoc),
+    datasets,
     relationships: nonEmpty(
         (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
-    metrics: nonEmpty((model.metrics ?? []).map(metricDoc)),
+    metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
   });
 }
 
-function datasetDoc(entity: Entity): Record<string, any> {
+function datasetDoc(
+    entity: Entity, warnings: string[]): Record<string, any> {
   return compact({
     name: entity.name,
     source: entity.dataSource,
@@ -101,16 +111,22 @@ function datasetDoc(entity: Entity): Record<string, any> {
     unique_keys: nonEmpty(entity.uniqueKeys),
     description: entity.description,
     ai_context: aiContextDoc(entity.aiContext),
-    fields: nonEmpty((entity.fields ?? []).map(fieldDoc)),
+    fields: nonEmpty((entity.fields ?? []).map(f => fieldDoc(f, warnings))),
     custom_extensions: customExtensionsDoc(entity.customExtensions),
   });
 }
 
-function fieldDoc(field: Field): Record<string, any> {
+function fieldDoc(field: Field, warnings: string[]): Record<string, any> {
+  const expression = expressionDoc(
+      field.expression, field.importedExpression, field.importedDialect);
+  if (!expression) {
+    warnings.push(
+        `field '${field.name}': no expression; the loader requires one per ` +
+        `field and the document will not load until it is set.`);
+  }
   return compact({
     name: field.name,
-    expression: expressionDoc(
-        field.expression, field.importedExpression, field.importedDialect),
+    expression,
     datatype: field.type,
     label: field.label,
     dimension: dimensionDoc(field),
@@ -120,13 +136,19 @@ function fieldDoc(field: Field): Record<string, any> {
   });
 }
 
-function metricDoc(metric: Metric): Record<string, any> {
+function metricDoc(metric: Metric, warnings: string[]): Record<string, any> {
   // `entity` is derived by the loader from the expression's entity qualifiers,
   // so it is intentionally not emitted: the loader recomputes it on reload.
+  const expression = expressionDoc(
+      metric.expression, metric.importedExpression, metric.importedDialect);
+  if (!expression) {
+    warnings.push(
+        `metric '${metric.name}': no expression; the loader requires one per ` +
+        `metric and the document will not load until it is set.`);
+  }
   return compact({
     name: metric.name,
-    expression: expressionDoc(
-        metric.expression, metric.importedExpression, metric.importedDialect),
+    expression,
     datatype: metric.type,
     description: metric.description,
     ai_context: aiContextDoc(metric.aiContext),
@@ -173,10 +195,15 @@ function expressionDoc(
     dialects.push({dialect: CANONICAL_DIALECT, expression});
   }
   if (importedExpression !== undefined) {
-    dialects.push({
-      dialect: importedDialect ?? UNKNOWN_IMPORTED_DIALECT,
-      expression: importedExpression,
-    });
+    let label = importedDialect ?? UNKNOWN_IMPORTED_DIALECT;
+    // Never emit two dialect entries under the same label: the loader would
+    // pick between them non-deterministically. If the imported form's dialect
+    // collides with the canonical label already pushed, fall back to the
+    // imported placeholder.
+    if (expression !== undefined && label === CANONICAL_DIALECT) {
+      label = UNKNOWN_IMPORTED_DIALECT;
+    }
+    dialects.push({dialect: label, expression: importedExpression});
   }
   return dialects.length ? {dialects} : undefined;
 }

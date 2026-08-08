@@ -314,13 +314,25 @@ async function pullSemanticModel(
 
   let created = 0;
   let updated = 0;
+  // Guard against two reconstructed models whose names map to the same file
+  // (path-separator sanitizing, or two anchors sharing a display name): the
+  // later write would silently clobber the earlier. Track written paths so the
+  // collision is reported and the dry-run/real counts agree on the repeat.
+  const writtenBy = new Map<string, string>();
   for (const model of result.models) {
     const serialized = serializeModel(model);
     for (const w of serialized.warnings) {
       console.warn(`Warning: [${model.name}] ${w}`);
     }
-    const existed = layout.hasModel(model.name);
     const target = layout.modelPath(model.name);
+    const prior = writtenBy.get(target);
+    if (prior !== undefined && prior !== model.name) {
+      console.warn(
+          `Warning: models '${prior}' and '${model.name}' both map to ` +
+          `${target}; the later overwrites the earlier -- rename one model.`);
+    }
+    const existed = writtenBy.has(target) || layout.hasModel(model.name);
+    writtenBy.set(target, model.name);
     if (options.dryRun) {
       console.log(`  would ${existed ? 'update' : 'create'} ${target}`);
     }
