@@ -12,6 +12,7 @@ import { SemanticModelLayout } from '../libts/layouts/semantic-model';
 import { SemanticModelSource } from '../libts/sources/semantic-model';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
+import { serializeModel } from '../libts/semantic/serialize';
 
 
 export interface InitOptions {
@@ -122,15 +123,20 @@ export async function init(options: InitOptions): Promise<number> {
 }
 
 
-export async function pull(): Promise<number> {
+export interface PullOptions {
+  // Reconstruct + report only; never writes a file. Mirrors push --validate-only.
+  dryRun?: boolean;
+  // Limit the pull to a single model by name (default: all in the entry group).
+  model?: string;
+}
+
+
+export async function pull(options: PullOptions = {}): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
-    console.log(
-      'Semantic-model scope: nothing to pull. Knowledge Catalog resource ' +
-      'pull for the semantic model is not yet implemented.');
-    return 0;
+    return await pullSemanticModel(ctx, snapshot, options);
   }
 
   const catalog = new dataplex.CatalogClient(ctx);
@@ -267,5 +273,67 @@ async function pushKnowledgeCatalog(
     ? 'Validation complete; no changes applied.'
     : `Wrote ${result.created} new and ${result.updated} updated ` +
         `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}.`);
+  return 0;
+}
+
+
+// Pulls the semantic model's Knowledge Catalog entries back into local model
+// documents (catalog/EntryGroups/<entryGroup>/<model>.yaml) and prints the
+// result. The destination coordinates come from the scope
+// (project.location.entryGroup). Overwrite policy matches the core pull:
+// last-write-wins, local-only documents are left untouched (never deleted).
+// Returns a process exit code (0 on success).
+async function pullSemanticModel(
+  ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
+  options: PullOptions): Promise<number> {
+  // The semantic-model source always resolves to the SemanticModel layout
+  // (see createLayout), so these casts are safe.
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+
+  console.log(options.dryRun
+    ? 'Reconstructing semantic model from Knowledge Catalog (dry run)...'
+    : 'Pulling semantic model from Knowledge Catalog...');
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  const result = await kc.pullKnowledgeCatalog(catalog, {
+    project: source.project,
+    location: source.location,
+    entryGroup: source.entryGroup,
+    model: options.model,
+  });
+
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+
+  if (!result.models.length) {
+    console.log('No semantic models found; nothing to pull.');
+    return 0;
+  }
+
+  let created = 0;
+  let updated = 0;
+  for (const model of result.models) {
+    const serialized = serializeModel(model);
+    for (const w of serialized.warnings) {
+      console.warn(`Warning: [${model.name}] ${w}`);
+    }
+    const existed = layout.hasModel(model.name);
+    const target = layout.modelPath(model.name);
+    if (options.dryRun) {
+      console.log(`  would ${existed ? 'update' : 'create'} ${target}`);
+    }
+    else {
+      layout.writeModelDocument(model.name, serialized.yaml);
+      console.log(`  ${existed ? 'updated' : 'created'} ${target}`);
+    }
+    if (existed) updated++;
+    else created++;
+  }
+
+  console.log(options.dryRun
+    ? `Dry run: would write ${created} new and ${updated} updated model document(s).`
+    : `Wrote ${created} new and ${updated} updated model document(s).`);
   return 0;
 }
