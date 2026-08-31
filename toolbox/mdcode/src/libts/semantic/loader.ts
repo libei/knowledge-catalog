@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {AiContext, CustomExtension, DATA_TYPES, Entity, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, ActionParameter, AiContext, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface LoadOptions {
@@ -191,6 +191,51 @@ const metricSchema = z.object({
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
 
+// An action executor: exactly one kind. The open format expresses it as an
+// object with a single kind key (mcp/rest/grpc); we accept the union and enforce
+// the "exactly one" rule in a refinement so the message names the violation.
+const executorSchema =
+    z.object({
+       mcp: z.object({server: z.string(), tool: z.string()}).strict().optional(),
+       rest: z.object({endpoint: z.string(), method: z.string()})
+                 .strict()
+                 .optional(),
+       grpc: z.object({service: z.string(), method: z.string()})
+                 .strict()
+                 .optional(),
+     })
+        .strict()
+        .superRefine((ex, ctx) => {
+          const kinds =
+              (['mcp', 'rest', 'grpc'] as const).filter(k => ex[k] !== undefined);
+          if (kinds.length !== 1) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: kinds.length === 0 ?
+                  `executor requires exactly one kind (mcp, rest, or grpc); none given` :
+                  `executor requires exactly one kind, but ${kinds.length} given ` +
+                      `(${kinds.join(', ')})`,
+            });
+          }
+        });
+
+// An action parameter: a name and an ontology type (an entity name for an object
+// reference, or a scalar DataType). The type is validated against the model in
+// convertAction, not here, so the schema stays a plain string.
+const parameterSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+});
+
+const actionSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  executor: executorSchema,
+  parameters: z.array(parameterSchema).optional(),
+  ai_context: aiContextSchema.optional(),
+  custom_extensions: z.array(customExtensionSchema).optional(),
+});
+
 const modelBase = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -202,6 +247,8 @@ const modelBase = z.object({
   // A native deployment-target key (GOOGLE_VERSION only). Folded into a GOOGLE
   // `custom_extensions` block on the IR after validation (see convertModel).
   deployment_target: z.string().optional(),
+  // Model-level write operations, also GOOGLE_VERSION only (see actionSchema).
+  actions: z.array(actionSchema).optional(),
 });
 
 
@@ -338,6 +385,20 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          ...ce,
        }).strict();
 
+  const parameter = z.object({
+                       name: z.string(),
+                       type: z.string(),
+                     }).strict();
+
+  const action = z.object({
+                    name: z.string(),
+                    description: z.string().optional(),
+                    executor: executorSchema,
+                    parameters: z.array(parameter).optional(),
+                    ai_context: aiContextSchema.optional(),
+                    ...ce,
+                  }).strict();
+
   const model =
       z.object({
          name: z.string(),
@@ -347,9 +408,15 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          relationships: z.array(relationship).optional(),
          metrics: z.array(metric).optional(),
          ...ce,
-         // `deployment_target` is a native extension key: extended profile
-         // only.
-         ...(extended ? {deployment_target: z.string().optional()} : {}),
+         // Native extension keys: extended profile only. `actions` is one of
+         // them because vanilla Ossie has no action construct and no
+         // `custom_extensions` encoding for one, so under OSSIE_VERSION an
+         // `actions` key is rejected as unknown rather than silently dropped.
+         ...(extended ? {
+           deployment_target: z.string().optional(),
+           actions: z.array(action).optional(),
+         } :
+                        {}),
        }).strict();
 
   return z
@@ -384,6 +451,9 @@ type FieldDoc = z.infer<typeof fieldBase>;
 type RelationshipDoc = z.infer<typeof relationshipSchema>;
 type MetricDoc = z.infer<typeof metricSchema>;
 type ModelDoc = z.infer<typeof modelBase>;
+type ActionDoc = z.infer<typeof actionSchema>;
+type ParameterDoc = z.infer<typeof parameterSchema>;
+type ExecutorDoc = z.infer<typeof executorSchema>;
 type CustomExtensionDoc = z.infer<typeof customExtensionSchema>;
 // The whole document, as the convert functions see it: `version` plus the
 // superset model shape (every version's keys, each optional -- modelBase is the
@@ -602,9 +672,17 @@ function convertModel(
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`);
 
+  // Actions reference entities as parameter types, so they are converted after
+  // entities are known.
+  const actions =
+      (m.actions ?? []).map(a => convertAction(a, entityNameSet, warnings));
+  rejectDuplicateNames(
+      actions.map(a => a.name), 'action name', `model '${m.name}'`);
+
   const description = composeDescription(m.description);
 
   const model: SemanticModel = {name: m.name, entities, relationships, metrics};
+  if (actions.length) model.actions = actions;
   if (description) model.description = description;
   const ai = aiContextOrUndefined(m.ai_context);
   if (ai) model.aiContext = ai;
@@ -772,6 +850,64 @@ function convertMetric(
   const ce = toCustomExtensions(mt.custom_extensions);
   if (ce) metric.customExtensions = ce;
   return metric;
+}
+
+// Maps an authored action onto the IR. Parameter types are resolved against the
+// model's entities; a type that is neither a known entity nor a scalar datatype
+// is kept verbatim and warned, so the loader stays lenient (a strict `validate`
+// gate can promote these later).
+function convertAction(
+    a: ActionDoc, entityNames: Set<string>, warnings: string[]): Action {
+  const parameters = (a.parameters ?? [])
+                         .map(p => convertParameter(
+                                  p, a.name, entityNames, warnings));
+  // Parameter names address the inputs at dispatch, so a collision is as
+  // ambiguous as a duplicate field or metric name -- reject it the same way.
+  rejectDuplicateNames(
+      parameters.map(p => p.name), 'parameter name', `action '${a.name}'`);
+
+  const action: Action = {
+    name: a.name,
+    executor: convertExecutor(a.executor),
+    parameters,
+  };
+
+  const description = composeDescription(a.description);
+  if (description) action.description = description;
+  const ai = aiContextOrUndefined(a.ai_context);
+  if (ai) action.aiContext = ai;
+  const ce = toCustomExtensions(a.custom_extensions);
+  if (ce) action.customExtensions = ce;
+  return action;
+}
+
+// Resolves a parameter's authored `type` against the ontology: a known entity
+// name makes it an object reference (isEntityRef = true); a scalar DataType makes
+// it a value (isEntityRef = false). A type that is neither is kept verbatim with
+// isEntityRef left unset, and warned.
+function convertParameter(
+    p: ParameterDoc, actionName: string, entityNames: Set<string>,
+    warnings: string[]): ActionParameter {
+  const param: ActionParameter = { name: p.name, type: p.type };
+  if (entityNames.has(p.type)) {
+    param.isEntityRef = true;
+  } else if ((DATA_TYPES as readonly string[]).includes(p.type)) {
+    param.isEntityRef = false;
+  } else {
+    warnings.push(
+      `action '${actionName}': parameter '${p.name}' type '${p.type}' is ` +
+      `neither a known entity nor a scalar datatype (${DATA_TYPES.join('/')})`);
+  }
+  return param;
+}
+
+// Normalizes the open format's single-key executor object to the IR's tagged
+// union. The schema already guaranteed exactly one kind is present.
+function convertExecutor(ex: ExecutorDoc): Executor {
+  if (ex.mcp) return { kind: 'mcp', mcp: { ...ex.mcp } };
+  if (ex.rest) return { kind: 'rest', rest: { ...ex.rest } };
+  // The schema's refinement guarantees one of mcp/rest/grpc is set.
+  return { kind: 'grpc', grpc: { ...ex.grpc! } };
 }
 
 // Collapses an expression's per-dialect variants into at most two forms:

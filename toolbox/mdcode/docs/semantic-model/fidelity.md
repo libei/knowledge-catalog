@@ -35,6 +35,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Relationship (1:1 / 1:N)                                       | `schema-join` link              | ✓ (name normalized⁶)                           | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
 | Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
 | Entity `extends`                                               | — not modelled                  | —                                              | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
+| Action                                                         | `overview` aspect on the model anchor¹² | ✓¹²                                            | — not represented (write-side)                                       | — not represented (write-side)                                       |
 | `description` (entity / metric / field / relationship)         | entry description / aspect      | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
 | `ai_context.synonyms`                                          | — not stored                    | —                                              | `OPTIONS(synonyms=[...])`                                            | — dropped                                                            |
 | `ai_context.instructions`                                      | `guidelines` aspect⁷            | ✓⁷                                             | into `OPTIONS(description)`                                          | — dropped                                                            |
@@ -95,6 +96,13 @@ agree on every structural row and differ only where a Spanner target has no
     Snowflake form a metric was imported from) and uses that verbatim as the
     fallback when no canonical variant exists. See
     [Model spec §2.5](model_spec.md#25-expressions).
+12. **Actions.** Actions are write-side, so neither graph has a construct for
+    them: the push emits nothing for an action and warns once. They are
+    published to Knowledge Catalog on the model anchor's built-in `overview`
+    aspect — Markdown for a reader plus an embedded JSON block — and `pull`
+    recovers them from that JSON. Prototype scope: an action's `precondition`
+    and `affects` are not modelled, so nothing about them is stored either way.
+    See [Modeling write operations](actions.md).
 
 ## To Knowledge Catalog
 
@@ -125,6 +133,13 @@ templates gain the fields. The catalog never stores `ai_context.synonyms` /
 SQL (`importedExpression` — for example the MAQL or Snowflake form a metric was
 imported from). Those stay in your authored document; the vendor SQL and
 expressions are still used when generating graph SQL.
+
+**Actions** are the exception to "one entry per element": they have no
+`semantic-*` type, so they are stored on the model anchor's built-in `overview`
+aspect — Markdown for a reader plus an embedded JSON block. That JSON is the
+canonical copy, so actions round-trip losslessly through `pull` (name,
+description, executor, and typed parameters). Their `precondition` / `affects`
+are out of scope for this prototype and are not stored.
 
 ¹⁰ What you author is the `expression.dialects[]` list; the graph builds from the canonical (BigQuery/ANSI) variant. `importedExpression` / `importedDialect` are not authored keys — the loader *derives* them from a non-canonical dialect entry (e.g. the MAQL or Snowflake form a metric was imported from) and uses that verbatim as the fallback when no canonical variant exists. See [Model spec §2.5](model_spec.md#25-expressions).
 
@@ -174,6 +189,13 @@ design:
 
 Everything else — keys, relationships, the label hierarchy — matches the
 **→ BigQuery** column above.
+
+**Actions** are the exception to "one entry per element": they have no
+`semantic-*` type, so they are stored on the model anchor's built-in `overview`
+aspect — Markdown for humans plus an embedded JSON block. That JSON is the
+canonical copy, so actions round-trip losslessly through `pull` (name,
+description, executor, and typed parameters). Their `precondition`/`affects` are
+out of scope for this prototype and are not stored.
 
 ## What pull recovers
 

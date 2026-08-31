@@ -40,6 +40,7 @@ describe('loader <-> serialize round trip is IR-stable', () => {
     'sales_google_ext.yaml',
     'vendor_dialects.yaml',
     'sales_bq_graph_target.yaml',
+    'actions_place_order.yaml',
   ];
 
   for (const fixture of fixtures) {
