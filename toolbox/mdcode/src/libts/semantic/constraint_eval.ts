@@ -317,6 +317,9 @@ function renderPredicate(
 //   op         := >= | <= | != | <> | = | > | <
 //   literal    := a number, a single-quoted string, TRUE, FALSE, or NULL
 //
+// `= NULL` and `!= NULL` are read as null tests and lowered to IS NULL /
+// IS NOT NULL; NULL with an ordering operator is refused. See parseComparison.
+//
 // Parentheses, function calls, IN/BETWEEN/LIKE, and metric references are all
 // outside it -- on purpose. Each is a real thing a constraint might want, and
 // each needs a decision (how to evaluate a metric inside a row-level probe, for
@@ -406,10 +409,36 @@ function parseComparison(segment: string): Comparison|{error: string} {
           `<Entity>.<field> reference`,
     };
   }
+
+  const operator = normalizeOperator(found.operator);
+
+  // NULL is not an operand any comparison operator accepts -- GoogleSQL rejects
+  // `col = NULL` outright rather than evaluating it to unknown, so lowering it
+  // verbatim would emit a probe that can never run. An author writing
+  // `Account.ownerId != NULL` means the column must be populated, which SQL
+  // spells IS NOT NULL, so translate the two operators that have a null-test
+  // reading and refuse the four that do not: an ordering comparison against
+  // NULL has no meaning to preserve.
+  if (/^NULL$/i.test(rhs)) {
+    if (operator !== '=' && operator !== '!=') {
+      return {
+        error: `'${text}' compares with NULL using '${operator}', which has no ` +
+            `meaning; write '= NULL' or '!= NULL' to test whether the field is ` +
+            `set`,
+      };
+    }
+    return {
+      entity: left.entity,
+      field: left.field,
+      operator: operator === '=' ? 'IS' : 'IS NOT',
+      literal: 'NULL',
+    };
+  }
+
   return {
     entity: left.entity,
     field: left.field,
-    operator: normalizeOperator(found.operator),
+    operator,
     literal: rhs,
   };
 }
