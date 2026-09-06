@@ -1,0 +1,144 @@
+# A semantic model with a write side, for the action demo.
+#
+# Three entities over a Spanner payments database, one action that moves money
+# between accounts, and the constraints that decide whether a given move is
+# allowed. Every name here is logical: `Account.balance` is a concept, and the
+# column it happens to live in is a binding detail underneath it.
+#
+# The constraints are the point. `NonNegativeBalance` is not documentation and
+# not a database CHECK -- it is part of the model, so anything that reads the
+# model knows the rule, and the runtime enforces it against the uncommitted
+# result of the action before deciding to commit. Each description is written as
+# an instruction to whoever tripped it, because that text is what comes back on
+# a rejection.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: payments
+    description: Accounts, their owners, and the transfers between them
+    datasets:
+      - name: Person
+        source: Person
+        primary_key: [personId]
+        fields:
+          - name: personId
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: person_id}]
+          - name: name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: name}]
+          - name: city
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: city}]
+      - name: Account
+        source: Account
+        primary_key: [accountId]
+        fields:
+          - name: accountId
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: account_id}]
+          - name: ownerId
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: owner_id}]
+          - name: name
+            datatype: String
+            description: The account's display name, e.g. "Alice Checking".
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: name}]
+          - name: balance
+            datatype: Float
+            description: Current cleared balance, in dollars.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: balance}]
+          - name: minimumBalance
+            datatype: Float
+            description: >-
+              The floor this particular account must stay above, separate from
+              the hard zero that applies to every account.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: minimum_balance}]
+          - name: status
+            datatype: String
+            description: OPEN or FROZEN.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: status}]
+      - name: Transfer
+        source: Transfer
+        primary_key: [transferId]
+        fields:
+          - name: transferId
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: transfer_id}]
+          - name: sourceAccountId
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: source_account_id}]
+          - name: targetAccountId
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: target_account_id}]
+          - name: amount
+            datatype: Float
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+    relationships:
+      - name: account_owner
+        from: Account
+        to: Person
+        from_columns: [owner_id]
+        to_columns: [person_id]
+      - name: transfer_source
+        from: Transfer
+        to: Account
+        from_columns: [source_account_id]
+        to_columns: [account_id]
+      - name: transfer_target
+        from: Transfer
+        to: Account
+        from_columns: [target_account_id]
+        to_columns: [account_id]
+    metrics:
+      - name: total_transferred
+        description: Total value moved by the transfers in scope.
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: SUM(Transfer.amount)}]
+    actions:
+      - name: TransferFunds
+        description: >-
+          Move money from one account to another. Both accounts are object
+          references: give an account id or its display name and the runtime
+          resolves it.
+        executor:
+          mcp:
+            server: //agentregistry.googleapis.com/projects/sqlgen-testing/locations/us-central1/mcpServers/payments
+            tool: transfer_funds
+        parameters:
+          - {name: source, type: Account}
+          - {name: target, type: Account}
+          - {name: amount, type: Float}
+        ai_context:
+          instructions: >-
+            Resolve both accounts before calling. If the call is rejected, read
+            the reason: it names the rule that was broken and what to change.
+    constraints:
+      - name: NonNegativeBalance
+        expression: Account.balance >= 0
+        description: >-
+          An account cannot be overdrawn. Transfer a smaller amount, or move
+          money from an account that holds enough.
+      - name: AboveMinimumBalance
+        expression: Account.balance >= Account.minimumBalance
+        description: >-
+          This account has to keep a minimum balance. Move less, or draw from an
+          account with more room above its floor.
+      - name: PositiveAmount
+        expression: Transfer.amount > 0
+        description: >-
+          A transfer has to move a positive amount. To reverse a payment, make a
+          transfer in the other direction.
+      - name: OpenAccountsOnly
+        expression: Account.status != 'FROZEN'
+        description: >-
+          A frozen account cannot send or receive money. Choose a different
+          account, or have this one unfrozen first.

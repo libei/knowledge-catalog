@@ -203,6 +203,13 @@ Like actions, constraints are **not** part of the graph — the push emits nothi
 for them and warns once, then publishes them to **Knowledge Catalog** on the
 model's anchor entry, where a `pull` recovers them.
 
+Enforcing a constraint is a separate job from publishing it, and `demo/action/`
+shows what that looks like: a runtime resolves an action's entity-typed
+arguments, applies the write in a transaction, checks every constraint against
+the uncommitted result, and either commits or rolls back with the violated
+constraint's `description`. That demo also exposes the action over MCP, so an
+agent that gets rejected reads the description and corrects its next call.
+
 ## 2. Push
 
 ```bash
