@@ -198,11 +198,26 @@ describe('lowering an expression the evaluator understands', () => {
     expect(result.probe.sql).toContain('(balance >= -0.5)');
   });
 
-  test('TRUE, FALSE and NULL are literals', () => {
-    for (const literal of ['TRUE', 'FALSE', 'NULL']) {
+  test('TRUE and FALSE are literals', () => {
+    for (const literal of ['TRUE', 'FALSE']) {
       const result = lower(`Account.balance != ${literal}`);
       expect(result.ok).toBe(true);
     }
+  });
+
+  test('a NULL comparison becomes a null test, not a comparison', () => {
+    // GoogleSQL rejects `col != NULL` outright -- it is not a comparison that
+    // evaluates to unknown, it is a query that does not compile -- so lowering
+    // NULL verbatim would emit a probe that can never run. The reading an
+    // author intends by `!= NULL` is IS NOT NULL, so that is what is emitted.
+    const notNull = lower('Account.balance != NULL');
+    if (!notNull.ok) throw new Error(notNull.reason);
+    expect(notNull.probe.sql).toContain('(balance IS NOT NULL)');
+    expect(notNull.probe.sql).not.toContain('!= NULL');
+
+    const isNull = lower('Account.balance = NULL');
+    if (!isNull.ok) throw new Error(isNull.reason);
+    expect(isNull.probe.sql).toContain('(balance IS NULL)');
   });
 
   test('the violation-row cap is configurable', () => {
@@ -276,6 +291,15 @@ describe('refusing an expression the evaluator cannot check', () => {
 
   test('an entity with no key, so a violation could not be attributed', () => {
     expect(reason('Event.amount > 0')).toContain('declares no key');
+  });
+
+  test('NULL with an ordering operator, which has no reading to preserve', () => {
+    for (const op of ['>', '>=', '<', '<=']) {
+      const result = lower(`Account.balance ${op} NULL`);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toContain('NULL');
+    }
   });
 
   test('the refusal always names the constraint', () => {
