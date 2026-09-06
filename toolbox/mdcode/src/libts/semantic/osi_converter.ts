@@ -42,7 +42,7 @@
 
 import * as yaml from 'yaml';
 
-import {Action, AiContext, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -198,6 +198,8 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
     actions:
         nonEmpty((model.actions ?? []).map(a => actionDoc(a, warnings))),
+    constraints: nonEmpty(
+        (model.constraints ?? []).map(c => constraintDoc(c, warnings))),
   });
 }
 
@@ -291,6 +293,20 @@ function actionDoc(action: Action, warnings: string[]): Record<string, any> {
     parameters: nonEmpty(
         (action.parameters ?? []).map(p => ({name: p.name, type: p.type}))),
     ai_context: aiContextDoc(action.aiContext),
+  });
+}
+
+// Inverts loader.convertConstraint. The expression is a logical invariant, so
+// it round-trips verbatim -- there is nothing derived to drop.
+function constraintDoc(
+    constraint: Constraint, warnings: string[]): Record<string, any> {
+  dropExtensions(
+      constraint.customExtensions, `constraint '${constraint.name}'`, warnings);
+  return compact({
+    name: constraint.name,
+    expression: constraint.expression,
+    description: constraint.description,
+    ai_context: aiContextDoc(constraint.aiContext),
   });
 }
 

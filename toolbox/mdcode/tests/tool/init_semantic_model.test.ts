@@ -18,6 +18,7 @@ import * as path from 'node:path';
 import {ApiResult} from '../../src/libts/gcp/api';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
+import {CUSTOM_TYPES} from '../../src/libts/semantic/kc_custom_types';
 import {init} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -45,7 +46,7 @@ beforeEach(() => {
   spyOn(console, 'log').mockImplementation(() => {});
   spyOn(console, 'error').mockImplementation(() => {});
   spyOn(console, 'warn').mockImplementation(() => {});
-  // Provisioning the custom action types succeeds by default; the tests that
+  // Provisioning the custom types succeeds by default; the tests that
   // care about it re-stub these. Each create returns a long-running operation,
   // so `getOperation` has to answer too.
   spyOn(CatalogClient.prototype, 'createAspectType')
@@ -100,7 +101,7 @@ describe('init --semantic-model: entry-group provisioning', () => {
         .toBe(true);
   });
 
-  test('provisions the custom action types in the destination project',
+  test('provisions every registered custom type in the destination project',
        async () => {
     spyOn(CatalogClient.prototype, 'createEntryGroup')
         .mockImplementation(async () => ok({name: 'sales-group'}));
@@ -111,44 +112,55 @@ describe('init --semantic-model: entry-group provisioning', () => {
 
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
 
-    // Both types are custom, so they live in the destination project at
-    // `global` -- not beside the built-in types, and not in the entry group's
-    // region.
+    // Every registered type gets both halves, and both are custom, so they
+    // live in the destination project at `global` -- not beside the built-in
+    // types, and not in the entry group's region.
+    const ids = CUSTOM_TYPES.map(t => t.id);
+    expect(ids).toContain('semantic-action');
     for (const spy of [aspectType, entryType]) {
-      expect(spy).toHaveBeenCalledTimes(1);
-      const [project, location, typeId] = spy.mock.calls[0];
-      expect(project).toBe('proj');
-      expect(location).toBe('global');
-      expect(typeId).toBe('semantic-action');
+      expect(spy).toHaveBeenCalledTimes(ids.length);
+      expect(spy.mock.calls.map(c => c[2])).toEqual(ids);
+      for (const [project, location] of spy.mock.calls) {
+        expect(project).toBe('proj');
+        expect(location).toBe('global');
+      }
     }
     // The entry type requires the aspect type, so the server rejects it while
     // the aspect type's create is still running.
-    expect(aspectType.mock.invocationCallOrder[0])
-        .toBeLessThan(entryType.mock.invocationCallOrder[0]);
+    for (let i = 0; i < ids.length; i++) {
+      expect(aspectType.mock.invocationCallOrder[i])
+          .toBeLessThan(entryType.mock.invocationCallOrder[i]);
+    }
   });
 
   test('waits for each type-creation operation to finish', async () => {
     spyOn(CatalogClient.prototype, 'createEntryGroup')
         .mockImplementation(async () => ok({name: 'sales-group'}));
-    // The aspect type is still being created when the call returns.
+    // Each aspect type is still being created when the call returns, under
+    // an operation of its own, and reports done on its second poll.
+    let created = 0;
     spyOn(CatalogClient.prototype, 'createAspectType')
-        .mockImplementation(async () => ok({name: OP, done: false}));
-    let polls = 0;
+        .mockImplementation(async () => ok({name: `op-${++created}`, done: false}));
+    const polls = new Map<string, number>();
     spyOn(CatalogClient.prototype, 'getOperation')
-        .mockImplementation(async () => ok({name: OP, done: ++polls > 1}));
-    // How many times the operation had been polled when the entry type was
-    // created. The aspect type reports done on the second poll, so anything
-    // less than two means the entry type was created while its required
-    // aspect type was still being created, which the server rejects.
-    let polledBeforeEntryType = -1;
+        .mockImplementation(async (name: string) => {
+          const n = (polls.get(name) ?? 0) + 1;
+          polls.set(name, n);
+          return ok({name, done: n > 1});
+        });
+    // Types whose entry type was created while the aspect type it requires was
+    // still being created, which the server rejects.
+    const premature: string[] = [];
     spyOn(CatalogClient.prototype, 'createEntryType')
-        .mockImplementation(async () => {
-          polledBeforeEntryType = polls;
-          return ok({name: OP});
+        .mockImplementation(async (_p: string, _l: string, typeId: string) => {
+          if ((polls.get(`op-${created}`) ?? 0) < 2) premature.push(typeId);
+          // Already finished, so the next type starts without a poll delay.
+          return ok({name: OP, done: true});
         });
 
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
-    expect(polledBeforeEntryType).toBe(2);
+    expect(premature).toEqual([]);
+    expect(created).toBe(CUSTOM_TYPES.length);
   });
 
   test('an already-existing aspect type is patched with the current template',
@@ -167,7 +179,7 @@ describe('init --semantic-model: entry-group provisioning', () => {
 
     // A project provisioned by an earlier kcmd holds an older template, so the
     // patch names the template field to bring it up to date.
-    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledTimes(CUSTOM_TYPES.length);
     expect(update.mock.calls[0][4]).toContain('metadata_template');
   });
 
@@ -194,7 +206,7 @@ describe('init --semantic-model: entry-group provisioning', () => {
     // reports the refusal and carries on rather than abandoning a workspace
     // whose entry group it has already created.
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
-    expect(entryType).toHaveBeenCalledTimes(1);
+    expect(entryType).toHaveBeenCalledTimes(CUSTOM_TYPES.length);
     expect(fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
         .toBe(true);
     expect(warned.some(m => m.includes('unchanged'))).toBe(true);

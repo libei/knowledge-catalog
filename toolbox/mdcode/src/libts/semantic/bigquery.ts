@@ -91,6 +91,18 @@ export function generatePropertyGraph(
         `Knowledge Catalog when that destination is included in the push.`);
   }
 
+  // Constraints are invariants checked at action time, not read-side graph
+  // structure, so the BigQuery leg emits nothing for them either. Same
+  // reasoning and same catalog home as actions above.
+  const constraints = resolved.model.constraints ?? [];
+  if (constraints.length) {
+    warnings.push(
+        `${constraints.length} constraint(s) are not represented in the ` +
+        `BigQuery property graph (constraints are checked when an action ` +
+        `runs); they are published to Knowledge Catalog when that destination ` +
+        `is included in the push.`);
+  }
+
   // An abstract entity is conceptual: it has no physical table and produces no
   // NODE TABLE, surviving only as a LABEL on its concrete descendants (whose
   // node tables carry its flattened fields). Collect the abstract names so the

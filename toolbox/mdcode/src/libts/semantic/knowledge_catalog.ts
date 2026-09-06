@@ -19,12 +19,13 @@
 //   * semantic-entity entry -> { semantic-entity, schema, guidelines? }
 //   * semantic-metric entry -> { semantic-metric, guidelines? }
 //
-// An action (the model's write operations) is published the same way, one entry
-// per action parented to the anchor, but its entry and aspect types are CUSTOM:
-// there is no built-in type for an action yet, so `kcmd init` provisions the
-// pair in the destination project. `kc_custom_types.ts` declares those types
-// and `kc_actions.ts` encodes the aspect an action carries; this module only
-// appends the entries the latter returns.
+// An action (the model's write operations) and a constraint (an invariant the
+// model requires to hold) are published the same way, one entry each parented
+// to the anchor, but their entry and aspect types are CUSTOM: there is no
+// built-in type for either yet, so `kcmd init` provisions the pairs in the
+// destination project. `kc_custom_types.ts` declares those types, and
+// `kc_actions.ts` and `kc_constraints.ts` encode the aspects they carry; this
+// module only appends the entries those two return.
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
@@ -58,6 +59,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 import {actionEntries, actionOwnedPrefix} from './kc_actions';
+import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -216,6 +218,17 @@ export function generateCatalogResources(
     publishedEntities: new Set(entityEntryName.keys()),
   }, warnings));
 
+  // One entry per constraint, on the same footing as an action: no built-in
+  // system type, so the custom pair declared in `kc_custom_types.ts`, filled by
+  // `kc_constraints.ts`. Nothing when the model declares no constraints.
+  entries.push(...constraintEntries(model, modelId, {
+    project: opts.project,
+    entry: (id: string) => names.entry(id),
+    anchor: modelEntryName,
+    claim: (id: string, label: string) =>
+        claim(seen, id, 'entry', label, warnings),
+  }, warnings));
+
   // Relationships map to schema-join entry links between their endpoint entries.
   const entryLinks: EntryLink[] = [];
   const seenLinks = new Set<string>();
@@ -230,11 +243,12 @@ export function generateCatalogResources(
     entryLinks,
     warnings: [...new Set(warnings)],
     // Ossie ids are dotted: `<model>.entities.<name>` / `<model>.metrics.<name>`
-    // / `<model>.actions.<name>`.
+    // / `<model>.actions.<name>` / `<model>.constraints.<name>`.
     ownedPrefixes: [
       `${modelId}.entities.`,
       `${modelId}.metrics.`,
       actionOwnedPrefix(modelId),
+      constraintOwnedPrefix(modelId),
     ],
   };
 }

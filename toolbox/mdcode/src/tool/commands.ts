@@ -621,10 +621,10 @@ export async function push(options: PushOptions): Promise<number> {
           '.');
     }
 
-    // Actions have no BigQuery/Spanner Graph construct -- their only destination
-    // is Knowledge Catalog. A push that omits the KC leg (--no-kc) would
-    // validate a model's actions and then deploy them nowhere, so warn rather
-    // than drop them silently.
+    // Actions and constraints have no BigQuery/Spanner Graph construct -- their
+    // only destination is Knowledge Catalog. A push that omits the KC leg
+    // (--no-kc) would validate them and then deploy them nowhere, so warn
+    // rather than drop them silently.
     if (!kcEnabled) {
       // The loop above already loaded every document that contributes a graph.
       // Only the rest need loading, which is usually none, and a model that
