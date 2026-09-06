@@ -13,7 +13,7 @@ import * as yaml from 'yaml';
 import * as z from 'zod';
 import {
   SemanticModel, Entity, Field, Relationship, Metric, AiContext, CustomExtension,
-  Action, ActionParameter, Executor, DATA_TYPES,
+  Action, ActionParameter, Executor, Constraint, DATA_TYPES,
 } from './ir';
 import { referencedEntityNames } from './sql_expr_utils';
 
@@ -209,6 +209,18 @@ const actionSchema = z.object({
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
 
+// A constraint: a named boolean invariant over the ontology. `expression` is a
+// logical expression in the model's own language (`Customer.accountBalance >=
+// 0`), not a physical binding, so it stays a plain string -- it is resolved
+// against the ontology by the consumer that evaluates it, not here.
+const constraintSchema = z.object({
+  name: z.string(),
+  expression: z.string(),
+  description: z.string().optional(),
+  ai_context: aiContextSchema.optional(),
+  custom_extensions: z.array(customExtensionSchema).optional(),
+});
+
 const modelBase = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -218,6 +230,7 @@ const modelBase = z.object({
   relationships: z.array(relationshipSchema).optional(),
   metrics: z.array(metricSchema).optional(),
   actions: z.array(actionSchema).optional(),
+  constraints: z.array(constraintSchema).optional(),
 });
 
 // Builds the document schema with the binding-completeness refinement applied
@@ -295,6 +308,7 @@ type RelationshipDoc = z.infer<typeof relationshipSchema>;
 type MetricDoc = z.infer<typeof metricSchema>;
 type ModelDoc = z.infer<typeof modelBase>;
 type ActionDoc = z.infer<typeof actionSchema>;
+type ConstraintDoc = z.infer<typeof constraintSchema>;
 type ParameterDoc = z.infer<typeof parameterSchema>;
 type ExecutorDoc = z.infer<typeof executorSchema>;
 type CustomExtensionDoc = z.infer<typeof customExtensionSchema>;
@@ -509,10 +523,15 @@ function convertModel(m: ModelDoc, opts: LoadOptions, warnings: string[]): Seman
     a => convertAction(a, entityNameSet, warnings));
   warnDuplicateNames(actions.map(a => a.name), 'action name', `model '${m.name}'`, warnings);
 
+  const constraints = (m.constraints ?? []).map(convertConstraint);
+  warnDuplicateNames(
+    constraints.map(c => c.name), 'constraint name', `model '${m.name}'`, warnings);
+
   const description = composeDescription(m.description);
 
   const model: SemanticModel = { name: m.name, entities, relationships, metrics };
   if (actions.length) model.actions = actions;
+  if (constraints.length) model.constraints = constraints;
   if (description) model.description = description;
   const ai = aiContextOrUndefined(m.ai_context);
   if (ai) model.aiContext = ai;
@@ -654,6 +673,20 @@ function convertMetric(mt: MetricDoc, entityNames: string[],
   const ce = toCustomExtensions(mt.custom_extensions);
   if (ce) metric.customExtensions = ce;
   return metric;
+}
+
+// Converts a constraint document to the IR. The `expression` is kept verbatim
+// (a logical invariant resolved by the evaluator, not the loader); description
+// and AI context round-trip like everywhere else.
+function convertConstraint(c: ConstraintDoc): Constraint {
+  const constraint: Constraint = { name: c.name, expression: c.expression };
+  const description = composeDescription(c.description);
+  if (description) constraint.description = description;
+  const ai = aiContextOrUndefined(c.ai_context);
+  if (ai) constraint.aiContext = ai;
+  const ce = toCustomExtensions(c.custom_extensions);
+  if (ce) constraint.customExtensions = ce;
+  return constraint;
 }
 
 // Maps an authored action onto the IR. Parameter types are resolved against the

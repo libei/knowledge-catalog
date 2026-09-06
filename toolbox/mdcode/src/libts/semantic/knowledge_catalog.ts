@@ -19,11 +19,12 @@
 //   * semantic-entity entry -> { semantic-entity, schema, guidelines? }
 //   * semantic-metric entry -> { semantic-metric, guidelines? }
 //
-// Actions (the model's write operations) have no semantic-* system type, so
-// they ride the anchor's built-in `overview` aspect: human-readable Markdown
-// plus an embedded JSON block a pull recovers them from (see
-// actionsOverviewAspectData). The overview is attached only when the model
-// declares actions.
+// Actions (the model's write operations) and constraints (its invariants) have
+// no semantic-* system type, so they ride the anchor's built-in `overview`
+// aspect: human-readable Markdown plus an embedded JSON block a pull recovers
+// them from (see overviewAspectData). Each gets its own section and its own
+// marker, so the two share the aspect rather than overwrite each other. The
+// overview is attached only when the model declares at least one of them.
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
@@ -55,7 +56,7 @@
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {googleDeploymentTargets} from './deployment_target';
-import {Action, AiContext, DataType, Entity, Executor, Metric, Relationship, SemanticModel} from './ir';
+import {Action, AiContext, Constraint, DataType, Entity, Executor, Metric, Relationship, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -134,14 +135,14 @@ export function generateCatalogResources(
   claim(seen, modelId, 'entry', `model '${model.name}'`, warnings);
 
   // The anchor's base aspects: always semantic-model; plus the built-in
-  // `overview` aspect when the model has actions. Actions are write-side and
-  // have no semantic-* system type of their own, so they ride the anchor's
-  // free-form overview (Markdown for humans + an embedded JSON block a pull
-  // recovers them from) rather than getting their own entries.
+  // `overview` aspect when the model has actions or constraints. Neither has a
+  // semantic-* system type of its own, so both ride the anchor's free-form
+  // overview (Markdown for humans + an embedded JSON block a pull recovers them
+  // from) rather than getting their own entries.
   const anchorBase: Record<string, Record<string, any>> = {
     'semantic-model': modelAspectData(model),
   };
-  const overview = actionsOverviewAspectData(model, warnings);
+  const overview = overviewAspectData(model, warnings);
   if (overview) anchorBase['overview'] = overview;
 
   const entries: Entry[] = [{
@@ -371,21 +372,40 @@ function modelAspectData(model: SemanticModel): Record<string, any> {
 // delimiter.
 export const ACTIONS_OVERVIEW_MARKER = '<!-- kcmd:actions v1 -->';
 
-// The anchor's `overview` aspect carrying the model's actions, or undefined
-// when there are none (so a model without actions carries no overview and the
-// anchor is unchanged from before actions existed). Actions have no BigQuery
-// Graph or semantic-* representation; the overview is their only catalog home.
-// The content is human-readable Markdown followed by a fenced JSON block (after
-// ACTIONS_OVERVIEW_MARKER) that a pull round-trips losslessly.
-function actionsOverviewAspectData(
+// The same delimiter for the constraints block. Actions and constraints share
+// the one `overview` aspect, so each needs its own marker for the reader to
+// tell the two JSON blocks apart.
+export const CONSTRAINTS_OVERVIEW_MARKER = '<!-- kcmd:constraints v1 -->';
+
+// The anchor's `overview` aspect carrying the model's actions and constraints,
+// or undefined when it declares neither (so such a model carries no overview
+// and the anchor is unchanged from before either existed). Neither has a
+// BigQuery Graph or semantic-* representation; the overview is their only
+// catalog home. Each contributes a section of human-readable Markdown followed
+// by a fenced JSON block (after its own marker) that a pull round-trips
+// losslessly.
+function overviewAspectData(
     model: SemanticModel, warnings: string[]): Record<string, any>|undefined {
   const actions = model.actions ?? [];
-  if (!actions.length) return undefined;
-  warnings.push(
-      `model '${model.name}': ${actions.length} action(s) published to the ` +
-      `model's overview aspect (actions have no BigQuery Graph representation).`);
+  const constraints = model.constraints ?? [];
+  if (!actions.length && !constraints.length) return undefined;
+
+  const sections: string[] = [];
+  if (actions.length) {
+    warnings.push(
+        `model '${model.name}': ${actions.length} action(s) published to the ` +
+        `model's overview aspect (actions have no BigQuery Graph representation).`);
+    sections.push(renderActionsOverview(actions));
+  }
+  if (constraints.length) {
+    warnings.push(
+        `model '${model.name}': ${constraints.length} constraint(s) published ` +
+        `to the model's overview aspect (constraints have no BigQuery Graph ` +
+        `representation).`);
+    sections.push(renderConstraintsOverview(constraints));
+  }
   return {
-    content: renderActionsOverview(actions),
+    content: sections.join('\n'),
     contentType: 'MARKDOWN',
   };
 }
@@ -419,6 +439,45 @@ function renderActionsOverview(actions: Action[]): string {
       JSON.stringify(actions.map(actionJson), null, 2), '```', '');
   return md.join('\n');
 }
+
+// Renders the constraints overview: a Markdown section for humans, then the
+// marker and a fenced JSON array (the canonical IR form) for a lossless pull.
+function renderConstraintsOverview(constraints: Constraint[]): string {
+  const md: string[] = [
+    '## Constraints',
+    '',
+    'Named invariants over this model -- boolean expressions that must hold ' +
+        'for every instance. A constraint is checked before an action ' +
+        'commits, so a write that would break one is rejected and its ' +
+        'description is the error the caller sees. Constraints have no ' +
+        'BigQuery Graph representation; they are published here for discovery ' +
+        'and are round-tripped by `kcmd pull`.',
+    '',
+  ];
+  for (const c of constraints) {
+    md.push(`### ${c.name}`, '');
+    if (c.description) md.push(c.description, '');
+    md.push(`- Expression: \`${c.expression}\``, '');
+  }
+  md.push(
+      CONSTRAINTS_OVERVIEW_MARKER, '```json',
+      JSON.stringify(constraints.map(constraintJson), null, 2), '```', '');
+  return md.join('\n');
+}
+
+
+// The canonical JSON form of a constraint embedded in the overview, mirroring
+// the IR so kc_converter.readConstraintsFromOverview reconstructs it verbatim.
+function constraintJson(c: Constraint): Record<string, any> {
+  return compact({
+    name: c.name,
+    expression: c.expression,
+    description: c.description,
+    aiContext: c.aiContext,
+    customExtensions: c.customExtensions,
+  });
+}
+
 
 // A one-line human description of an executor for the Markdown body.
 function describeExecutor(ex: Executor): string {

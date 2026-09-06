@@ -252,10 +252,17 @@ describe('Knowledge Catalog publish/pull round trip', () => {
         .toBe(true);
   });
 
-  test('a model with no actions carries no overview aspect', () => {
-    const noActions: SemanticModel = {...model, actions: undefined};
-    const {entries} = generateCatalogResources(noActions, OPTS);
-    expect(entries[0].aspects?.['dataplex-types.global.overview'])
-        .toBeUndefined();
-  });
+  test('a model with neither actions nor constraints carries no overview aspect',
+       () => {
+         // The overview is shared with constraints, so both must be absent for
+         // the anchor to look the way it did before either existed.
+         const bare: SemanticModel = {
+           ...model,
+           actions: undefined,
+           constraints: undefined
+         };
+         const {entries} = generateCatalogResources(bare, OPTS);
+         expect(entries[0].aspects?.['dataplex-types.global.overview'])
+             .toBeUndefined();
+       });
 });

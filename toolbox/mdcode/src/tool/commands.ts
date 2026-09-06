@@ -601,10 +601,10 @@ export async function push(options: PushOptions): Promise<number> {
           '.');
     }
 
-    // Actions have no BigQuery/Spanner Graph construct -- their only destination
-    // is Knowledge Catalog. A push that omits the KC leg (--no-kc) would
-    // validate a model's actions and then deploy them nowhere, so warn rather
-    // than drop them silently.
+    // Actions and constraints have no BigQuery/Spanner Graph construct -- their
+    // only destination is Knowledge Catalog. A push that omits the KC leg
+    // (--no-kc) would validate them and then deploy them nowhere, so warn
+    // rather than drop them silently.
     if (!kcEnabled) {
       const kcProfileName =
           namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
@@ -612,10 +612,15 @@ export async function push(options: PushOptions): Promise<number> {
       const prepared =
           docs ? await prepareOnce(docs, kcProfileName, false) : null;
       for (const {model} of prepared?.models ?? []) {
-        const n = model.actions?.length ?? 0;
-        if (n) {
+        const declared: string[] = [];
+        const actionCount = model.actions?.length ?? 0;
+        if (actionCount) declared.push(`${actionCount} action(s)`);
+        const constraintCount = model.constraints?.length ?? 0;
+        if (constraintCount) declared.push(`${constraintCount} constraint(s)`);
+        if (declared.length) {
           console.warn(
-              `Warning: model '${model.name}' declares ${n} action(s), which ` +
+              `Warning: model '${model.name}' declares ${
+                  declared.join(' and ')}, which ` +
               `deploy only to Knowledge Catalog; --no-kc excludes that leg, so ` +
               `they will not be deployed. Drop --no-kc to deploy them.`);
         }

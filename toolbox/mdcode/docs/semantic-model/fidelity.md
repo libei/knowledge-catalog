@@ -115,12 +115,13 @@ the MAQL or Snowflake form a metric was imported from). Those stay in your
 authored document; the vendor SQL and expressions are still used when generating
 BigQuery SQL.
 
-**Actions** are the exception to "one entry per element": they have no
-`semantic-*` type, so they are stored on the model anchor's built-in `overview`
-aspect — Markdown for humans plus an embedded JSON block. That JSON is the
-canonical copy, so actions round-trip losslessly through `pull` (name,
-description, executor, and typed parameters). Their `precondition`/`affects` are
-out of scope for this prototype and are not stored.
+**Actions and constraints** are the exception to "one entry per element": they
+have no `semantic-*` type, so they are stored on the model anchor's built-in
+`overview` aspect — Markdown for humans plus an embedded JSON block, one block
+each under its own marker. That JSON is the canonical copy, so both round-trip
+losslessly through `pull`: an action's name, description, executor, and typed
+parameters; a constraint's name, expression, and description. An action's own
+`precondition`/`affects` are out of scope for this prototype and are not stored.
 
 ## What pull recovers
 

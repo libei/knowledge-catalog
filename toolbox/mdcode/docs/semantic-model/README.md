@@ -89,8 +89,9 @@ supertype's fields down and expresses the hierarchy as BigQuery labels. See
 rules.
 
 A model can also declare **actions** — named write operations over the ontology,
-the write-side counterpart to metrics. See [Actions](#actions-write-operations)
-below.
+the write-side counterpart to metrics — and **constraints**, the invariants an
+action must not break. See [Actions](#actions-write-operations) and
+[Constraints](#constraints-invariants) below.
 
 ### Deployment targets (required)
 
@@ -165,8 +166,42 @@ push emits no node/edge/measure for them and warns once that they were not place
 in the graph. They are published to **Knowledge Catalog** instead, on the model's
 anchor entry (see
 [What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)),
-and a `pull` recovers them. This is a prototype: an action's `precondition` and
-`affects` (its gate and blast radius) are **not** modeled yet.
+and a `pull` recovers them. This is a prototype: an action's own `precondition`
+and `affects` (its per-action gate and blast radius) are **not** modeled yet —
+the gate today is model-level, expressed as [constraints](#constraints-invariants).
+
+### Constraints (invariants)
+
+A **constraint** is a named boolean invariant over the ontology — something that
+must hold for every instance, whatever writes to the model. Constraints are
+model-level like metrics and actions, and written in the same expression
+language:
+
+```yaml
+    constraints:
+      - name: NonNegativeBalance
+        expression: Customer.accountBalance >= 0
+        description: >-
+          A customer's account balance cannot go negative. Reduce the order
+          quantity or choose a customer with more available balance.
+      - name: PositiveQuantity
+        expression: OrderedAs.quantity > 0
+        description: An order line must be for at least one unit.
+```
+
+Constraints exist because actions change state: an agent running an action
+writes to a live store, and a bad write corrupts data. A constraint is checked
+**before the action commits** — if the write would leave any instance violating
+it, the action is rejected and nothing changes.
+
+Write the `description` as the message you want the caller to act on. It is
+surfaced verbatim as the violation error, so an agent that gets rejected can
+read it and choose a different move ("reduce the order quantity") instead of
+retrying the same call.
+
+Like actions, constraints are **not** part of the graph — the push emits nothing
+for them and warns once, then publishes them to **Knowledge Catalog** on the
+model's anchor entry, where a `pull` recovers them.
 
 ## 2. Push
 

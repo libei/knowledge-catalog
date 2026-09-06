@@ -699,8 +699,8 @@ async function writeEntry(
 
 // The built-in aspects the emitter attaches CONDITIONALLY. `guidelines` (only
 // when an object carries ai_context.instructions) can ride any entry, so it is
-// reconciled everywhere. `overview` (only when the model declares actions)
-// rides the model anchor alone, so it is reconciled only there -- naming it on
+// reconciled everywhere. `overview` (only when the model declares actions or
+// constraints) rides the model anchor alone, so it is reconciled only there -- naming it on
 // an entity/metric entry would be a harmless no-op, but scoping it keeps the
 // patch honest about where the aspect can live. Every other aspect the emitter
 // writes (semantic-*, schema) is unconditional, so it is always present on a
@@ -713,7 +713,8 @@ const ANCHOR_ONLY_ASPECT_TYPES = ['overview'] as const;
 // absent from the request body; a key that is present is upserted, and one the
 // server does not have is a no-op. Passing only the currently-attached keys
 // therefore leaves a *removed* optional aspect (e.g. the model dropped all its
-// actions, so `overview` is gone) stranded on the server, where a later `pull`
+// actions and constraints, so `overview` is gone) stranded on the server, where
+// a later `pull`
 // would resurrect it. Always naming the optional aspect keys -- present or not
 // -- makes a re-push converge: a still-present one is refreshed, a removed one
 // is deleted, and one that was never there stays absent. The anchor-only keys

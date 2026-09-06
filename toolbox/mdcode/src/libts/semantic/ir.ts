@@ -64,6 +64,13 @@ export interface SemanticModel {
   // absent on models authored before actions existed, so consumers read it as
   // `actions ?? []`. See Action.
   actions?: Action[];
+  // Named invariants over the ontology -- a boolean `expression` that must hold
+  // for every instance (e.g. `Customer.accountBalance >= 0`). Model-level like
+  // metrics and actions; checked before an action commits, so a write that would
+  // break one is rejected. Optional and absent on models authored before
+  // constraints existed, so consumers read it as `constraints ?? []`. See
+  // Constraint.
+  constraints?: Constraint[];
   // Vendor extension blocks carried verbatim (round-trip fidelity), including the
   // model-level GOOGLE block. A typed deployment-target view is derived by the
   // consumer that acts on it (e.g. the CLI push), not surfaced on the IR yet.
@@ -364,4 +371,28 @@ export interface RestExecutor {
 export interface GrpcExecutor {
   service: string;
   method: string;
+}
+
+/**
+ * A constraint: a model-level, named invariant over the ontology -- a boolean
+ * `expression` that must hold for every instance. Written in the same
+ * expression language as a metric (`Customer.accountBalance >= 0`,
+ * `OrderedAs.quantity > 0`), and it may reference a metric by name when the
+ * check needs an aggregate.
+ *
+ * Constraints matter because actions change state: an operational agent running
+ * an action writes to a live store, and a bad write corrupts data. A constraint
+ * is checked before the action commits; if the write would leave any instance
+ * violating it, the action is rejected and the state is left untouched.
+ *
+ * `description` doubles as the error surfaced on a violation, so it is written
+ * to steer an agent's next move ("reduce the order quantity or choose another
+ * customer") rather than merely label the rule.
+ */
+export interface Constraint {
+  name: string;
+  expression: string;     // boolean invariant in the model's expression language
+  description?: string;   // human-readable; doubles as the violation error
+  aiContext?: AiContext;
+  customExtensions?: CustomExtension[];
 }

@@ -39,7 +39,7 @@
 
 import * as yaml from 'yaml';
 
-import {Action, AiContext, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 
 // The schema version the loader was written against; re-emitted verbatim so a
 // serialized document loads without a version-mismatch warning. Mirrors
@@ -181,6 +181,8 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
         (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
     actions: nonEmpty((model.actions ?? []).map(a => actionDoc(a))),
+    constraints:
+        nonEmpty((model.constraints ?? []).map(c => constraintDoc(c))),
   });
 }
 
@@ -274,6 +276,18 @@ function actionDoc(action: Action): Record<string, any> {
         (action.parameters ?? []).map(p => ({name: p.name, type: p.type}))),
     ai_context: aiContextDoc(action.aiContext),
     custom_extensions: customExtensionsDoc(action.customExtensions),
+  });
+}
+
+// Inverts loader.convertConstraint. The expression is a logical invariant, so
+// it round-trips verbatim -- there is nothing derived to drop.
+function constraintDoc(constraint: Constraint): Record<string, any> {
+  return compact({
+    name: constraint.name,
+    expression: constraint.expression,
+    description: constraint.description,
+    ai_context: aiContextDoc(constraint.aiContext),
+    custom_extensions: customExtensionsDoc(constraint.customExtensions),
   });
 }
 

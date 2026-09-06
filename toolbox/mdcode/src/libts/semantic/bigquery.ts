@@ -80,7 +80,7 @@ export function generatePropertyGraph(
   // NODE TABLE / EDGE TABLE / MEASURE), so the BigQuery leg emits nothing for
   // them. Warn once so an author who declared actions is not surprised they are
   // absent from the graph. Their only destination is Knowledge Catalog (see
-  // knowledge_catalog.actionsOverviewAspectData) -- but that leg runs only when
+  // knowledge_catalog.overviewAspectData) -- but that leg runs only when
   // the KC destination is in the push, so the message stays conditional (a
   // bq-only push warns separately that actions go nowhere; see commands.ts).
   const actions = resolved.model.actions ?? [];
@@ -89,6 +89,18 @@ export function generatePropertyGraph(
         `${actions.length} action(s) are not represented in the BigQuery ` +
         `property graph (actions are write-side); they are published to ` +
         `Knowledge Catalog when that destination is included in the push.`);
+  }
+
+  // Constraints are invariants checked at action time, not read-side graph
+  // structure, so the BigQuery leg emits nothing for them either. Same
+  // reasoning and same catalog home as actions above.
+  const constraints = resolved.model.constraints ?? [];
+  if (constraints.length) {
+    warnings.push(
+        `${constraints.length} constraint(s) are not represented in the ` +
+        `BigQuery property graph (constraints are checked when an action ` +
+        `runs); they are published to Knowledge Catalog when that destination ` +
+        `is included in the push.`);
   }
 
   // An abstract entity is conceptual: it has no physical table and produces no

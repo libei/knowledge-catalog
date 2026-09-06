@@ -54,8 +54,8 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {Action, ActionParameter, AiContext, CustomExtension, DATA_TYPES, DataType, Entity, Executor, Field, Metric, Relationship, SemanticModel} from './ir';
-import {ACTIONS_OVERVIEW_MARKER} from './knowledge_catalog';
+import {Action, ActionParameter, AiContext, Constraint, CustomExtension, DATA_TYPES, DataType, Entity, Executor, Field, Metric, Relationship, SemanticModel} from './ir';
+import {ACTIONS_OVERVIEW_MARKER, CONSTRAINTS_OVERVIEW_MARKER} from './knowledge_catalog';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -133,6 +133,10 @@ export function modelsFromCatalogResources(
     // Absent overview -> no actions.
     const actions = readActionsFromOverview(anchor, entityNames, warnings);
     if (actions.length) model.actions = actions;
+    // Constraints ride the same overview aspect under their own marker (see
+    // renderConstraintsOverview). Absent block -> no constraints.
+    const constraints = readConstraintsFromOverview(anchor, warnings);
+    if (constraints.length) model.constraints = constraints;
     // Deployment targets ride back in the same GOOGLE custom_extensions block
     // the author wrote them in (the inverse of the emitter's modelAspectData).
     const targets = readDeploymentTargets(anchor);
@@ -329,6 +333,70 @@ function readActionsFromOverview(
   const entitySet = new Set(entityNames);
   return parsed.map((a: any) => readAction(a, entitySet, warnings))
       .filter((a): a is Action => a !== undefined);
+}
+
+
+// Rebuilds the model's constraints from the overview aspect's constraints
+// block, the inverse of knowledge_catalog.renderConstraintsOverview. A missing
+// marker means the model declared none; a malformed block warns and yields
+// none, so a bad overview degrades the constraints rather than the whole pull.
+function readConstraintsFromOverview(
+    anchor: Entry, warnings: string[]): Constraint[] {
+  const content = aspectData(anchor, 'overview').content;
+  if (typeof content !== 'string' ||
+      !content.includes(CONSTRAINTS_OVERVIEW_MARKER))
+    return [];
+  const json = jsonBlockAfterMarker(content, CONSTRAINTS_OVERVIEW_MARKER);
+  if (json === undefined) {
+    warnings.push(
+        `model constraints: overview aspect has the constraints marker but no ` +
+        `parseable JSON block; constraints are not recovered`);
+    return [];
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(json);
+  } catch (err: any) {
+    warnings.push(`model constraints: overview constraint block is not valid ` +
+                  `JSON (${err.message || err}); constraints are not recovered`);
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    warnings.push(
+        `model constraints: overview constraint block is not a JSON array; ` +
+        `constraints are not recovered`);
+    return [];
+  }
+  return parsed.map((c: any) => readConstraint(c, warnings))
+      .filter((c): c is Constraint => c !== undefined);
+}
+
+
+// Rebuilds one Constraint from its embedded JSON (the inverse of
+// constraintJson). A record missing a name or a non-empty expression is not a
+// checkable invariant, so it is skipped with a warning.
+function readConstraint(c: any, warnings: string[]): Constraint|undefined {
+  const name = typeof c?.name === 'string' ? c.name : '';
+  if (!name) {
+    warnings.push(
+        'model constraints: a constraint in the overview has no name; skipped');
+    return undefined;
+  }
+  const expression = typeof c?.expression === 'string' ? c.expression : '';
+  if (!expression.trim()) {
+    warnings.push(
+        `constraint '${name}': overview record has no expression; the ` +
+        `constraint is skipped`);
+    return undefined;
+  }
+  const constraint: Constraint = {name, expression};
+  if (typeof c?.description === 'string' && c.description !== '')
+    constraint.description = c.description;
+  if (c?.aiContext && typeof c.aiContext === 'object')
+    constraint.aiContext = c.aiContext as AiContext;
+  if (Array.isArray(c?.customExtensions))
+    constraint.customExtensions = c.customExtensions as CustomExtension[];
+  return constraint;
 }
 
 

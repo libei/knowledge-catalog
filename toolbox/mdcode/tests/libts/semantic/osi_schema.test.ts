@@ -125,12 +125,17 @@ function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
 // fixture validates while every other drift from the spec still fails. When
 // upstream OSI adopts actions, re-vendoring the schema makes this pass with no
 // special-casing and this tolerance can be removed.
-function onlyActionsExtension(errors: typeof validate.errors): boolean {
+// The model-level write-side blocks that are a deliberate superset of released
+// OSI (the Extended-spec proposal): `actions` and the `constraints` that gate
+// them.
+const EXTENDED_MODEL_BLOCKS = new Set(['actions', 'constraints']);
+
+function onlyExtendedModelBlocks(errors: typeof validate.errors): boolean {
   return !!errors && errors.length > 0 &&
     errors.every(
       e => e.keyword === 'additionalProperties' &&
-        (e.params as {additionalProperty?: string}).additionalProperty ===
-          'actions' &&
+        EXTENDED_MODEL_BLOCKS.has(
+          (e.params as {additionalProperty?: string}).additionalProperty ?? '') &&
         /\/semantic_model\/\d+$/.test(e.instancePath));
 }
 
@@ -167,13 +172,13 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
             onlyExtendsExtension(validate.errors)) {
           return;
         }
-        // A model-level `actions` block is a deliberate superset of released
-        // OSI (the Extended-spec proposal); tolerate exactly that extra property
-        // and nothing else, and only on the actions fixtures that legitimately
-        // carry it -- so a stray `actions` slipping into any other fixture still
-        // fails.
+        // The model-level `actions` and `constraints` blocks are a deliberate
+        // superset of released OSI (the Extended-spec proposal); tolerate
+        // exactly those extra properties and nothing else, and only on the
+        // fixtures that legitimately carry them -- so a stray `actions` or
+        // `constraints` slipping into any other fixture still fails.
         if (rel.startsWith('actions_') &&
-            onlyActionsExtension(validate.errors)) {
+            onlyExtendedModelBlocks(validate.errors)) {
           return;
         }
         const details = (validate.errors ?? [])
