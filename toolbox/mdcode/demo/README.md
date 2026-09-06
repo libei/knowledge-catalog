@@ -256,3 +256,26 @@ bun pull.ts --bundle /tmp/acme_pulled
 ```bash
 bun cleanup.ts
 ```
+
+
+## Actions and Constraints
+
+This demo shows the write side of a semantic model: an action that moves money
+between accounts, four constraints that say what has to stay true, and a runtime
+that applies the write in a Spanner transaction and rolls it back if any
+constraint would be broken. It also exposes the action over MCP, so an agent can
+call it and correct itself from the rejection message.
+
+It creates its own Spanner database (`semantic_action_demo`) and leaves
+everything else in the instance alone.
+
+```bash
+cd action
+bun setup.ts
+bun transfer.ts --list
+bun transfer.ts "Alice Checking" "Bob Checking" 500     # commits
+bun transfer.ts "Alice Checking" "Bob Checking" 5000    # rejected, rolled back
+bun cleanup.ts
+```
+
+See `action/README.md` for the full runbook.
