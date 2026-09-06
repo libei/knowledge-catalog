@@ -110,6 +110,15 @@ export interface Statement {
 // semantic runtime, whose gate runs between the write and the commit.
 export class SpannerDataClient extends api.ApiClient {
   private readonly _database: string;
+  // Per-transaction statement counter. Spanner REQUIRES a monotonically
+  // increasing `seqno` on every DML statement in a read-write transaction --
+  // it is how the server recognizes a retry of a statement it has already
+  // applied, so that a retried DML is not applied twice. Sending the same seqno
+  // with a DIFFERENT statement fails with "Previously received a different
+  // request with this seqno", which is what makes a hand-rolled client fail on
+  // its second statement. Tracking it here means a caller running several
+  // statements in one transaction does not have to know about it at all.
+  private readonly _seqno = new Map<string, number>();
 
   constructor(
       ctx: context.ApiContext, project: string, instance: string,
@@ -146,22 +155,29 @@ export class SpannerDataClient extends api.ApiClient {
   async executeSql(
       sessionName: string, transactionId: string,
       stmt: Statement): Promise<api.ApiResult<ResultSet>> {
+    const seqno = (this._seqno.get(transactionId) ?? 0) + 1;
+    this._seqno.set(transactionId, seqno);
     return await this._post<ResultSet>(`${sessionName}:executeSql`, {
       transaction: {id: transactionId},
       sql: stmt.sql,
       params: stmt.params,
       paramTypes: stmt.paramTypes,
+      // Ignored for queries, required for DML; sent unconditionally so the
+      // counter stays in step with the statements actually issued.
+      seqno: `${seqno}`,
     });
   }
 
   async commit(sessionName: string, transactionId: string):
       Promise<api.ApiResult<{commitTimestamp?: string}>> {
+    this._seqno.delete(transactionId);
     return await this._post<{commitTimestamp?: string}>(
         `${sessionName}:commit`, {transactionId});
   }
 
   async rollback(sessionName: string, transactionId: string):
       Promise<api.ApiResult<{}>> {
+    this._seqno.delete(transactionId);
     return await this._post<{}>(`${sessionName}:rollback`, {transactionId});
   }
 
