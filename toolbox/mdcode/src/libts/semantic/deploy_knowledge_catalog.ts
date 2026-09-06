@@ -700,8 +700,9 @@ async function writeEntry(
 // The aspects the emitter attaches CONDITIONALLY. `guidelines` (only when an
 // object carries ai_context.instructions) can ride any entry, so it is
 // reconciled everywhere. Every other aspect the emitter writes (semantic-*,
-// schema, semantic-action) is unconditional on the entry that carries it, so it
-// is always present on a re-push and never needs explicit clearing.
+// schema, semantic-action, semantic-constraint) is unconditional on the entry
+// that carries it, so it is always present on a re-push and never needs
+// explicit clearing.
 const OPTIONAL_ASPECT_TYPES = ['guidelines'] as const;
 
 // The aspect keys to reconcile when updating an existing entry. A Dataplex

@@ -21,7 +21,8 @@
 // TO ADD A NEW CUSTOM TYPE. Append a record. Provisioning, naming and the init
 // wiring are generic over this list, so no other file in this directory needs
 // to change; what does need writing is the encoding that fills the aspect, the
-// way kc_actions.ts does for `semantic-action`.
+// way kc_actions.ts does for `semantic-action` and kc_constraints.ts for
+// `semantic-constraint`.
 //
 // A CUSTOM TYPE IS ONE ENTRY TYPE PLUS ONE ASPECT TYPE that share an id, the
 // way the built-in `semantic-metric` entry type and aspect type share theirs.
@@ -196,6 +197,64 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   },
 };
 
+
+// The id of the constraint type. A constraint is a named invariant over a
+// semantic model; kc_constraints.ts holds the encoding that fills its aspect.
+export const CONSTRAINT_TYPE_ID = 'semantic-constraint';
+
+// The aspect that carries a constraint's rule.
+//
+// The expression is the whole of the machine-readable content, so it is a
+// required field: a constraint entry without one states no invariant.
+//
+// The other two fields an author can write are the ones every model element
+// carries, and they land in different places. `description` rides the entry
+// source, the way an action's and a metric's do, because a violation quotes it
+// back to the caller as the error, which makes it the entry's human-readable
+// summary rather than part of the rule. `instructions` below is
+// `ai_context.instructions` -- the same blessed field an entity or a metric
+// declares, under the same authoring key -- and it is spelled `instructions`
+// here because that is what the built-in `guidelines` aspect calls it. It rides
+// this aspect instead of that one only because a pull hydrates aspect types
+// from the entry type's own project, where `guidelines` does not exist.
+const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
+  displayName: 'Semantic Constraint',
+  description:
+      'An invariant over a semantic model: a boolean expression that must ' +
+      'hold for every instance of an entity, however that instance was ' +
+      'written.',
+  metadataTemplate: {
+    name: CONSTRAINT_TYPE_ID,
+    type: 'record',
+    recordFields: [
+      {
+        index: 1,
+        name: 'expression',
+        type: 'string',
+        constraints: {required: true},
+        annotations: {
+          displayName: 'Expression',
+          description:
+              'The invariant, as a boolean expression in the model\'s ' +
+              'expression language, for example `Customer.balance >= 0`.',
+        },
+      },
+      {
+        index: 2,
+        name: 'instructions',
+        type: 'string',
+        annotations: {
+          displayName: 'Instructions',
+          description:
+              'The constraint\'s `ai_context.instructions`: guidance for AI ' +
+              'consumers. Its human-readable summary rides the entry\'s own ' +
+              'description rather than this aspect.',
+        },
+      },
+    ],
+  },
+};
+
 // Every type kcmd provisions. This list is the whole of what is custom.
 export const CUSTOM_TYPES: readonly CustomType[] = [
   {
@@ -205,6 +264,14 @@ export const CUSTOM_TYPES: readonly CustomType[] = [
       description: 'A write operation defined on a semantic model.',
     },
     aspectType: ACTION_ASPECT_TYPE,
+  },
+  {
+    id: CONSTRAINT_TYPE_ID,
+    entryType: {
+      displayName: 'Semantic Constraint',
+      description: 'An invariant a semantic model requires to hold.',
+    },
+    aspectType: CONSTRAINT_ASPECT_TYPE,
   },
 ];
 

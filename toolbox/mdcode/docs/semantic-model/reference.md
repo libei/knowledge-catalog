@@ -77,6 +77,7 @@ becomes one part of that graph:
 | Metric | `MEASURE` on a node table | must resolve to a single entity (otherwise the push is rejected — see [Validation](#validation)) and reduce to one supported aggregate over one operand (otherwise that metric is skipped with a warning) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 | Action | *nothing* | actions are write-side and have no graph construct; the push emits nothing and warns once, then publishes them to Knowledge Catalog (see below) |
+| Constraint | *nothing* | constraints are checked when an action runs, not read-side structure; the push emits nothing and warns once, then publishes them to Knowledge Catalog (see below) |
 
 `push` reads the target dataset's location (`bigquery.datasets.get`) so the
 statement runs in the right region; without that permission it falls back to
@@ -345,6 +346,16 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   deploy **only** through the Knowledge Catalog leg — a graph-only `--no-kc` push
   validates them but has nowhere to put them, and warns that they will not be
   deployed. *(static)*
+* **Every constraint is checkable.** A constraint's `expression` must be
+  non-empty, and when it opens with an `<Entity>.<field>` qualifier naming a
+  **known** entity, that entity must actually declare the field — this catches a
+  typo that would otherwise surface only inside an agent's rejected action. A
+  leading qualifier that is not a known entity (a relationship-qualified name
+  like `OrderedAs.quantity`, a metric reference, or compound logic) is left to
+  the evaluator rather than guessed at, so a valid constraint is never falsely
+  rejected. Like actions, constraints deploy **only** through the Knowledge
+  Catalog leg, and a `--no-kc` push warns that they will not be deployed.
+  *(static)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
   exactly as the deploy will — a three-part `project.dataset.table`, a four-part

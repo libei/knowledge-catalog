@@ -116,6 +116,9 @@ export function validatePushRequirements(
     // to dispatch it. (The "exactly one executor kind" rule is already
     // guaranteed by the loader schema, so it cannot reach here.)
     errors.push(...validateActions(model, document));
+
+    // Constraints are logical invariants, target-independent like actions.
+    errors.push(...validateConstraints(model, document));
   }
   return errors;
 }
@@ -147,6 +150,44 @@ function validateActions(model: SemanticModel, document: string): string[] {
   return errors;
 }
 
+
+// Static, target-independent checks for a model's constraints. A constraint's
+// `expression` is a logical boolean invariant, resolved against the ontology by
+// the evaluator at action time, so validation here is deliberately light:
+//   - the expression must be non-empty;
+//   - when it opens with a `<Entity>.<field>` qualifier that names a KNOWN
+//     entity, that entity must actually declare the field -- this catches a typo
+//     that would otherwise surface only inside an agent's rejected action.
+// A leading qualifier that is not a known entity (a relationship-qualified name
+// like `OrderedAs.quantity`, a metric reference, or compound logic) is left to
+// the evaluator rather than guessed at here, so a valid constraint is never
+// falsely rejected.
+function validateConstraints(model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  for (const c of model.constraints ?? []) {
+    const where =
+        `constraint '${c.name}' in model '${model.name}' (${document})`;
+    if (!c.expression.trim()) {
+      errors.push(`${where} has an empty expression.`);
+      continue;
+    }
+    const ref = leadingFieldRef(c.expression);
+    if (!ref) continue;
+    const entity = (model.entities ?? []).find(e => e.name === ref.entity);
+    if (entity && !entity.fields.some(f => f.name === ref.field)) {
+      errors.push(`${where} references '${ref.entity}.${ref.field}', but ` +
+          `entity '${ref.entity}' declares no field '${ref.field}'.`);
+    }
+  }
+  return errors;
+}
+
+// The leading `<name>.<field>` qualifier of a constraint expression, or null
+// when it does not open with one.
+function leadingFieldRef(expr: string): {entity: string; field: string}|null {
+  const m = expr.trim().match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)/);
+  return m ? {entity: m[1], field: m[2]} : null;
+}
 
 // The executor coordinate fields that are absent or blank. An executor with no
 // gaps yields an empty list.
