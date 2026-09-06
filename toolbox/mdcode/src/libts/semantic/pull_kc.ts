@@ -20,7 +20,8 @@ import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {SemanticModel} from './ir';
 import {actionAspectTypes} from './kc_actions';
-import {ACTION_TYPE_ID} from './kc_custom_types';
+import {constraintAspectTypes} from './kc_constraints';
+import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID} from './kc_custom_types';
 import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
 
 export interface KcPullOptions {
@@ -165,6 +166,9 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
       // `typeBase` already points there, and kc_actions.ts names the aspects
       // to fetch beneath it.
       return actionAspectTypes(typeBase);
+    case CONSTRAINT_TYPE_ID:
+      // Custom for the same reason, and named through the same `typeBase`.
+      return constraintAspectTypes(typeBase);
     default:
       return undefined;
   }
