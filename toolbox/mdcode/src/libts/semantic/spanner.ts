@@ -397,7 +397,9 @@ function physicalColumns(
 
 
 // Maps the IR's `dataSource` to the BARE Spanner table name the graph
-// references. A property graph names input tables within its own database, so
+// references. Exported because the semantic runtime resolves an entity to the
+// same table this leg deployed the graph over -- the gate must probe the table
+// the graph reads. A property graph names input tables within its own database, so
 // only the final segment of a qualified `project.dataset.table` (or any dotted
 // source) is meaningful; the leading qualifiers name where a BigQuery copy
 // lives and have no bearing on the Spanner table. A resource-name URI
@@ -406,7 +408,7 @@ function physicalColumns(
 // path locates the store, not the table. A verbatim query (contains whitespace)
 // cannot back a graph element table, so it is passed through parenthesized with
 // a warning.
-function spannerTable(
+export function spannerTable(
     dataSource: string, warnings: string[], context: string): string {
   const trimmed = (dataSource ?? '').trim();
   if (!trimmed) {
