@@ -26,6 +26,7 @@ back. For the Ossie document format itself, see
 |---|---|
 | **This page** | author a model and deploy it |
 | [Codelab: one semantic ontology, one data journey](codelab.md) | see the whole lifecycle: author, govern, hydrate, query |
+| [Modeling write operations](actions.md) | let an agent change data, gated by the model's constraints |
 | [Reference](reference.md) | look up a flag, what push creates, validation, or permissions |
 | [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
 | [Importing an OWL ontology](owl-import.md) | start from an OWL ontology instead of hand-authoring |
@@ -169,6 +170,8 @@ anchor entry (see
 and a `pull` recovers them. This is a prototype: an action's own `precondition`
 and `affects` (its per-action gate and blast radius) are **not** modeled yet —
 the gate today is model-level, expressed as [constraints](#constraints-invariants).
+[Modeling write operations](actions.md) walks the whole path, from declaring an
+action to running one against a live store.
 
 ### Constraints (invariants)
 
