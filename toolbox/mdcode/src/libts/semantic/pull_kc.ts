@@ -19,6 +19,7 @@
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {SemanticModel} from './ir';
+import {ACTION_ANCHOR_ASPECT_TYPES} from './kc_actions';
 import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
 
 export interface KcPullOptions {
@@ -149,12 +150,12 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
   const aspectType = (name: string) => `${typeBase}/aspectTypes/${name}`;
   switch (t) {
     case 'semantic-model':
-      // The anchor also carries the built-in `overview` aspect when the model
-      // has actions (see actionsOverviewAspectData); fetch it so a pull can
-      // recover them.
+      // The anchor also carries whatever aspects hold the model's actions (see
+      // kc_actions.ts); fetch them so a pull can recover the actions.
       return [
-        aspectType('semantic-model'), aspectType('overview'),
-        aspectType('guidelines')
+        aspectType('semantic-model'),
+        ...ACTION_ANCHOR_ASPECT_TYPES.map(aspectType),
+        aspectType('guidelines'),
       ];
     case 'semantic-entity':
       return [

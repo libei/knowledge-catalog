@@ -1,8 +1,8 @@
 // Behavior specification for model-level ACTIONS -- the write-side counterpart
 // to metrics -- across the pipeline: loader parsing (executor + typed
 // parameters), the push-time validation gate, and the Knowledge Catalog
-// publish/pull round trip (actions ride the anchor's `overview` aspect, as they
-// have no semantic-* system type of their own). Preconditions and `affects` are
+// publish/pull round trip (actions have no system type of their own; how they
+// are persisted lives in kc_actions.ts). Preconditions and `affects` are
 // intentionally out of scope for this prototype.
 
 import {describe, expect, test} from 'bun:test';
@@ -10,8 +10,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {ACTIONS_OVERVIEW_MARKER} from '../../../src/libts/semantic/kc_actions';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
-import {ACTIONS_OVERVIEW_MARKER, generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
+import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 

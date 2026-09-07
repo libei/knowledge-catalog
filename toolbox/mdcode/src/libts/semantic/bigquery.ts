@@ -80,7 +80,7 @@ export function generatePropertyGraph(
   // NODE TABLE / EDGE TABLE / MEASURE), so the BigQuery leg emits nothing for
   // them. Warn once so an author who declared actions is not surprised they are
   // absent from the graph. Their only destination is Knowledge Catalog (see
-  // knowledge_catalog.actionsOverviewAspectData) -- but that leg runs only when
+  // kc_actions.ts) -- but that leg runs only when
   // the KC destination is in the push, so the message stays conditional (a
   // bq-only push warns separately that actions go nowhere; see commands.ts).
   const actions = resolved.model.actions ?? [];

@@ -38,6 +38,7 @@ import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
+import {ACTION_ANCHOR_ASPECT_TYPES} from './kc_actions';
 import {generateCatalogResources, KcResources} from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
@@ -699,14 +700,14 @@ async function writeEntry(
 
 // The built-in aspects the emitter attaches CONDITIONALLY. `guidelines` (only
 // when an object carries ai_context.instructions) can ride any entry, so it is
-// reconciled everywhere. `overview` (only when the model declares actions)
-// rides the model anchor alone, so it is reconciled only there -- naming it on
-// an entity/metric entry would be a harmless no-op, but scoping it keeps the
-// patch honest about where the aspect can live. Every other aspect the emitter
-// writes (semantic-*, schema) is unconditional, so it is always present on a
-// re-push and never needs explicit clearing.
+// reconciled everywhere. The aspects carrying the model's actions ride the model
+// anchor alone, so they are reconciled only there -- naming them on an
+// entity/metric entry would be a harmless no-op, but scoping them keeps the
+// patch honest about where the aspect can live. `kc_actions.ts` owns which
+// aspect types those are (ACTION_ANCHOR_ASPECT_TYPES). Every other aspect the
+// emitter writes (semantic-*, schema) is unconditional, so it is always present
+// on a re-push and never needs explicit clearing.
 const OPTIONAL_ASPECT_TYPES = ['guidelines'] as const;
-const ANCHOR_ONLY_ASPECT_TYPES = ['overview'] as const;
 
 // The aspect keys to reconcile when updating an existing entry. A Dataplex
 // entries.patch clears an aspect only when its key is named in `aspectKeys` and
@@ -724,7 +725,7 @@ function reconciledAspectKeys(entry: Entry, opts: KcDeployOptions): string[] {
   const keys = new Set(Object.keys(entry.aspects ?? {}));
   const optional: string[] = [...OPTIONAL_ASPECT_TYPES];
   if (entry.entryType?.endsWith('/semantic-model')) {
-    optional.push(...ANCHOR_ONLY_ASPECT_TYPES);
+    optional.push(...ACTION_ANCHOR_ASPECT_TYPES);
   }
   for (const type of optional) keys.add(`${proj}.${loc}.${type}`);
   return [...keys];
