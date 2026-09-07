@@ -242,6 +242,42 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
+  // Creates a custom aspect type. `aspectType` carries the display name,
+  // description and metadataTemplate; the resource name comes from the id.
+  async createAspectType(project: string, location: string, aspectTypeId: string,
+                         aspectType: Omit<AspectType, 'name'>): Promise<api.ApiResult<AspectType>> {
+    const resourceName = `${catalogContainer(project, location)}/aspectTypes`;
+
+    const params: Record<string, any> = { aspectTypeId };
+
+    return await this._post<AspectType>(resourceName, aspectType, params);
+  }
+
+  // Patches an existing aspect type. Dataplex rejects a backwards-incompatible
+  // metadataTemplate change, so an update only ever adds fields.
+  async updateAspectType(project: string, location: string, aspectTypeId: string,
+                         aspectType: Omit<AspectType, 'name'>,
+                         updateMask?: string[]): Promise<api.ApiResult<AspectType>> {
+    const name = `${catalogContainer(project, location)}/aspectTypes/${aspectTypeId}`;
+
+    const params: Record<string, any> = {};
+    if (updateMask && updateMask.length) {
+      params.updateMask = updateMask.join(',');
+    }
+
+    return await this._patch<AspectType>(name, aspectType, params);
+  }
+
+  // Creates a custom entry type.
+  async createEntryType(project: string, location: string, entryTypeId: string,
+                        entryType: Omit<EntryType, 'name'>): Promise<api.ApiResult<EntryType>> {
+    const resourceName = `${catalogContainer(project, location)}/entryTypes`;
+
+    const params: Record<string, any> = { entryTypeId };
+
+    return await this._post<EntryType>(resourceName, entryType, params);
+  }
+
   async createEntryLink(project: string, location: string, entryGroup: string,
                         entryLinkId: string,
                         entryLink: EntryLink): Promise<api.ApiResult<EntryLink>> {

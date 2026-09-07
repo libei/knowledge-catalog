@@ -15,13 +15,16 @@
 // `required_aspects`; the emitted aspect set per entry is those plus the
 // optional `guidelines` aspect (attached only when the object carries
 // `ai_context.instructions`):
-//   * semantic-model entry -> { semantic-model, overview?, guidelines? }
+//   * semantic-model entry -> { semantic-model, guidelines? }
 //   * semantic-entity entry -> { semantic-entity, schema, guidelines? }
 //   * semantic-metric entry -> { semantic-metric, guidelines? }
 //
-// Actions (the model's write operations) have no system type of their own. How
-// they are persisted instead lives entirely in `kc_actions.ts`; this module only
-// merges whatever aspects that file returns into the anchor.
+// An action (the model's write operations) is published the same way, one entry
+// per action parented to the anchor, but its entry and aspect types are CUSTOM:
+// there is no built-in type for an action yet, so `kcmd init` provisions the
+// pair in the destination project. Everything about those types, and the aspect
+// the action carries, lives in `kc_actions.ts`; this module only appends the
+// entries that file returns.
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
@@ -54,7 +57,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
-import {actionAnchorAspects} from './kc_actions';
+import {actionEntries, actionOwnedPrefix} from './kc_actions';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -132,20 +135,12 @@ export function generateCatalogResources(
   const modelEntryName = names.entry(modelId);
   claim(seen, modelId, 'entry', `model '${model.name}'`, warnings);
 
-  // The anchor's base aspects: always semantic-model, plus whatever aspects
-  // carry the model's actions. Actions have no system type of their own, so
-  // `kc_actions.ts` owns that encoding and returns nothing when the model
-  // declares no actions.
-  const anchorBase: Record<string, Record<string, any>> = {
-    'semantic-model': modelAspectData(model),
-    ...actionAnchorAspects(model, warnings),
-  };
-
   const entries: Entry[] = [{
     name: modelEntryName,
     entryType: names.typeName('entry', 'semantic-model'),
     entrySource: source(model.name, model.description),
-    aspects: aspectsFor(names, anchorBase, model.aiContext),
+    aspects: aspectsFor(
+        names, {'semantic-model': modelAspectData(model)}, model.aiContext),
   }];
 
   // Maps an entity's model name to its published entry name, so a relationship
@@ -206,6 +201,18 @@ export function generateCatalogResources(
     });
   }
 
+  // One entry per action, alongside the entities and metrics. Actions are the
+  // only construct with no built-in system type, so `kc_actions.ts` owns both
+  // the types they reference and the aspect they carry; it returns nothing when
+  // the model declares no actions.
+  entries.push(...actionEntries(model, modelId, {
+    project: opts.project,
+    entry: (id: string) => names.entry(id),
+    anchor: modelEntryName,
+    claim: (id: string, label: string) =>
+        claim(seen, id, 'entry', label, warnings),
+  }, warnings));
+
   // Relationships map to schema-join entry links between their endpoint entries.
   const entryLinks: EntryLink[] = [];
   const seenLinks = new Set<string>();
@@ -219,8 +226,13 @@ export function generateCatalogResources(
     entries,
     entryLinks,
     warnings: [...new Set(warnings)],
-    // Ossie ids are dotted: `<model>.entities.<name>` / `<model>.metrics.<name>`.
-    ownedPrefixes: [`${modelId}.entities.`, `${modelId}.metrics.`],
+    // Ossie ids are dotted: `<model>.entities.<name>` / `<model>.metrics.<name>`
+    // / `<model>.actions.<name>`.
+    ownedPrefixes: [
+      `${modelId}.entities.`,
+      `${modelId}.metrics.`,
+      actionOwnedPrefix(modelId),
+    ],
   };
 }
 

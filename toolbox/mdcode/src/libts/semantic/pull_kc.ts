@@ -19,7 +19,7 @@
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {SemanticModel} from './ir';
-import {ACTION_ANCHOR_ASPECT_TYPES} from './kc_actions';
+import {ACTION_TYPE_ID, actionAspectTypes} from './kc_actions';
 import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
 
 export interface KcPullOptions {
@@ -150,13 +150,7 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
   const aspectType = (name: string) => `${typeBase}/aspectTypes/${name}`;
   switch (t) {
     case 'semantic-model':
-      // The anchor also carries whatever aspects hold the model's actions (see
-      // kc_actions.ts); fetch them so a pull can recover the actions.
-      return [
-        aspectType('semantic-model'),
-        ...ACTION_ANCHOR_ASPECT_TYPES.map(aspectType),
-        aspectType('guidelines'),
-      ];
+      return [aspectType('semantic-model'), aspectType('guidelines')];
     case 'semantic-entity':
       return [
         aspectType('semantic-entity'), aspectType('schema'),
@@ -164,6 +158,11 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
       ];
     case 'semantic-metric':
       return [aspectType('semantic-metric'), aspectType('guidelines')];
+    case ACTION_TYPE_ID:
+      // An action's entry type is custom, so it lives in the destination
+      // project rather than under `dataplex-types`; `typeBase` already points
+      // there, and kc_actions.ts names the aspects to fetch beneath it.
+      return actionAspectTypes(typeBase);
     default:
       return undefined;
   }

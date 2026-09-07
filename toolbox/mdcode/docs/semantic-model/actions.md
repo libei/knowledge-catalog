@@ -126,44 +126,50 @@ An action has no graph construct. It is write-side, and a property graph is a
 read surface, so the push emits no node, edge, or measure for it and warns once:
 
 ```
-model 'payments': 1 action(s) published to the model's overview aspect
+model 'payments': 1 action(s) published as semantic-action entries
 (actions have no BigQuery Graph representation).
 ```
 
-Knowledge Catalog is where actions land. They have no `semantic-*` system type
-of their own, so they ride the model anchor's built-in `overview` aspect: a
-Markdown section for a person reading the catalog, followed by a JSON block that
-a pull reads back. For the model above, the aspect holds:
+Knowledge Catalog is where actions land. Each action becomes its own entry,
+parented to the model entry, exactly as a metric does. The entry carries one
+aspect holding the executor and the typed parameters:
 
-````markdown
-## Actions
-
-Write operations defined on this model -- the write-side counterpart to
-metrics. Actions have no BigQuery Graph representation; they are published here
-for discovery and are round-tripped by `kcmd pull`.
-
-### TransferFunds
-
-Move money from one account to another.
-
-- Executor: MCP tool `transfer_funds` on server `//agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/payments`
-- Parameters:
-  - `source`: Account (entity reference)
-  - `target`: Account (entity reference)
-  - `amount`: Float
-
-<!-- kcmd:actions v1 -->
-```json
-[ … the same actions, verbatim, as the canonical copy … ]
+```yaml
+# .../entryGroups/<group>/entries/payments.actions.TransferFunds
+entryType: projects/<project>/locations/global/entryTypes/semantic-action
+parentEntry: .../entryGroups/<group>/entries/payments
+entrySource:
+  displayName: TransferFunds
+  description: Move money from one account to another.
+aspects:
+  <project>.global.semantic-action:
+    executorKind: mcp
+    mcpServer: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/payments
+    mcpTool: transfer_funds
+    parameters:
+      - {name: source, type: Account, isEntityRef: true}
+      - {name: target, type: Account, isEntityRef: true}
+      - {name: amount, type: Float, isEntityRef: false}
+    instructions: Confirm the source account has cleared funds.
 ```
-````
 
-Because that leg is the only destination an action has, a graph-only push has
-nowhere to put one. `kcmd push --no-kc` validates the actions and then warns
-that they will not be deployed.
+The `semantic-action` entry type and aspect type are the one pair `kcmd` creates
+rather than references. Every other element of a model maps to a built-in system
+type under `dataplex-types/global`; there is no built-in type for an action yet,
+so `kcmd init --semantic-model` provisions the pair in your own project at
+`global`, beside the entry group. A later push writes only entries.
 
-Writing the overview needs `dataplex.entryGroups.useOverviewAspect` on the
-destination entry group, in addition to the permissions any push needs — see
+Two consequences follow from the entry shape. A catalog search can list the
+actions in a project by entry type, the way it lists entities or metrics. And
+removing an action from the document deletes its entry on the next push, because
+the model owns the `<model>.actions.` id prefix.
+
+Because Knowledge Catalog is the only destination an action has, a graph-only
+push has nowhere to put one. `kcmd push --no-kc` validates the actions and then
+warns that they will not be deployed.
+
+Publishing an action needs the permission to attach its aspect, in addition to
+the permissions any push needs — see
 [Reference → Permissions](reference.md#permissions).
 
 ## 4. Pull it back
@@ -172,10 +178,11 @@ destination entry group, in addition to the permissions any push needs — see
 kcmd pull
 ```
 
-Pull reads the JSON block after the `<!-- kcmd:actions v1 -->` marker and
-rebuilds each action, so a name, a description, an executor, and typed
-parameters survive the round trip unchanged. The Markdown above the marker is
-for people; the JSON is the canonical copy. What every part of a model does and
+Pull collects the `semantic-action` entries under the model entry and rebuilds
+each action, so a name, a description, an executor, typed parameters, and
+`ai_context.instructions` survive the round trip unchanged. `isEntityRef` is
+re-derived against the entities the pull recovered rather than read back, so it
+stays consistent with the model you get. What every part of a model does and
 does not survive is in
 [What push and pull preserve](fidelity.md).
 

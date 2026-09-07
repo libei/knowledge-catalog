@@ -1,16 +1,16 @@
 // Behavior specification for model-level ACTIONS -- the write-side counterpart
 // to metrics -- across the pipeline: loader parsing (executor + typed
 // parameters), the push-time validation gate, and the Knowledge Catalog
-// publish/pull round trip (actions have no system type of their own; how they
-// are persisted lives in kc_actions.ts). Preconditions and `affects` are
-// intentionally out of scope for this prototype.
+// publish/pull round trip (actions have no BUILT-IN system type; the custom
+// one they use, and everything about how they are persisted, lives in
+// kc_actions.ts). Preconditions and `affects` are intentionally out of scope
+// for this prototype.
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {SemanticModel} from '../../../src/libts/semantic/ir';
-import {ACTIONS_OVERVIEW_MARKER} from '../../../src/libts/semantic/kc_actions';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
@@ -208,36 +208,61 @@ describe('validatePushRequirements gates actions', () => {
 
 describe('Knowledge Catalog publish/pull round trip', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
+  const ACTION_ENTRY_TYPE = '/entryTypes/semantic-action';
 
-  test('actions are published to the anchor overview aspect', () => {
+  test('each action is published as its own semantic-action entry', () => {
     const {entries, warnings} = generateCatalogResources(model, OPTS);
-    const anchor = entries[0];
-    const overview = anchor.aspects?.['dataplex-types.global.overview'];
-    expect(overview).toBeDefined();
-    const content = overview!.data!.content as string;
-    expect(overview!.data!.contentType).toBe('MARKDOWN');
-    // Human-readable section + the machine-readable marker/JSON block.
-    expect(content).toContain('## Actions');
-    expect(content).toContain('### PlaceOrder');
-    expect(content).toContain(ACTIONS_OVERVIEW_MARKER);
-    expect(content).toContain('"place_order"');
+    const entry = entries.find(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))!;
+    expect(entry).toBeDefined();
+    // The type is custom, so it lives in the DESTINATION project at `global`,
+    // where `kcmd init` provisions it -- not under `dataplex-types` with the
+    // built-in types the other entries reference.
+    expect(entry.entryType)
+        .toBe('projects/dest/locations/global/entryTypes/semantic-action');
+    // Ids sit alongside `<model>.entities.` and `<model>.metrics.`, and the
+    // action hangs off the model anchor the way a metric does.
+    expect(entry.name)
+        .toBe(
+            'projects/dest/locations/us/entryGroups/eg/entries/' +
+            'sales.actions.PlaceOrder');
+    expect(entry.parentEntry).toBe(entries[0].name);
+    expect(entry.entrySource?.displayName).toBe('PlaceOrder');
+    expect(entry.entrySource?.description).toBe('Create an order for a customer');
+
+    const data = entry.aspects!['dest.global.semantic-action'].data!;
+    expect(data.executorKind).toBe('mcp');
+    expect(data.mcpTool).toBe('place_order');
+    // Only the live executor kind's fields are written.
+    expect(data.restEndpoint).toBeUndefined();
+    expect(data.parameters).toEqual([
+      {name: 'customer', type: 'customer', isEntityRef: true},
+      {name: 'quantity', type: 'Integer', isEntityRef: false},
+    ]);
+    expect(data.instructions)
+        .toBe('Resolve the buyer to a customer before calling.');
     // Author is warned actions are catalog-only.
     expect(warnings.some(w => w.includes('action'))).toBe(true);
   });
 
-  test('a pull recovers the actions from the overview', () => {
+  test('the model owns its action entries for delete reconciliation', () => {
+    const {ownedPrefixes} = generateCatalogResources(model, OPTS);
+    expect(ownedPrefixes).toContain('sales.actions.');
+  });
+
+  test('a pull recovers the actions', () => {
     const {entries, entryLinks} = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(entries, entryLinks);
     expect(models[0].actions).toEqual(model.actions);
   });
 
   test('a pull missing the referenced entity drops isEntityRef and warns', () => {
-    // Pull only the anchor: the `customer` entity entry is absent, so the
-    // action's entity-typed `customer` parameter can no longer be resolved.
+    // Pull the anchor and the action, but no entity entries: the `customer`
+    // entity is absent, so the action's entity-typed `customer` parameter can
+    // no longer be resolved.
     const {entries} = generateCatalogResources(model, OPTS);
-    const anchorOnly =
-        entries.filter(e => e.entryType.endsWith('/semantic-model'));
-    const {models, warnings} = modelsFromCatalogResources(anchorOnly);
+    const withoutEntities =
+        entries.filter(e => !e.entryType.endsWith('/semantic-entity'));
+    const {models, warnings} = modelsFromCatalogResources(withoutEntities);
     const params = models[0].actions![0].parameters;
     const customer = params.find(p => p.name === 'customer')!;
     const quantity = params.find(p => p.name === 'quantity')!;
@@ -251,10 +276,10 @@ describe('Knowledge Catalog publish/pull round trip', () => {
         .toBe(true);
   });
 
-  test('a model with no actions carries no overview aspect', () => {
+  test('a model with no actions publishes no action entry', () => {
     const noActions: SemanticModel = {...model, actions: undefined};
     const {entries} = generateCatalogResources(noActions, OPTS);
-    expect(entries[0].aspects?.['dataplex-types.global.overview'])
-        .toBeUndefined();
+    expect(entries.some(e => e.entryType.endsWith(ACTION_ENTRY_TYPE)))
+        .toBe(false);
   });
 });

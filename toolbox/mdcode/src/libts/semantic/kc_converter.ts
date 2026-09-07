@@ -54,8 +54,8 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {AiContext, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
-import {readActions} from './kc_actions';
+import {Action, AiContext, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {isActionEntry, readAction} from './kc_actions';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -85,6 +85,9 @@ export function modelsFromCatalogResources(
       entries.filter(e => semanticType(e) === 'semantic-entity');
   const metricEntries =
       entries.filter(e => semanticType(e) === 'semantic-metric');
+  // Actions have no built-in system type; `kc_actions.ts` owns the custom one
+  // and recognizes an entry carrying it.
+  const actionEntries = entries.filter(isActionEntry);
 
   if (!anchors.length) {
     warnings.push('no semantic-model entry found; nothing to reconstruct');
@@ -128,9 +131,9 @@ export function modelsFromCatalogResources(
     const model: SemanticModel = {name, entities, relationships, metrics};
     const description = anchor.entrySource?.description;
     if (description !== undefined) model.description = description;
-    // Actions have no system type of their own; `kc_actions.ts` owns how they
-    // are persisted on the anchor and how they come back.
-    const actions = readActions(anchor, entityNames, warnings);
+    const actions = childrenOf(anchor.name, actionEntries)
+                        .map(e => readAction(e, entityNames, warnings))
+                        .filter((a): a is Action => a !== undefined);
     if (actions.length) model.actions = actions;
     // Deployment targets ride back in the same GOOGLE custom_extensions block
     // the author wrote them in (the inverse of the emitter's modelAspectData).
@@ -144,7 +147,8 @@ export function modelsFromCatalogResources(
   // Flag children that resolved to no anchor at all (only possible with
   // multiple anchors, where the sole-anchor fallback does not apply).
   if (!soleAnchor) {
-    for (const child of [...entityEntries, ...metricEntries]) {
+    for (const child of [...entityEntries, ...metricEntries,
+                         ...actionEntries]) {
       if (!child.parentEntry || !anchorNames.has(child.parentEntry)) {
         warnings.push(`entry '${
             child.name}' has no resolvable parent semantic-model; omitted`);

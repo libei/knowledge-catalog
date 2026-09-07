@@ -178,8 +178,8 @@ describe('deployKnowledgeCatalog: happy path', () => {
     expect(result.created).toBe(3);
     expect(result.updated).toBe(0);
 
-    // Push provisions neither the entry group (created at `init`) nor any type
-    // (the semantic types are built-in): it only writes the three entries.
+    // Push provisions neither the entry group nor any type -- both are created
+    // at `init` -- so it only writes the three entries.
     expect(group).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(3);
     expect(update).not.toHaveBeenCalled();
@@ -205,25 +205,6 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
     expect(result.updated).toBe(3);
     expect(create).toHaveBeenCalledTimes(3);
     expect(update).toHaveBeenCalledTimes(3);
-  });
-
-  test('re-push names the optional overview key so a removed action aspect is cleared', async () => {
-    const {update} = stubClient({
-      create: () => err(409, 'entry already exists'),
-      update: ok({}),
-    });
-
-    // DOCS declares no actions, so the regenerated anchor carries no overview
-    // aspect. The anchor is written first (anchor-first).
-    await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
-
-    // Its update must still NAME the overview key in aspectKeys: Dataplex clears
-    // an aspect only when its key is listed and absent from the body. Otherwise
-    // a previously-published overview (an earlier push that HAD actions)
-    // survives on the server and a later pull resurrects the deleted actions.
-    const anchorAspectKeys = update.mock.calls[0][2] ?? [];
-    expect(anchorAspectKeys.some((k: string) => k.endsWith('.overview')))
-        .toBe(true);
   });
 });
 
@@ -407,15 +388,18 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
   // entity 'sales.entities.orders', and the metric 'sales.metrics.total_revenue'.
   const EMITTED = ['sales', 'sales.entities.orders', 'sales.metrics.total_revenue'];
 
-  test('deletes entities/metrics removed from the model, scoped by owner', async () => {
-    // The group also holds two orphans owned by the 'sales' anchor (an entity
-    // and a metric no longer in the model) plus two entries owned by a
-    // different model. Only the two orphans under 'sales' must be deleted.
+  test('deletes entities/metrics/actions removed from the model, scoped by owner',
+       async () => {
+    // The group also holds three orphans owned by the 'sales' anchor (an
+    // entity, a metric and an action no longer in the model) plus two entries
+    // owned by a different model. Only the three orphans under 'sales' must be
+    // deleted.
     const {del, list} = stubClient({
       existing: [
         ...EMITTED,
         'sales.entities.removed',
         'sales.metrics.removed',
+        'sales.actions.Removed',
         'other',
         'other.entities.x',
       ],
@@ -424,10 +408,14 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
     const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
     expect(result.success).toBe(true);
-    expect(result.deleted).toBe(2);
+    expect(result.deleted).toBe(3);
     expect(list).toHaveBeenCalledTimes(1);
     const deletedIds = del.mock.calls.map(c => c[3]).sort();
-    expect(deletedIds).toEqual(['sales.entities.removed', 'sales.metrics.removed']);
+    expect(deletedIds).toEqual([
+      'sales.actions.Removed',
+      'sales.entities.removed',
+      'sales.metrics.removed',
+    ]);
   });
 
   test('recognises owned entries when the server names the project by number',

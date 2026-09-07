@@ -259,8 +259,10 @@ are **not** probed before deploy — the live pre-flight is BigQuery-only (see
 ## What gets created in Knowledge Catalog
 
 Each element of your model maps to one catalog resource. Every resource type
-below is a built-in system type under `dataplex-types/global` — push references
-them, it never creates them.
+below except `semantic-action` is a built-in system type under
+`dataplex-types/global` — push references them, it never creates them.
+`semantic-action` is custom, and `kcmd init --semantic-model` creates it in your
+own project at `global`; push still writes only entries.
 
 > Set `KC_TYPE_PROJECT` to read these system types from another project, and
 > `DATAPLEX_ENDPOINT` to target a non-prod Dataplex host; both default to
@@ -272,7 +274,7 @@ them, it never creates them.
 | Entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
 | Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
 | Relationship | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
-| Actions | built-in `overview` aspect on the model anchor | aspect (not its own entry) | — |
+| Action | `semantic-action` (custom type) | entry | `<model>.actions.<action>` |
 
 An entity entry carries its columns in the `schema` aspect (name, data type,
 description, and any `label` per field), plus the entity's keys and unique keys
@@ -281,12 +283,13 @@ relationship detail — the paired columns and foreign-key direction — in its
 aspect. Any element with `ai_context.instructions` (the model, an entity, or a
 metric) also gets a built-in `guidelines` aspect holding that text.
 
-A model's **actions** have no `semantic-*` system type of their own, so they ride
-the model anchor's built-in `overview` aspect: human-readable Markdown for each
-action (name, description, executor, typed parameters) followed by an embedded
-JSON block that a `pull` recovers them from losslessly. The overview is attached
-only when the model declares actions. (This is the prototype scope — an action's
-`precondition` and `affects` are not modeled yet.)
+An **action** entry carries its executor and its typed parameters in a
+`semantic-action` aspect, along with the action's `ai_context.instructions`.
+That aspect type is provisioned in your project rather than referenced from
+`dataplex-types`, because Dataplex has no built-in action type yet; when one
+ships, the entries move to it and their shape does not change. (This is the
+prototype scope — an action's `precondition` and `affects` are not modeled
+yet.)
 
 Push to Knowledge Catalog is lossy — the catalog holds metadata, not a full copy
 of your model. For exactly what is stored, what is gated behind
@@ -393,14 +396,16 @@ and each aspect type attached, so a push needs, on the destination entry group:
   `schema` aspect (its fields, keys, unique keys, and labels)
 * `dataplex.entryGroups.useGuidelinesAspect` — when the model, an entity, or a
   metric carries `ai_context.instructions`
-* `dataplex.entryGroups.useOverviewAspect` — when the model declares actions
-  (they ride the anchor's built-in `overview` aspect)
 * `dataplex.entryGroups.useSchemaJoinAspect` and
   `dataplex.entryGroups.useSchemaJoinEntryLink` — when the model has relationships
 * the `use<AspectType>Aspect` permission for the `semantic-model`,
   `semantic-entity`, and `semantic-metric` aspect types the push attaches — i.e.
   `dataplex.entryGroups.useSemanticModelAspect`, `useSemanticEntityAspect`, and
   `useSemanticMetricAspect`
+* `dataplex.aspectTypes.use` on the `semantic-action` aspect type, when the
+  model declares actions — that type is custom rather than built-in, so it is
+  authorized on the type resource instead of through an entry-group
+  use-permission
 
 > The `schema` / `guidelines` / `schema-join` use-permissions follow Dataplex's
 > documented `dataplex.entryGroups.use<AspectType>Aspect`
@@ -408,6 +413,17 @@ and each aspect type attached, so a push needs, on the destination entry group:
 > `semantic-*` names follow the same pattern but are not yet in that public
 > reference (the `semantic-*` system aspect types are newer), so confirm them
 > against your project's IAM once granted.
+
+`kcmd init --semantic-model` creates what a later push only references, so it
+needs more than push does, in the destination project:
+
+* `dataplex.entryGroups.create` — the destination entry group
+* `dataplex.aspectTypes.create` / `dataplex.aspectTypes.update` and
+  `dataplex.entryTypes.create` — the custom `semantic-action` pair. Init patches
+  an aspect type that is already there, so a project set up by an older `kcmd`
+  picks up template additions; an entry type that is already there is left
+  alone. Init fails when a call fails, rather than leaving a later push to hit
+  an opaque parsing error.
 
 `kcmd pull` needs read access to the same entry group instead — to list its
 entries and fetch each `semantic-*` entry with its aspects.
