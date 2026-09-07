@@ -108,8 +108,9 @@ agree on every structural row and differ only where a Spanner target has no
     structure, so neither graph has a construct for it either: the push emits
     nothing and warns once. Each is published to Knowledge Catalog as one
     `semantic-constraint` entry under the model entry, and `pull` reads it back.
-    Publishing a constraint is all that happens to it; nothing checks one
-    against live data.
+    Enforcing one is a separate job from publishing it — the runtime that checks
+    a constraint inside the write transaction is not part of `push`. See
+    [Stating what must stay true](constraints.md).
 
 ## To Knowledge Catalog
 
