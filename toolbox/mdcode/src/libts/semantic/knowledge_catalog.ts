@@ -211,6 +211,9 @@ export function generateCatalogResources(
     anchor: modelEntryName,
     claim: (id: string, label: string) =>
         claim(seen, id, 'entry', label, warnings),
+    // Populated by the entity loop above, so it excludes the abstract and
+    // unavailable entities that loop skipped.
+    publishedEntities: new Set(entityEntryName.keys()),
   }, warnings));
 
   // Relationships map to schema-join entry links between their endpoint entries.

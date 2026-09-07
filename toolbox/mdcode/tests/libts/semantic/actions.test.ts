@@ -283,3 +283,133 @@ describe('Knowledge Catalog publish/pull round trip', () => {
         .toBe(false);
   });
 });
+
+
+// The round trip above covers one MCP action in detail. These cover the shapes
+// that differ: the other two executor kinds, an action with no parameters, and
+// an action with neither a description nor instructions -- the cases where the
+// aspect either takes a different branch or omits fields.
+describe('Knowledge Catalog round trip across executor kinds', () => {
+  const model = loadFixtureModel('actions_executors.yaml');
+  const ACTION_ENTRY_TYPE = '/entryTypes/semantic-action';
+
+  function actionEntriesOf(m: SemanticModel) {
+    return generateCatalogResources(m, OPTS)
+        .entries.filter(e => e.entryType.endsWith(ACTION_ENTRY_TYPE));
+  }
+
+  test('every action becomes one entry, parented to the model anchor', () => {
+    const {entries} = generateCatalogResources(model, OPTS);
+    const actions = entries.filter(e => e.entryType.endsWith(ACTION_ENTRY_TYPE));
+    expect(actions.map(e => e.name.split('/entries/')[1])).toEqual([
+      'commerce.actions.PlaceOrder',
+      'commerce.actions.RefundOrder',
+      'commerce.actions.CloseBooks',
+    ]);
+    for (const e of actions) expect(e.parentEntry).toBe(entries[0].name);
+  });
+
+  test('each executor kind writes only its own coordinates', () => {
+    const byName = new Map(
+        actionEntriesOf(model).map(e => [e.entrySource!.displayName, e]));
+    const dataOf = (name: string) =>
+        byName.get(name)!.aspects!['dest.global.semantic-action'].data!;
+
+    expect(dataOf('PlaceOrder')).toMatchObject({
+      executorKind: 'mcp',
+      mcpServer: '//agentregistry.googleapis.com/x/mcpServers/commerce',
+      mcpTool: 'place_order',
+    });
+    expect(dataOf('RefundOrder')).toMatchObject({
+      executorKind: 'rest',
+      restEndpoint: 'https://commerce.example.com/v1/refunds',
+      restMethod: 'POST',
+    });
+    expect(dataOf('CloseBooks')).toMatchObject({
+      executorKind: 'grpc',
+      grpcService: 'commerce.v1.Ledger',
+      grpcMethod: 'CloseBooks',
+    });
+    // A kind writes nothing belonging to another kind, so the aspect never
+    // carries two executors at once.
+    for (const [kind, foreign] of [
+             ['PlaceOrder', ['restEndpoint', 'restMethod', 'grpcService', 'grpcMethod']],
+             ['RefundOrder', ['mcpServer', 'mcpTool', 'grpcService', 'grpcMethod']],
+             ['CloseBooks', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod']],
+    ] as Array<[string, string[]]>) {
+      for (const field of foreign) expect(dataOf(kind)[field]).toBeUndefined();
+    }
+  });
+
+  test('an action with nothing optional omits those fields entirely', () => {
+    const closeBooks = actionEntriesOf(model).find(
+        e => e.entrySource!.displayName === 'CloseBooks')!;
+    // No description, so the entry source carries none, and no instructions.
+    expect(closeBooks.entrySource!.description).toBeUndefined();
+    const data = closeBooks.aspects!['dest.global.semantic-action'].data!;
+    expect(data.instructions).toBeUndefined();
+    expect(data.parameters).toEqual([]);
+  });
+
+  test('a pull recovers every action unchanged', () => {
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const {models} = modelsFromCatalogResources(entries, entryLinks);
+    // Entries come back ordered by the catalog rather than by the document, so
+    // compare as a set keyed by name.
+    const byName = (m: SemanticModel) =>
+        Object.fromEntries((m.actions ?? []).map(a => [a.name, a]));
+    expect(byName(models[0])).toEqual(byName(model));
+  });
+
+  test('a second push of the pulled model produces the same entries', () => {
+    // Push -> pull -> push has to be a fixed point: if it were not, a pull
+    // followed by a push would rewrite entries that nobody edited.
+    const first = generateCatalogResources(model, OPTS);
+    const {models} = modelsFromCatalogResources(first.entries, first.entryLinks);
+    const second = generateCatalogResources(models[0], OPTS);
+
+    const actionsOf = (entries: typeof first.entries) =>
+        entries.filter(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))
+            .map(e => [e.name, e.aspects!['dest.global.semantic-action'].data])
+            .sort();
+    expect(actionsOf(second.entries)).toEqual(actionsOf(first.entries));
+  });
+});
+
+
+describe('actions referencing entities the push does not publish', () => {
+  test('an abstract entity parameter is published but warned about', () => {
+    // An abstract entity is a table-less supertype, so the Knowledge Catalog
+    // leg skips it. A parameter typed by one therefore names an entity with no
+    // entry, which a later pull cannot tell from a misspelled scalar.
+    const {models} = fromDocument({
+      version: '0.2.0.dev0/google',
+      semantic_model: [{
+        name: 'm',
+        entities: [
+          {name: 'party', abstract: true, fields: []},
+          {
+            name: 'customer',
+            source: 'p.d.c',
+            primary_key: ['id'],
+            fields: [{name: 'id', expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'id'}]}}],
+          },
+        ],
+        actions: [{
+          name: 'Notify',
+          executor: MCP,
+          parameters: [{name: 'who', type: 'party'}],
+        }],
+      }],
+    });
+    // The loader resolved it against the ontology, which includes abstract
+    // entities.
+    expect(models[0].actions![0].parameters[0].isEntityRef).toBe(true);
+
+    const {warnings} = generateCatalogResources(models[0], OPTS);
+    expect(warnings.some(
+               w => w.includes('parameter \'who\'') &&
+                   w.includes('does not publish')))
+        .toBe(true);
+  });
+});

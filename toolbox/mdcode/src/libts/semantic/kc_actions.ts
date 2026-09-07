@@ -245,47 +245,90 @@ export function actionAspectKey(dest: {project: string}): string {
   return `${home.project}.${home.location}.${ACTION_TYPE_ID}`;
 }
 
+// What provisioning produced. `error` is a failure the caller must not ignore.
+// `denied` is the narrower case of lacking permission to create a type, which
+// is reported and survived: actions are one optional construct, and a project
+// whose models declare none never needs these types.
+export interface ProvisionResult {
+  error?: string;
+  denied?: string;
+}
+
 /**
- * Creates the two custom action types in a destination, returning an error
- * message or undefined on success.
+ * Creates the two custom action types in a destination.
  *
  * Called from `kcmd init --semantic-model`, beside the entry group it already
- * provisions, so a push still writes nothing but entries. Each type is created
- * and then, if it is already there, patched: a project provisioned by an
- * earlier version of kcmd holds an older template, and pushing a field that
+ * provisions, so a push still writes nothing but entries. The aspect type is
+ * created and then, if it is already there, patched: a project provisioned by
+ * an earlier version of kcmd holds an older template, and pushing a field that
  * template lacks fails with an opaque parsing error. Dataplex rejects a
  * backwards-incompatible change, so the patch only ever adds appended fields.
  */
 export async function provisionActionTypes(
-    cat: CatalogClient, dest: {project: string}): Promise<string|undefined> {
+    cat: CatalogClient, dest: {project: string}): Promise<ProvisionResult> {
   const home = actionTypeHome(dest);
 
+  // Creating a type needs permissions that publishing entries does not. A
+  // caller who lacks them can still init, push and pull every model that
+  // declares no action, so the refusal is reported rather than fatal.
+  const denial = (what: string, status: number, message?: string):
+      ProvisionResult|undefined => status === 403 ?
+      {
+        denied: `no permission to create ${what} in project '${
+            home.project}' (${message || status}); ` +
+            `models that declare actions cannot be pushed until it exists`
+      } :
+      undefined;
+
+  const aspectLabel = `aspect type '${ACTION_TYPE_ID}'`;
   const aspect = await cat.createAspectType(
       home.project, home.location, ACTION_TYPE_ID, ACTION_ASPECT_TYPE_SPEC);
   if (aspect.status === 409) {
     const upd = await cat.updateAspectType(
         home.project, home.location, ACTION_TYPE_ID, ACTION_ASPECT_TYPE_SPEC,
         ['description', 'display_name', 'metadata_template']);
+    const refused = denial(aspectLabel, upd.status, upd.message);
+    if (refused) return refused;
     if (upd.status !== 200)
-      return `updating aspect type '${ACTION_TYPE_ID}': ${
-          upd.message || upd.status}`;
+      return {error: `updating ${aspectLabel}: ${upd.message || upd.status}`};
+    const failed =
+        await cat.awaitOperation(upd.result, `updating ${aspectLabel}`);
+    if (failed) return {error: failed};
   } else if (aspect.status !== 200) {
-    return `creating aspect type '${ACTION_TYPE_ID}': ${
-        aspect.message || aspect.status}`;
+    const refused = denial(aspectLabel, aspect.status, aspect.message);
+    if (refused) return refused;
+    return {
+      error: `creating ${aspectLabel}: ${aspect.message || aspect.status}`
+    };
+  } else {
+    // The entry type below names this aspect type in its required aspects, and
+    // the server rejects that while the create is still in flight, so the wait
+    // is load-bearing rather than tidiness.
+    const failed =
+        await cat.awaitOperation(aspect.result, `creating ${aspectLabel}`);
+    if (failed) return {error: failed};
   }
 
   // The entry type requires the aspect type above, so it is created second. An
   // existing one is left alone rather than patched: unlike the aspect type it
   // carries no template that grows over time, and its required-aspect list is
   // what an entry already published depends on.
+  const entryLabel = `entry type '${ACTION_TYPE_ID}'`;
   const entryType = await cat.createEntryType(
       home.project, home.location, ACTION_TYPE_ID, actionEntryTypeSpec(dest));
-  if (entryType.status !== 200 && entryType.status !== 409) {
-    return `creating entry type '${ACTION_TYPE_ID}': ${
-        entryType.message || entryType.status}`;
+  if (entryType.status === 409) return {};
+  const refused = denial(entryLabel, entryType.status, entryType.message);
+  if (refused) return refused;
+  if (entryType.status !== 200) {
+    return {
+      error: `creating ${entryLabel}: ${entryType.message || entryType.status}`
+    };
   }
-
-  return undefined;
+  // A push may follow immediately, and an entry naming a type that is still
+  // being created is rejected the same way, so wait here too.
+  const failed =
+      await cat.awaitOperation(entryType.result, `creating ${entryLabel}`);
+  return failed ? {error: failed} : {};
 }
 
 
@@ -305,6 +348,10 @@ export interface ActionEmitContext {
   // Reserves an entry id, returning false when it collides with one already
   // emitted (knowledge_catalog.claim).
   claim(entryId: string, label: string): boolean;
+  // Names of the entities this push actually publishes an entry for. An
+  // abstract entity, or one a binding profile pruned, is absent, so a
+  // parameter typed by it would name an entry that does not exist.
+  publishedEntities: Set<string>;
 }
 
 // The entry id of one action: `<model>.actions.<name>`, alongside
@@ -332,15 +379,23 @@ export function actionEntries(
     warnings: string[]): Entry[] {
   const actions = model.actions ?? [];
   if (!actions.length) return [];
-  warnings.push(
-      `model '${model.name}': ${actions.length} action(s) published as ` +
-      `${ACTION_TYPE_ID} entries (actions have no BigQuery Graph ` +
-      `representation).`);
 
   const entries: Entry[] = [];
   for (const action of actions) {
     const id = actionEntryId(modelId, action.name);
     if (!ctx.claim(id, `action '${action.name}'`)) continue;
+    // A parameter typed by an entity this push does not publish leaves the
+    // catalog naming an entity it has no entry for, and a later pull cannot
+    // tell that the type was an entity rather than a misspelled scalar.
+    for (const p of action.parameters ?? []) {
+      if (p.isEntityRef && !ctx.publishedEntities.has(p.type)) {
+        warnings.push(
+            `model '${model.name}': action '${action.name}' parameter ` +
+            `'${p.name}' refers to entity '${p.type}', which this push does ` +
+            `not publish (abstract or unavailable), so a pull will not ` +
+            `recover it as an entity reference.`);
+      }
+    }
     entries.push({
       name: ctx.entry(id),
       entryType: actionEntryTypeName(ctx),
@@ -357,6 +412,12 @@ export function actionEntries(
       },
     });
   }
+  // Counted from what was emitted rather than from the model, so a name
+  // collision that skipped an action does not inflate the number.
+  if (entries.length) warnings.push(
+      `model '${model.name}': ${entries.length} action(s) published as ` +
+      `${ACTION_TYPE_ID} entries (actions have no BigQuery Graph ` +
+      `representation).`);
   return entries;
 }
 

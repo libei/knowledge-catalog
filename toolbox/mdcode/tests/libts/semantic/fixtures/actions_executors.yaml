@@ -1,0 +1,63 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0/google).
+#
+# Three actions covering every executor kind, so the Knowledge Catalog round
+# trip is exercised on each branch of the tagged union rather than on `mcp`
+# alone. It also covers the two shapes an action can be missing pieces in: one
+# with no parameters at all, and one with neither a description nor an
+# ai_context. `actions` is a native extension key, so this document declares the
+# extended profile.
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: commerce
+    description: Orders and the write operations over them
+    entities:
+      - name: customer
+        source: samples.tpch.customer
+        primary_key: [c_custkey]
+        fields:
+          - name: c_custkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_custkey
+      - name: orders
+        source: samples.tpch.orders
+        primary_key: [o_orderkey]
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderkey
+    actions:
+      # MCP executor, an entity-typed parameter, a scalar, and instructions.
+      - name: PlaceOrder
+        description: Create an order for a customer
+        executor:
+          mcp:
+            server: //agentregistry.googleapis.com/x/mcpServers/commerce
+            tool: place_order
+        parameters:
+          - {name: buyer, type: customer}
+          - {name: quantity, type: Integer}
+        ai_context:
+          instructions: "Resolve the buyer to a customer before calling."
+      # REST executor, no instructions, a Decimal alongside an entity reference.
+      - name: RefundOrder
+        description: Refund a placed order
+        executor:
+          rest:
+            endpoint: https://commerce.example.com/v1/refunds
+            method: POST
+        parameters:
+          - {name: order, type: orders}
+          - {name: amount, type: Decimal}
+      # gRPC executor with no parameters and no description: everything optional
+      # is absent.
+      - name: CloseBooks
+        executor:
+          grpc:
+            service: commerce.v1.Ledger
+            method: CloseBooks

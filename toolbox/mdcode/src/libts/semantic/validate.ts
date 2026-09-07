@@ -141,7 +141,7 @@ function validateActions(model: SemanticModel, document: string): string[] {
     }
     for (const missing of missingExecutorFields(action.executor)) {
       errors.push(`${where} has an ${
-          action.executor.kind} executor missing its '${missing}'.`);
+          action.executor.kind} executor whose '${missing}' is missing or blank.`);
     }
   }
   return errors;

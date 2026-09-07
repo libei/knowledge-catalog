@@ -1,11 +1,13 @@
 // Tests that `kcmd init --semantic-model` provisions the destination entry
-// group (src/tool/commands.ts, init()).
+// group and the custom action types (src/tool/commands.ts, init()).
 //
-// The entry group is created at init -- not on push -- so a semantic-model push
-// writes only entries, matching how the standard layout operates (its push
-// creates entries, never the entry group). These tests spy on the catalog
-// client so no network call is made and run init inside a temp working
-// directory (it writes catalog.yaml + the layout dirs relative to cwd).
+// Both are created at init -- not on push -- so a semantic-model push writes
+// only entries, matching how the standard layout operates (its push creates
+// entries, never the entry group). The action entry type and aspect type are
+// the one pair kcmd creates rather than references; see kc_actions.ts. These
+// tests spy on the catalog client so no network call is made and run init
+// inside a temp working directory (it writes catalog.yaml + the layout dirs
+// relative to cwd).
 
 import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -18,6 +20,9 @@ import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import {init} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
+
+// The operation name a type create returns and `getOperation` is polled with.
+const OP = 'projects/proj/locations/global/operations/op-1';
 
 function ok<T>(result?: T): ApiResult<T> {
   return {status: 200, result};
@@ -38,6 +43,16 @@ beforeEach(() => {
   // init() prints the generated catalog.yaml; keep test output quiet.
   spyOn(console, 'log').mockImplementation(() => {});
   spyOn(console, 'error').mockImplementation(() => {});
+  spyOn(console, 'warn').mockImplementation(() => {});
+  // Provisioning the custom action types succeeds by default; the tests that
+  // care about it re-stub these. Each create returns a long-running operation,
+  // so `getOperation` has to answer too.
+  spyOn(CatalogClient.prototype, 'createAspectType')
+      .mockImplementation(async () => ok({name: OP, done: false}));
+  spyOn(CatalogClient.prototype, 'createEntryType')
+      .mockImplementation(async () => ok({name: OP, done: false}));
+  spyOn(CatalogClient.prototype, 'getOperation')
+      .mockImplementation(async () => ok({name: OP, done: true}));
 });
 
 afterEach(() => {
@@ -82,6 +97,100 @@ describe('init --semantic-model: entry-group provisioning', () => {
     expect(group).toHaveBeenCalledTimes(1);
     expect(fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
         .toBe(true);
+  });
+
+  test('provisions the custom action types in the destination project',
+       async () => {
+    spyOn(CatalogClient.prototype, 'createEntryGroup')
+        .mockImplementation(async () => ok({name: 'sales-group'}));
+    const aspectType = spyOn(CatalogClient.prototype, 'createAspectType')
+                           .mockImplementation(async () => ok({name: OP}));
+    const entryType = spyOn(CatalogClient.prototype, 'createEntryType')
+                          .mockImplementation(async () => ok({name: OP}));
+
+    expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
+
+    // Both types are custom, so they live in the destination project at
+    // `global` -- not beside the built-in types, and not in the entry group's
+    // region.
+    for (const spy of [aspectType, entryType]) {
+      expect(spy).toHaveBeenCalledTimes(1);
+      const [project, location, typeId] = spy.mock.calls[0];
+      expect(project).toBe('proj');
+      expect(location).toBe('global');
+      expect(typeId).toBe('semantic-action');
+    }
+    // The entry type requires the aspect type, so the server rejects it while
+    // the aspect type's create is still running.
+    expect(aspectType.mock.invocationCallOrder[0])
+        .toBeLessThan(entryType.mock.invocationCallOrder[0]);
+  });
+
+  test('waits for each type-creation operation to finish', async () => {
+    spyOn(CatalogClient.prototype, 'createEntryGroup')
+        .mockImplementation(async () => ok({name: 'sales-group'}));
+    // The aspect type is still being created when the call returns.
+    spyOn(CatalogClient.prototype, 'createAspectType')
+        .mockImplementation(async () => ok({name: OP, done: false}));
+    let polls = 0;
+    spyOn(CatalogClient.prototype, 'getOperation')
+        .mockImplementation(async () => ok({name: OP, done: ++polls > 1}));
+    // How many times the operation had been polled when the entry type was
+    // created. The aspect type reports done on the second poll, so anything
+    // less than two means the entry type was created while its required
+    // aspect type was still being created, which the server rejects.
+    let polledBeforeEntryType = -1;
+    spyOn(CatalogClient.prototype, 'createEntryType')
+        .mockImplementation(async () => {
+          polledBeforeEntryType = polls;
+          return ok({name: OP});
+        });
+
+    expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
+    expect(polledBeforeEntryType).toBe(2);
+  });
+
+  test('an already-existing aspect type is patched with the current template',
+       async () => {
+    spyOn(CatalogClient.prototype, 'createEntryGroup')
+        .mockImplementation(async () => ok({name: 'sales-group'}));
+    spyOn(CatalogClient.prototype, 'createAspectType')
+        .mockImplementation(async () => err(409, 'already exists'));
+    const update = spyOn(CatalogClient.prototype, 'updateAspectType')
+                       .mockImplementation(async () => ok({name: OP}));
+    // The entry type is already there too, which is not an error.
+    spyOn(CatalogClient.prototype, 'createEntryType')
+        .mockImplementation(async () => err(409, 'already exists'));
+
+    expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
+
+    // A project provisioned by an earlier kcmd holds an older template, so the
+    // patch names the template field to bring it up to date.
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update.mock.calls[0][4]).toContain('metadata_template');
+  });
+
+  test('init survives lacking permission to create the action types',
+       async () => {
+    spyOn(CatalogClient.prototype, 'createEntryGroup')
+        .mockImplementation(async () => ok({name: 'sales-group'}));
+    spyOn(CatalogClient.prototype, 'createAspectType')
+        .mockImplementation(async () => err(403, 'permission denied'));
+
+    // Actions are one optional construct: a caller who will never declare one
+    // must still be able to init, push and pull.
+    expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
+    expect(fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
+        .toBe(true);
+  });
+
+  test('a fatal action-type error fails init', async () => {
+    spyOn(CatalogClient.prototype, 'createEntryGroup')
+        .mockImplementation(async () => ok({name: 'sales-group'}));
+    spyOn(CatalogClient.prototype, 'createAspectType')
+        .mockImplementation(async () => err(400, 'bad metadata template'));
+
+    expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(1);
   });
 
   test('a fatal entry-group error fails init', async () => {

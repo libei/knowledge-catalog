@@ -422,8 +422,13 @@ needs more than push does, in the destination project:
   `dataplex.entryTypes.create` — the custom `semantic-action` pair. Init patches
   an aspect type that is already there, so a project set up by an older `kcmd`
   picks up template additions; an entry type that is already there is left
-  alone. Init fails when a call fails, rather than leaving a later push to hit
-  an opaque parsing error.
+  alone.
+
+Only the entry-group permission is required. Actions are one optional
+construct, so init reports a refusal to create their types as a warning and
+carries on; every model that declares no action still pushes and pulls. Any
+other failure to create a type stops init, rather than leaving a later push to
+hit an opaque parsing error.
 
 `kcmd pull` needs read access to the same entry group instead — to list its
 entries and fetch each `semantic-*` entry with its aspects.

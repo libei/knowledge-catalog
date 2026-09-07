@@ -107,7 +107,7 @@ action 'TransferFunds' in model 'payments' (payments.yaml) has parameter
 datatype.
 
 action 'TransferFunds' in model 'payments' (payments.yaml) has an mcp executor
-missing its 'tool'.
+whose 'tool' is missing or blank.
 ```
 
 A parameter type that resolves to neither an entity nor a scalar means the model
@@ -115,6 +115,9 @@ cannot say what that argument denotes, which is the whole contribution an action
 makes. An executor missing a coordinate cannot be dispatched by whatever picks
 the action up. Both checks are static, so they run on every push whatever the
 destination.
+
+An executor coordinate that is absent altogether is caught earlier, when the
+document is parsed, so the message above is what a blank one produces.
 
 ## 3. Push it
 

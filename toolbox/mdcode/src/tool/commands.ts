@@ -230,11 +230,12 @@ export async function init(options: InitOptions): Promise<number> {
     // custom entry and aspect types are provisioned here too. Everything else
     // the push writes references types that already exist under
     // `dataplex-types`. See kc_actions.ts.
-    const typeErr = await provisionActionTypes(catalog, source);
-    if (typeErr) {
-      console.error(`Error: ${typeErr}`);
+    const provisioned = await provisionActionTypes(catalog, source);
+    if (provisioned.error) {
+      console.error(`Error: ${provisioned.error}`);
       return 1;
     }
+    if (provisioned.denied) console.warn(`Warning: ${provisioned.denied}`);
     fs.mkdirSync(
         path.join('catalog', 'EntryGroups', source.entryGroup),
         {recursive: true});
@@ -549,6 +550,10 @@ export async function push(options: PushOptions): Promise<number> {
     const deployedProfiles: string[] = [];
     const skippedProfiles: string[] = [];
     let deployedGraphs = 0;
+    // Model name -> action count, and the documents already loaded below, so
+    // the --no-kc actions warning can reuse this pass instead of repeating it.
+    const actionCounts = new Map<string, number>();
+    const loadedDocs = new Set<string>();
     for (const profileName of graphProfileNames) {
       // --all-profiles fans out over every model's profiles, so a model that
       // does not define this one is dropped (skipMissing) rather than failing
@@ -562,6 +567,10 @@ export async function push(options: PushOptions): Promise<number> {
       }
       const prepared = await prepareOnce(docs, profileName, true);
       if (!prepared) return 1;
+      for (const d of docs) loadedDocs.add(d.name);
+      for (const {model} of prepared.models) {
+        if (model.actions?.length) actionCounts.set(model.name, model.actions.length);
+      }
       // Fail before any deploy if this profile's targets collide with a graph an
       // earlier profile already claimed this run.
       for (const m of prepared.models) {
@@ -616,19 +625,25 @@ export async function push(options: PushOptions): Promise<number> {
     // validate a model's actions and then deploy them nowhere, so warn rather
     // than drop them silently.
     if (!kcEnabled) {
+      // The loop above already loaded every document that contributes a graph.
+      // Only the rest need loading, which is usually none, and a model that
+      // does not define this profile is skipped rather than failing a warning.
       const kcProfileName =
           namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
-      const docs = mergeOnce(kcProfileName, false);
-      const prepared =
-          docs ? await prepareOnce(docs, kcProfileName, false) : null;
-      for (const {model} of prepared?.models ?? []) {
-        const n = model.actions?.length ?? 0;
-        if (n) {
-          console.warn(
-              `Warning: model '${model.name}' declares ${n} action(s), which ` +
-              `deploy only to Knowledge Catalog; --no-kc excludes that leg, so ` +
-              `they will not be deployed. Drop --no-kc to deploy them.`);
+      const rest =
+          (mergeOnce(kcProfileName, true) ?? []).filter(d => !loadedDocs.has(d.name));
+      if (rest.length) {
+        const prepared = await prepareOnce(rest, kcProfileName, false);
+        for (const {model} of prepared?.models ?? []) {
+          if (model.actions?.length)
+            actionCounts.set(model.name, model.actions.length);
         }
+      }
+      for (const [name, n] of actionCounts) {
+        console.warn(
+            `Warning: model '${name}' declares ${n} action(s), which ` +
+            `deploy only to Knowledge Catalog; --no-kc excludes that leg, so ` +
+            `they will not be deployed. Drop --no-kc to deploy them.`);
       }
     }
 
