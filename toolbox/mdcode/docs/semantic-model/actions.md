@@ -49,9 +49,11 @@ semantic_model:
         primary_key: [accountId]
         source: my-project.bank.account
         fields:
-          - { name: accountId, datatype: Integer, expression: account_id }
-          - { name: name,      datatype: String,  expression: name }
-          - { name: balance,   datatype: Float,   expression: balance }
+          - { name: accountId,      datatype: Integer, expression: account_id }
+          - { name: name,           datatype: String,  expression: name }
+          - { name: balance,        datatype: Float,   expression: balance }
+          - { name: minimumBalance, datatype: Float,   expression: minimum_balance }
+          - { name: status,         datatype: String,  expression: status }
       - name: Transfer
         primary_key: [transferId]
         source: my-project.bank.transfer
