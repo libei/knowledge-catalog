@@ -77,7 +77,7 @@ becomes one part of that graph:
 | Metric | `MEASURE` on a node table | must resolve to a single entity (otherwise the push is rejected — see [Validation](#validation)) and reduce to one supported aggregate over one operand (otherwise that metric is skipped with a warning) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 | Action | *nothing* | actions are write-side and have no graph construct; the push emits nothing and warns once, then publishes them to Knowledge Catalog (see below) |
-| Constraint | *nothing* | constraints are checked when an action runs, not read-side structure; the push emits nothing and warns once, then publishes them to Knowledge Catalog (see below) |
+| Constraint | *nothing* | a constraint states an invariant rather than a read-side structure; the push emits nothing and warns once, then publishes them to Knowledge Catalog (see below) |
 
 `push` reads the target dataset's location (`bigquery.datasets.get`) so the
 statement runs in the right region; without that permission it falls back to
@@ -260,10 +260,10 @@ are **not** probed before deploy — the live pre-flight is BigQuery-only (see
 ## What gets created in Knowledge Catalog
 
 Each element of your model maps to one catalog resource. Every resource type
-below except `semantic-action` is a built-in system type under
-`dataplex-types/global` — push references them, it never creates them.
-`semantic-action` is custom, and `kcmd init --semantic-model` creates it in your
-own project at `global`; push still writes only entries.
+below except `semantic-action` and `semantic-constraint` is a built-in system
+type under `dataplex-types/global` — push references them, it never creates
+them. Those two are custom, and `kcmd init --semantic-model` creates them in
+your own project at `global`; push still writes only entries.
 
 > Set `KC_TYPE_PROJECT` to read these system types from another project, and
 > `DATAPLEX_ENDPOINT` to target a non-prod Dataplex host; both default to
@@ -276,6 +276,7 @@ own project at `global`; push still writes only entries.
 | Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
 | Relationship | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
 | Action | `semantic-action` (custom type) | entry | `<model>.actions.<action>` |
+| Constraint | `semantic-constraint` (custom type) | entry | `<model>.constraints.<constraint>` |
 
 An entity entry carries its columns in the `schema` aspect (name, data type,
 description, and any `label` per field), plus the entity's keys and unique keys
@@ -291,6 +292,12 @@ That aspect type is provisioned in your project rather than referenced from
 ships, the entries move to it and their shape does not change. (This is the
 prototype scope — an action's `precondition` and `affects` are not modeled
 yet.)
+
+A **constraint** entry carries its expression, and its
+`ai_context.instructions`, in a `semantic-constraint` aspect; the constraint's
+`description` is the entry's own summary, because that sentence is what a caller
+refused by the rule reads. Its type is provisioned alongside the action pair and
+for the same reason.
 
 Push to Knowledge Catalog is lossy — the catalog holds metadata, not a full copy
 of your model. For exactly what is stored, what is gated behind
@@ -414,7 +421,8 @@ and each aspect type attached, so a push needs, on the destination entry group:
   `dataplex.entryGroups.useSemanticModelAspect`, `useSemanticEntityAspect`, and
   `useSemanticMetricAspect`
 * `dataplex.aspectTypes.use` on the `semantic-action` aspect type, when the
-  model declares actions — that type is custom rather than built-in, so it is
+  model declares actions, and on `semantic-constraint` when it declares
+  constraints — those types are custom rather than built-in, so they are
   authorized on the type resource instead of through an entry-group
   use-permission
 
@@ -430,14 +438,15 @@ needs more than push does, in the destination project:
 
 * `dataplex.entryGroups.create` — the destination entry group
 * `dataplex.aspectTypes.create` / `dataplex.aspectTypes.update` and
-  `dataplex.entryTypes.create` — the custom `semantic-action` pair. Init patches
-  an aspect type that is already there, so a project set up by an older `kcmd`
-  picks up template additions; an entry type that is already there is left
-  alone.
+  `dataplex.entryTypes.create` — the custom `semantic-action` and
+  `semantic-constraint` pairs. Init patches an aspect type that is already
+  there, so a project set up by an older `kcmd` picks up template additions; an
+  entry type that is already there is left alone.
 
-Only the entry-group permission is required. Actions are one optional
-construct, so init reports a refusal to create their types as a warning and
-carries on; every model that declares no action still pushes and pulls. Any
+Only the entry-group permission is required. Actions and constraints are
+optional constructs, so init reports a refusal to create their types as a
+warning and carries on; every model that declares neither still pushes and
+pulls. Any
 other failure to create a type stops init, rather than leaving a later push to
 hit an opaque parsing error.
 

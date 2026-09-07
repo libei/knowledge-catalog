@@ -47,6 +47,7 @@ example that carries one model through the whole lifecycle, see the
 | [Modeling class hierarchies](inheritance.md) | model subtypes with `extends` so a supertype query gathers them |
 | [Codelab: one semantic ontology, one data journey](codelab.md) | see the whole lifecycle: author, govern, hydrate, query |
 | [Modeling write operations](actions.md) | declare an action an agent can call, and publish it |
+| [Stating what must stay true](constraints.md) | state the invariants the model asserts, and watch one refuse a bad write |
 | [Reference](reference.md) | look up a flag, what push creates, validation, or permissions |
 | [Model specification](model_spec.md) | the normative format: every YAML construct, what's OSI and what's a kcmd extension |
 | [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
@@ -128,6 +129,16 @@ method), and types each parameter against the ontology, so an entity-typed
 parameter is an object reference rather than a bare string. Actions have no graph
 representation and are governed in Knowledge Catalog. See
 [Modeling write operations](actions.md).
+
+A model can also state **constraints**: named boolean invariants over the
+ontology that hold for every instance, whatever writes to the model. A
+constraint is part of what the model asserts, written in the same expression
+language as a metric. One place checks them today — an action is refused if its
+write would introduce a violation, and the constraint's `description` is the
+message the caller is refused with, so an agent that gets rejected can read it
+and choose a different move rather than retry the same call. Constraints have no
+graph representation either. See
+[Stating what must stay true](constraints.md).
 
 This model names no table and no store, so it is complete enough to govern in
 Knowledge Catalog as-is (step 2). Where each entity reads from — the store and the

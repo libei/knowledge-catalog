@@ -36,6 +36,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
 | Entity `extends`                                               | — not modelled                  | —                                              | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not represented (write-side)                                       | — not represented (write-side)                                       |
+| Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not represented (write-side)                                       | — not represented (write-side)                                       |
 | `description` (entity / metric / field / relationship)         | entry description / aspect      | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
 | `ai_context.synonyms`                                          | — not stored                    | —                                              | `OPTIONS(synonyms=[...])`                                            | — dropped                                                            |
 | `ai_context.instructions`                                      | `guidelines` aspect⁷            | ✓⁷                                             | into `OPTIONS(description)`                                          | — dropped                                                            |
@@ -103,13 +104,20 @@ agree on every structural row and differ only where a Spanner target has no
     scope: an action's `precondition` and `affects` are not modelled, so nothing
     about them is stored either way. See
     [Modeling write operations](actions.md).
+13. **Constraints.** A constraint states an invariant rather than a read-side
+    structure, so neither graph has a construct for it either: the push emits
+    nothing and warns once. Each is published to Knowledge Catalog as one
+    `semantic-constraint` entry under the model entry, and `pull` reads it back.
+    Enforcing one is a separate job from publishing it — the runtime that checks
+    a constraint inside the write transaction is not part of `push`. See
+    [Stating what must stay true](constraints.md).
 
 ## To Knowledge Catalog
 
 The catalog holds metadata rather than a full copy of your model. Every resource
 type it uses is a built-in system type under `dataplex-types/global`, apart from
-the custom `semantic-action` pair that `kcmd init` provisions — push references
-types, it never creates them (see
+the custom `semantic-action` and `semantic-constraint` pairs that `kcmd init`
+provisions — push references types, it never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
 What is recorded depends on the push. A catalog-only push (`--no-profile`), or a
@@ -142,6 +150,13 @@ through `pull` (name, description, executor, typed parameters, and
 `instructions`). Their `precondition` / `affects` are out of scope for this
 prototype and are not stored. The entry type is custom, so `kcmd init` creates
 it; a model that declares no action never needs it.
+
+**Constraints** publish the same way: each becomes a `semantic-constraint` entry
+under the model entry, with the expression and any `instructions` in a
+`semantic-constraint` aspect and the `description` as the entry's own summary.
+Name, expression, description, and instructions round-trip losslessly through
+`pull`. That entry type is custom too, and a model that declares no constraint
+never needs it.
 
 ¹⁰ What you author is the `expression.dialects[]` list; the graph builds from the canonical (BigQuery/ANSI) variant. `importedExpression` / `importedDialect` are not authored keys — the loader *derives* them from a non-canonical dialect entry (e.g. the MAQL or Snowflake form a metric was imported from) and uses that verbatim as the fallback when no canonical variant exists. See [Model spec §2.5](model_spec.md#25-expressions).
 
@@ -192,8 +207,9 @@ design:
 Everything else — keys, relationships, the label hierarchy — matches the
 **→ BigQuery** column above.
 
-**Actions** reach neither graph. They are published to Knowledge Catalog as one
-`semantic-action` entry each and round-trip losslessly through `pull` — see
+**Actions and constraints** reach neither graph. They are published to
+Knowledge Catalog as one `semantic-action` or `semantic-constraint` entry each
+and round-trip losslessly through `pull` — see
 [To Knowledge Catalog](#to-knowledge-catalog).
 
 ## What pull recovers
