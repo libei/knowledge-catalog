@@ -31,6 +31,42 @@ const MCP_EXECUTOR = {
   mcp: {server: '//agentregistry.googleapis.com/x', tool: 'place_order'},
 };
 
+// Two actions that both take a `quantity` parameter, the first guarded by
+// `guardOnFirst`. Used to check that being guarded by ONE action settles the
+// constraint for the whole model.
+function withTwoActions(guardOnFirst: string[]|undefined, constraints: any[]) {
+  return fromDocument({
+    version: '0.2.0.dev0/google',
+    semantic_model: [{
+      name: 'm',
+      datasets: [{
+        name: 'customer',
+        source: 'p.d.c',
+        primary_key: ['id'],
+        fields: [{
+          name: 'balance',
+          expression:
+              {dialects: [{dialect: 'ANSI_SQL', expression: 'balance'}]},
+        }],
+      }],
+      actions: [
+        {
+          name: 'PlaceOrder',
+          executor: MCP_EXECUTOR,
+          parameters: [{name: 'quantity', type: 'Integer'}],
+          ...(guardOnFirst ? {guards: guardOnFirst} : {}),
+        },
+        {
+          name: 'CancelOrder',
+          executor: MCP_EXECUTOR,
+          parameters: [{name: 'quantity', type: 'Integer'}],
+        },
+      ],
+      constraints,
+    }],
+  });
+}
+
 // One entity, one action, and whatever constraints a test needs. `guards` is
 // passed through verbatim so a test can name a constraint that does not exist.
 function withGuards(
@@ -224,6 +260,39 @@ describe(
             [{name: 'customer', type: 'customer'}]);
         expect(warnings.some(w => w.includes('PositiveQuantity'))).toBe(false);
       });
+
+      test('a string literal is not a parameter read', () => {
+        // `'quantity'` here is a value the expression compares against, not a
+        // reference to the parameter that shares its spelling.
+        const {warnings} = withGuards(undefined, [{
+                                        name: 'OpenOnly',
+                                        expression:
+                                            "customer.balance > 0 AND customer.status = 'quantity'",
+                                      }]);
+        expect(warnings.some(w => w.includes('OpenOnly'))).toBe(false);
+      });
+
+      test('one action guarding it settles it for every action', () => {
+        // `CancelOrder` also takes a `quantity`, and deliberately does not
+        // guard the constraint -- the same rule may gate one action and leave
+        // another alone. The constraint still runs, as PlaceOrder's guard, so
+        // reporting it as text nothing evaluates would be false.
+        const {warnings} = withTwoActions(
+            ['PositiveQuantity'],
+            [{name: 'PositiveQuantity', expression: 'quantity > 0'}]);
+        expect(warnings.some(w => w.includes('PositiveQuantity'))).toBe(false);
+      });
+
+      test('no action guarding it reports every action that could', () => {
+        const {warnings} = withTwoActions(
+            undefined, [{name: 'PositiveQuantity', expression: 'quantity > 0'}]);
+        const reported =
+            warnings.filter(w => w.includes(`constraint 'PositiveQuantity'`));
+        expect(reported).toHaveLength(2);
+        expect(reported.some(w => w.includes(`action 'PlaceOrder'`))).toBe(true);
+        expect(reported.some(w => w.includes(`action 'CancelOrder'`)))
+            .toBe(true);
+      });
     });
 
 
@@ -267,5 +336,38 @@ describe('guards survive every round trip', () => {
         entries.find(e => e.entrySource?.displayName === 'PlaceOrder')!;
     const data = Object.values(action.aspects!)[0].data!;
     expect(Object.keys(data)).not.toContain('guards');
+  });
+
+  test('a repeated guard in the aspect is dropped, with a warning', () => {
+    // The loader rejects a repeated guard outright, so keeping both would hand
+    // back a document the author cannot reload.
+    const {entries} = generateCatalogResources(model, OPTS);
+    const entry = entries.find(e => e.entrySource?.displayName === 'PlaceOrder')!;
+    const data = Object.values(entry.aspects!)[0].data! as any;
+    data.guards = ['RequestedQuantityIsPositive', 'RequestedQuantityIsPositive'];
+    const {models, warnings} = modelsFromCatalogResources(entries);
+    expect(models[0].actions![0].guards).toEqual([
+      'RequestedQuantityIsPositive'
+    ]);
+    expect(warnings.some(
+               w => w.includes('repeats guard') &&
+                   w.includes('RequestedQuantityIsPositive')))
+        .toBe(true);
+  });
+
+  test('a guard whose constraint the pull did not recover is reported', () => {
+    // The name is kept on purpose, so the report has to come from the pull:
+    // otherwise the author meets the failure on the next push instead.
+    const {entries} = generateCatalogResources(model, OPTS);
+    const withoutConstraints =
+        entries.filter(e => !e.entryType?.includes('semantic-constraint'));
+    const {models, warnings} = modelsFromCatalogResources(withoutConstraints);
+    expect(models[0].actions![0].guards).toEqual([
+      'RequestedQuantityIsPositive'
+    ]);
+    const w = warnings.find(x => x.includes('no constraint of that name'));
+    expect(w).toBeDefined();
+    expect(w).toContain(`action 'PlaceOrder'`);
+    expect(w).toContain(`'RequestedQuantityIsPositive'`);
   });
 });

@@ -374,12 +374,16 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **A constraint over an action's parameters is guarded.** A constraint whose
   expression reads a bare name that is a parameter of some action describes that
   call rather than the stored data, so it can be checked only before the call
-  runs — which happens only when the action lists it in `guards`. A model that
-  declares such a constraint and no matching guard loads with a warning, because
-  the constraint is text that nothing will ever evaluate. It warns rather than
-  fails because the scan matches identifiers, and an expression may use a bare
-  name that merely coincides with a parameter name. A qualified name
-  (`OrderedAs.quantity`) is read whole and never counts as a parameter.
+  runs — which happens only when the action lists it in `guards`. A model in
+  which no action at all lists it loads with a warning, because the constraint
+  is text that nothing will ever evaluate. One action naming it is enough to
+  settle it: another action that takes a parameter of the same name and does not
+  guard the constraint is a modeling choice, since the same rule may gate one
+  action and leave another alone. It warns rather than fails because the scan
+  matches identifiers, and an expression may use a bare name that merely
+  coincides with a parameter name. Neither a qualified name
+  (`OrderedAs.quantity`) nor a quoted literal (`status = 'quantity'`) counts as
+  a parameter read.
   *(warning, at load)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it

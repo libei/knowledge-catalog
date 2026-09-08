@@ -132,8 +132,9 @@ runs, so the action names it in `guards`:
         guards: [AmountIsPositive]
 ```
 
-`guards` holds constraint names. Each name must resolve to a constraint that the
-same model declares, and one that resolves to nothing fails the push:
+`guards` holds constraint names. Each name must resolve to a constraint that
+the same model declares. Misspell one — `AmountIsPostive` below, for the
+`AmountIsPositive` declared above — and the push fails:
 
 ```
 Error: action 'TransferFunds' in model 'payments' (payments.yaml) is guarded by
@@ -189,9 +190,9 @@ action 'TransferFunds' in model 'payments' (payments.yaml) is guarded by
 A parameter type that resolves to neither an entity nor a scalar means the model
 cannot say what that argument denotes, which is the whole contribution an action
 makes. An executor missing a coordinate cannot be dispatched by whatever picks
-the action up. A guard that names no constraint leaves the author believing the
-write is checked when nothing checks it. All three checks are static, so they
-run on every push whatever the destination.
+the action up. A guard that names no constraint — the misspelling above —
+leaves the author believing the write is checked when nothing checks it. All
+three checks are static, so they run on every push whatever the destination.
 
 An executor coordinate that is absent altogether is caught earlier, when the
 document is parsed, so the message above is what a blank one produces.

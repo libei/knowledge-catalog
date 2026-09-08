@@ -938,8 +938,14 @@ function convertAction(
 
 // A constraint that reads an action's parameter describes that call, so the
 // only moment it can be checked is before the call runs -- which happens only
-// when the action names it in `guards`. Such a constraint left unnamed is text
-// nothing will ever evaluate, so say so at load time.
+// when the action names it in `guards`. Such a constraint left unnamed by EVERY
+// action is text nothing will ever evaluate, so say so at load time.
+//
+// Being guarded anywhere is enough. An action that shares the parameter name and
+// does not name the constraint is a deliberate modeling choice, since the same
+// rule may gate one action and leave another alone; warning about it would
+// report a constraint that does run and would teach an author to ignore this
+// message.
 //
 // This warns rather than fails because the scan matches identifiers, and an
 // expression may use a bare name that merely coincides with a parameter name.
@@ -949,10 +955,10 @@ function warnUnguardedParameterConstraints(
     warnings: string[]): void {
   if (!actions.length || !constraints.length) return;
   for (const c of constraints) {
+    if (actions.some(a => a.guards?.includes(c.name))) continue;
     const identifiers = bareIdentifiers(c.expression);
     if (!identifiers.size) continue;
     for (const a of actions) {
-      if (a.guards?.includes(c.name)) continue;
       const read = a.parameters.find(p => identifiers.has(p.name));
       if (!read) continue;
       warnings.push(
@@ -968,10 +974,15 @@ function warnUnguardedParameterConstraints(
 // consumed whole so its field half is never mistaken for a bare name, which is
 // what makes `Part.availableStock >= quantity` yield `quantity` alone. Action
 // parameters are referenced by bare name, so this is the set that can name one.
+//
+// A quoted literal is data rather than a reference, so it is blanked before the
+// scan: `status = 'quantity'` must not look like a read of a parameter named
+// `quantity`.
 function bareIdentifiers(expression: string): Set<string> {
   const found = new Set<string>();
+  const code = expression.replace(/'[^']*'|"[^"]*"/g, ' ');
   const token = /[A-Za-z_]\w*\s*\.\s*[A-Za-z_]\w*|([A-Za-z_]\w*)/g;
-  for (let m = token.exec(expression); m; m = token.exec(expression)) {
+  for (let m = token.exec(code); m; m = token.exec(code)) {
     if (m[1]) found.add(m[1]);
   }
   return found;

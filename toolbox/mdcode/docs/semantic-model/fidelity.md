@@ -102,8 +102,12 @@ agree on every structural row and differ only where a Spanner target has no
     that entry. Every other push target deploys nothing for it and warns once.
     Its `guards` are stored as constraint names and round-trip verbatim. A name
     whose constraint is absent from a pull is kept rather than dropped, so a
-    partial pull never silently rewrites the author's model. Prototype scope:
-    an action's `affects` is not modelled, so nothing about it is stored. See
+    partial pull never silently rewrites the author's model; the pull warns
+    about the name it kept, and a push rejects the model until the constraint
+    is back. A name the aspect repeats is the one exception, dropped to its
+    single occurrence because the loader rejects a repeat and the document has
+    to stay loadable. Prototype scope: an action's `affects` is not modelled,
+    so nothing about it is stored. See
     [Modeling write operations](actions.md).
 13. **Constraints.** A constraint reaches Knowledge Catalog only, as one
     `semantic-constraint` entry under the model entry, and `pull` reads it back.

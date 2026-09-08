@@ -228,10 +228,25 @@ export function readAction(
 
   const action: Action = {name, executor, parameters};
   // Guard names round-trip verbatim. A name whose constraint is not part of
-  // this pull is kept rather than dropped: push-side validate reports it, and
-  // dropping it here would silently rewrite the author's model.
-  const guards = asArray(data.guards).filter(
-      (g: any): g is string => typeof g === 'string' && g !== '');
+  // this pull is kept rather than dropped, because dropping it here would
+  // silently rewrite the author's model. It is not kept in silence:
+  // kc_converter warns once it has both lists in hand, and push-side validate
+  // rejects it.
+  //
+  // A REPEATED name is the exception, because the loader rejects one outright:
+  // keeping it would hand back a document that cannot be reloaded. A duplicate
+  // guard checks the same constraint twice, so dropping it loses no meaning.
+  const guards: string[] = [];
+  for (const g of asArray(data.guards)) {
+    if (typeof g !== 'string' || g === '') continue;
+    if (guards.includes(g)) {
+      warnings.push(
+          `action '${name}': the ${ACTION_TYPE_ID} aspect repeats guard ` +
+          `'${g}'; the duplicate is dropped so the document still loads`);
+      continue;
+    }
+    guards.push(g);
+  }
   if (guards.length) action.guards = guards;
   const description = entry.entrySource?.description;
   if (description !== undefined && description !== '')

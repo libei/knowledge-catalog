@@ -64,6 +64,27 @@ export interface ReadResult {
   warnings: string[];
 }
 
+// A guard naming a constraint this pull did not recover -- because its entry was
+// absent, or was skipped as unreadable. readAction keeps the name so the
+// author's model is not silently rewritten, which leaves the document one that
+// push will reject. Reporting it here puts the message on the command that
+// produced the document rather than on the next one.
+function warnDanglingGuards(
+    actions: Action[], constraints: Constraint[], modelName: string,
+    warnings: string[]): void {
+  if (!actions.length) return;
+  const recovered = new Set(constraints.map(c => c.name));
+  for (const action of actions) {
+    for (const guard of action.guards ?? []) {
+      if (recovered.has(guard)) continue;
+      warnings.push(
+          `model '${modelName}': action '${action.name}' is guarded by ` +
+          `'${guard}', but no constraint of that name was recovered; the ` +
+          `name is kept, and a push rejects it until the constraint is back`);
+    }
+  }
+}
+
 /**
  * Reconstructs the Semantic Model IR from Knowledge Catalog entries.
  *
@@ -142,6 +163,7 @@ export function modelsFromCatalogResources(
                             .map(e => readConstraint(e, warnings))
                             .filter((c): c is Constraint => c !== undefined);
     if (constraints.length) model.constraints = constraints;
+    warnDanglingGuards(actions, constraints, name, warnings);
     // Deployment targets ride back in the same GOOGLE custom_extensions block
     // the author wrote them in (the inverse of the emitter's modelAspectData).
     const targets = readDeploymentTargets(anchor);

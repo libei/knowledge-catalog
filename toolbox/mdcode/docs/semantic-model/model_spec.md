@@ -468,8 +468,9 @@ reads the document ([§6](#6-the-extension-mechanism)).
   A constraint that quantifies over stored data applies to every write without
   being referenced anywhere. A constraint that reads an action's parameters can
   be checked only before that call, so it applies only where an action names it
-  in `guards`. Status: authored, validated and published; no component evaluates
-  a constraint, so nothing today rejects a write that would break one. Rules in
+  in `guards`; one that no action names at all draws a load warning. Status:
+  authored, validated and published; no component evaluates a constraint, so
+  nothing today rejects a write that would break one. Rules in
   [Reference → Validation](reference.md#validation).
 
 - **Binding profiles.** A separate document that supplies only the physical
