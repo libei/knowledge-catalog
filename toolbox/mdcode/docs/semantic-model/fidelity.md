@@ -100,10 +100,10 @@ agree on every structural row and differ only where a Spanner target has no
 12. **Actions.** An action reaches Knowledge Catalog only, as one
     `semantic-action` entry under the model entry, and `pull` reads it back from
     that entry. Every other push target deploys nothing for it and warns once.
-    Its `guards` are stored as constraint names and round-trip verbatim; a name
-    whose constraint is absent from a pull is kept rather than dropped, so the
-    author's model is never silently rewritten. Prototype scope: an action's
-    `affects` is not modelled, so nothing about it is stored. See
+    Its `guards` are stored as constraint names and round-trip verbatim. A name
+    whose constraint is absent from a pull is kept rather than dropped, so a
+    partial pull never silently rewrites the author's model. Prototype scope:
+    an action's `affects` is not modelled, so nothing about it is stored. See
     [Modeling write operations](actions.md).
 13. **Constraints.** A constraint reaches Knowledge Catalog only, as one
     `semantic-constraint` entry under the model entry, and `pull` reads it back.
@@ -146,8 +146,8 @@ expressions are still used when generating graph SQL.
 becomes a `semantic-action` entry under the model entry, carrying its executor,
 typed parameters, and `guards` in a `semantic-action` aspect. They round-trip
 losslessly through `pull` (name, description, executor, typed parameters,
-guards, and `instructions`). Their `affects` is out of scope for this prototype
-and is not stored. The entry type is custom, so `kcmd init` creates
+`guards`, and `instructions`). Their `affects` is out of scope for this
+prototype and is not stored. The entry type is custom, so `kcmd init` creates
 it; a model that declares no action never needs it.
 
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry

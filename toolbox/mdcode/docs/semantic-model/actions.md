@@ -95,8 +95,10 @@ above.
 ## 2. Gate it with a constraint
 
 A **constraint** is a named boolean invariant a model states over its ontology.
-One that quantifies over stored data holds for every write, whatever performed
-it, and needs no reference from anywhere:
+Where it applies depends on what its expression reads.
+
+An expression over stored data holds for every write, no matter what performed
+that write. No action has to name such a constraint:
 
 ```yaml
     constraints:
@@ -106,9 +108,9 @@ it, and needs no reference from anywhere:
           An account cannot be taken below its minimum balance.
 ```
 
-A constraint that reads an action's **parameters** is a different thing. It
-describes one call rather than the stored data, so the only moment it can be
-checked is before that call runs. Name it on the action, in `guards`:
+An expression that reads an action's **parameters** describes one call rather
+than the stored data. The only moment it can be checked is before that call
+runs, so the action names it in `guards`:
 
 ```yaml
     constraints:
@@ -130,26 +132,17 @@ checked is before that call runs. Name it on the action, in `guards`:
         guards: [AmountIsPositive]
 ```
 
-`guards` holds constraint names. Each must name a constraint the same model
-declares; one that names nothing fails the push:
+`guards` holds constraint names. Each name must resolve to a constraint that the
+same model declares, and one that resolves to nothing fails the push:
 
 ```
 Error: action 'TransferFunds' in model 'payments' (payments.yaml) is guarded by
 'AmountIsPostive', but model 'payments' declares no constraint of that name.
 ```
 
-Naming a constraint adds a check and does not switch its enforcement on. An
-invariant over stored data is in force whether or not an action names it, so
-`guards` earns its place for the constraints that would otherwise have no moment
-to run. Naming an invariant as a guard is still meaningful. It means refuse to
-act on data that is already broken, and it moves that check to before the call.
-
-The reference lives on the action rather than on the constraint. The same rule
-may gate `TransferFunds` and leave `CloseAccount` alone, so gating is a property
-of the pairing.
-
-A constraint that reads a parameter and that no action guards is text nothing
-will ever check, so `kcmd` reports it when it loads the model:
+A constraint that reads a parameter is checked only as a guard. One that no
+action names is therefore text that nothing will ever evaluate, and `kcmd`
+reports it at load time:
 
 ```
 Warning: model 'payments': constraint 'AmountIsPositive' reads 'amount', a
@@ -158,10 +151,19 @@ parameter of action 'TransferFunds', but 'TransferFunds' does not list
 checked only as a guard of that action.
 ```
 
+Naming a constraint adds an earlier check; it does not switch enforcement on. An
+invariant over stored data is in force whether or not an action names it, so
+`guards` exists for the constraints that have no other moment to run. Naming an
+invariant as a guard is still useful. It states that the call must not proceed
+on data that is already broken, and it puts that check before the call.
+
+The reference lives on the action rather than on the constraint. The same rule
+may gate `TransferFunds` and leave `CloseAccount` alone, so gating is a property
+of the pairing.
+
 **Status: nothing evaluates a guard yet.** `kcmd` parses `guards`, resolves each
 name, publishes the list, and reads it back. No component checks a guard against
-live data, so a guard today tells a reader and an agent what must hold before
-the call, and refuses nothing.
+live data, so a guard states what must hold before the call and blocks no call.
 
 ## 3. Check it before pushing
 
@@ -258,10 +260,10 @@ kcmd pull
 
 Pull collects the `semantic-action` entries under the model entry and rebuilds
 each action, so a name, a description, an executor, typed parameters, its
-`guards`, and `ai_context.instructions` survive the round trip unchanged. `isEntityRef` is
-re-derived against the entities the pull recovered rather than read back, so it
-stays consistent with the model you get. What every part of a model does and
-does not survive is in
+`guards`, and `ai_context.instructions` survive the round trip unchanged.
+`isEntityRef` is re-derived against the entities the pull recovered rather than
+read back, so it stays consistent with the model you get. What every part of a
+model does and does not survive is in
 [What push and pull preserve](fidelity.md).
 
 ## What is not modeled yet
@@ -270,8 +272,8 @@ This is a prototype. Four things a reader reasonably expects are absent, and
 knowing which they are decides how much you can lean on it.
 
 - **An action declares no effects.** `affects` — what the call changes — is out
-  of scope here. What must hold before the call does have a home: a constraint
-  the action names in [`guards`](#2-gate-it-with-a-constraint).
+  of scope here. What must hold *before* the call is modeled: a constraint the
+  action names in [`guards`](#2-gate-it-with-a-constraint).
 - **Nothing checks the write.** No component evaluates a constraint or a guard,
   so an action is a declaration and the correctness of what the executor does
   belongs to the executor.
