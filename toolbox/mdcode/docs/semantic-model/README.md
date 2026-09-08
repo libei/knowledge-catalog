@@ -129,6 +129,14 @@ parameter is an object reference rather than a bare string. Actions have no grap
 representation and are governed in Knowledge Catalog. See
 [Modeling write operations](actions.md).
 
+A model can also state **constraints**: named boolean invariants over the
+ontology that hold for every instance, whatever writes to the model. A
+constraint is part of what the model asserts, written in the same expression
+language as a metric, and `Account.balance >= 0` is as much a fact about an
+account as the fields beside it. Constraints have no graph representation
+either; they are validated, published to Knowledge Catalog, and read back by
+`pull`. Nothing checks one against live data yet.
+
 This model names no table and no store, so it is complete enough to govern in
 Knowledge Catalog as-is (step 2). Where each entity reads from — the store and the
 columns — is a binding you add in step 3.
