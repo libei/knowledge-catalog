@@ -150,9 +150,11 @@ expressions are still used when generating graph SQL.
 becomes a `semantic-action` entry under the model entry, carrying its executor,
 typed parameters, and `guards` in a `semantic-action` aspect. They round-trip
 losslessly through `pull` (name, description, executor, typed parameters,
-`guards`, and `instructions`). Their `affects` is out of scope for this
-prototype and is not stored. The entry type is custom, so `kcmd init` creates
-it; a model that declares no action never needs it.
+`guards`, and `instructions`). A parameter's `isEntityRef` is re-derived against
+the entities the pull recovered rather than read back from the aspect, so it
+stays consistent with the model the pull hands you. Their `affects` is out of
+scope for this prototype and is not stored. The entry type is custom, so `kcmd
+init` creates it; a model that declares no action never needs it.
 
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry
 under the model entry, with the expression and any `instructions` in a

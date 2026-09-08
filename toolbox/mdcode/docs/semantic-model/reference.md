@@ -353,12 +353,14 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **Every action is well-formed.** Each action parameter's `type` must resolve to
   a known entity (an object reference) or a scalar datatype, and each executor
   must carry its coordinates (an `mcp` server + tool, a `rest` endpoint + method,
-  or a `grpc` service + method) with no blank field. Each name in the action's
-  `guards` must resolve to a constraint that the same model declares. A guard
-  resolving to nothing leaves the author believing the write is checked when
-  nothing checks it. The "exactly one executor kind" rule and the rejection of a
-  repeated guard are enforced earlier still, when the model is parsed. These
-  checks are static, so they run on every push, regardless of destination. Note
+  or a `grpc` service + method) with no blank field. A coordinate omitted
+  altogether is rejected earlier, when the model is parsed. Each name in the
+  action's `guards` must resolve to a constraint that the same model declares. A
+  guard resolving to nothing leaves the author believing the write is checked
+  when nothing checks it. Two further rules are enforced at parse time: exactly
+  one executor kind (`executor requires exactly one kind, but 2 given (mcp,
+  rest)`) and the rejection of a repeated guard name. Every check here is
+  static, so it runs on every push, regardless of destination. Note
   that actions themselves deploy **only** through the Knowledge Catalog leg — a
   graph-only `--no-kc` push validates them but has nowhere to put them, and
   warns that they will not be deployed. *(static)*
