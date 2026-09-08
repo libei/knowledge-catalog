@@ -14,7 +14,7 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
-import {provisionActionTypes} from '../libts/semantic/kc_actions';
+import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
@@ -226,11 +226,11 @@ export async function init(options: InitOptions): Promise<number> {
           `${res.message || res.status}`);
       return 1;
     }
-    // Actions are the one construct with no built-in system type, so their
-    // custom entry and aspect types are provisioned here too. Everything else
-    // the push writes references types that already exist under
-    // `dataplex-types`. See kc_actions.ts.
-    const provisioned = await provisionActionTypes(catalog, source);
+    // A few constructs have no built-in system type, so the entry and aspect
+    // types they need are provisioned here too. Everything else the push
+    // writes references types that already exist under `dataplex-types`.
+    // kc_custom_types.ts is the list of what is custom.
+    const provisioned = await provisionCustomTypes(catalog, source);
     if (provisioned.error) {
       console.error(`Error: ${provisioned.error}`);
       return 1;

@@ -22,9 +22,9 @@
 // An action (the model's write operations) is published the same way, one entry
 // per action parented to the anchor, but its entry and aspect types are CUSTOM:
 // there is no built-in type for an action yet, so `kcmd init` provisions the
-// pair in the destination project. Everything about those types, and the aspect
-// the action carries, lives in `kc_actions.ts`; this module only appends the
-// entries that file returns.
+// pair in the destination project. `kc_custom_types.ts` declares those types
+// and `kc_actions.ts` encodes the aspect an action carries; this module only
+// appends the entries the latter returns.
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
@@ -201,10 +201,10 @@ export function generateCatalogResources(
     });
   }
 
-  // One entry per action, alongside the entities and metrics. Actions are the
-  // only construct with no built-in system type, so `kc_actions.ts` owns both
-  // the types they reference and the aspect they carry; it returns nothing when
-  // the model declares no actions.
+  // One entry per action, alongside the entities and metrics. Actions have no
+  // built-in system type, so they reference the custom pair declared in
+  // `kc_custom_types.ts`, and `kc_actions.ts` fills the aspect; it returns
+  // nothing when the model declares no actions.
   entries.push(...actionEntries(model, modelId, {
     project: opts.project,
     entry: (id: string) => names.entry(id),

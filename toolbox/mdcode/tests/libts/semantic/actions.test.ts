@@ -2,8 +2,8 @@
 // to metrics -- across the pipeline: loader parsing (executor + typed
 // parameters), the push-time validation gate, and the Knowledge Catalog
 // publish/pull round trip (actions have no BUILT-IN system type; the custom
-// one they use, and everything about how they are persisted, lives in
-// kc_actions.ts). Preconditions and `affects` are intentionally out of scope
+// one they use is declared in kc_custom_types.ts and the encoding that fills
+// it lives in kc_actions.ts). Preconditions and `affects` are out of scope
 // for this prototype.
 
 import {describe, expect, test} from 'bun:test';

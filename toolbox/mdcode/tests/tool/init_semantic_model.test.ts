@@ -1,11 +1,12 @@
 // Tests that `kcmd init --semantic-model` provisions the destination entry
-// group and the custom action types (src/tool/commands.ts, init()).
+// group and the custom types (src/tool/commands.ts, init()).
 //
 // Both are created at init -- not on push -- so a semantic-model push writes
 // only entries, matching how the standard layout operates (its push creates
-// entries, never the entry group). The action entry type and aspect type are
-// the one pair kcmd creates rather than references; see kc_actions.ts. These
-// tests spy on the catalog client so no network call is made and run init
+// entries, never the entry group). The types kcmd creates rather than
+// references are declared in kc_custom_types.ts, which today holds the one
+// action pair. These tests spy on the catalog client so no network call is
+// made and run init
 // inside a temp working directory (it writes catalog.yaml + the layout dirs
 // relative to cwd).
 
