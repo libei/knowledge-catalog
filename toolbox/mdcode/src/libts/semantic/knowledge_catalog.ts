@@ -42,15 +42,20 @@
 // system-type templates yet, so they are gated behind
 // KcGenerateOptions.emitExpressions (off by default) and omitted above.
 //
-// Relationships become `schema-join` entry links between the two entity entries.
-// schema-join is a built-in, undirected entry link type in `dataplex-types/global`
-// whose required `schema-join` aspect carries the join detail (the paired join
-// columns, JOIN vs FOREIGN_KEY, USER inference). The join's direction -- which
-// side holds the foreign key -- is preserved inside that aspect, not by the link.
-// Many-to-many (association / junction-table) edges are not emitted yet: a
-// junction is two joins through a third table, which schema-join's single
-// source/target pair does not model; the emitter warns and skips them (the edge
-// still lives in the BigQuery property graph, see bigquery.ts).
+// A direct foreign-key relationship becomes a `schema-join` entry link between
+// the two entity entries. schema-join is a built-in, undirected entry link type
+// in `dataplex-types/global` whose required `schema-join` aspect carries the
+// join detail (the paired join columns, JOIN vs FOREIGN_KEY, USER inference).
+// The join's direction -- which side holds the foreign key -- is preserved
+// inside that aspect, not by the link.
+//
+// A MANY-TO-MANY relationship is not a link at all. A junction is two joins
+// through a third table, which schema-join's single source/target pair does not
+// model, and Dataplex has no custom entry LINK types to define one with. It
+// publishes as an ENTRY instead, one per relationship parented to the anchor,
+// using the same custom-type mechanism as an action: `kc_custom_types.ts`
+// declares the `semantic-association` pair and `kc_associations.ts` encodes the
+// aspect. This module only appends the entries it returns.
 //
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
@@ -58,6 +63,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 import {actionEntries, actionOwnedPrefix} from './kc_actions';
+import {associationEntries, associationOwnedPrefix} from './kc_associations';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -101,11 +107,12 @@ export interface KcResources {
 /**
  * Generates the Knowledge Catalog resources for a semantic model.
  *
- * Returns the entries (model anchor first, then entities and metrics), the
- * schema-join entry links for the model's relationships, and any warnings
- * collected while mapping the IR (missing keys, un-typed metrics, skipped M:N
- * relationships). The resources reference the built-in system types; they do not
- * create them.
+ * Returns the entries (model anchor first, then entities, metrics, actions and
+ * many-to-many relationships), the schema-join entry links for the model's
+ * foreign-key relationships, and any warnings collected while mapping the IR
+ * (missing keys, un-typed metrics, edges whose endpoint entity is unpublished).
+ * The resources reference the built-in system types, and the custom ones `kcmd
+ * init` provisions; they do not create either.
  */
 export function generateCatalogResources(
     model: SemanticModel, opts: KcGenerateOptions): KcResources {
@@ -216,7 +223,24 @@ export function generateCatalogResources(
     publishedEntities: new Set(entityEntryName.keys()),
   }, warnings));
 
-  // Relationships map to schema-join entry links between their endpoint entries.
+  // One entry per many-to-many relationship, for the same reason: a junction
+  // has no built-in type either, so `kc_associations.ts` fills the custom
+  // `semantic-association` aspect declared in `kc_custom_types.ts`. It returns
+  // nothing when every relationship is a direct foreign key.
+  entries.push(...associationEntries(model, modelId, {
+    project: opts.project,
+    entry: (id: string) => names.entry(id),
+    anchor: modelEntryName,
+    claim: (id: string, label: string) =>
+        claim(seen, id, 'entry', label, warnings),
+    publishedEntities: new Set(entityEntryName.keys()),
+    // The junction table is addressed the same way an entity's backing table
+    // is, so the emitter's own mapping is what renders it.
+    resource: resourcePath,
+  }, warnings));
+
+  // A direct foreign-key relationship maps to a schema-join entry link between
+  // its endpoint entries. A many-to-many one became an entry above.
   const entryLinks: EntryLink[] = [];
   const seenLinks = new Set<string>();
   for (const rel of relationships) {
@@ -230,35 +254,30 @@ export function generateCatalogResources(
     entryLinks,
     warnings: [...new Set(warnings)],
     // Ossie ids are dotted: `<model>.entities.<name>` / `<model>.metrics.<name>`
-    // / `<model>.actions.<name>`.
+    // / `<model>.actions.<name>` / `<model>.associations.<name>`.
     ownedPrefixes: [
       `${modelId}.entities.`,
       `${modelId}.metrics.`,
       actionOwnedPrefix(modelId),
+      associationOwnedPrefix(modelId),
     ],
   };
 }
 
 
-// Builds the schema-join entry link for one relationship, or undefined when it
-// cannot be published. Skipped, each with a warning: a many-to-many
-// (association) edge -- a junction is two joins, which the single source/target
-// schema-join does not model; an edge whose endpoint entity was not emitted
-// (e.g. skipped for a duplicate id); and a column-less (purely logical) edge,
-// whose join columns must be added to the model before it can publish. The
-// BigQuery property graph still carries the association and (once bound) direct
-// edges.
+// Builds the schema-join entry link for one direct foreign-key relationship, or
+// undefined when it cannot be published. A many-to-many edge returns undefined
+// without a warning: it is not a link, and `associationEntries` has already
+// published it as an entry. Two cases are skipped WITH a warning: an edge whose
+// endpoint entity was not emitted (e.g. skipped for a duplicate id), and a
+// column-less (purely logical) edge, whose join columns must be added to the
+// model before it can publish. The BigQuery property graph still carries the
+// latter once bound.
 function relationshipLink(
     names: Namer, model: SemanticModel, rel: Relationship,
     entityEntryName: Map<string, string>, seenLinks: Set<string>,
     warnings: string[]): EntryLink|undefined {
-  if (rel.association) {
-    warnings.push(
-        `relationship '${rel.name}': many-to-many (association) edges are not ` +
-        `published to Knowledge Catalog yet; the edge lives in the BigQuery ` +
-        `property graph.`);
-    return undefined;
-  }
+  if (rel.association) return undefined;
   const src = entityEntryName.get(rel.source.entity);
   const dst = entityEntryName.get(rel.destination.entity);
   if (!src || !dst) {

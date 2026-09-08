@@ -355,6 +355,7 @@ describe('golden OSI document: each corpus fixture serializes to its exact YAML'
              'sales_bq_graph_target.yaml',
              'star_orders_customer.yaml',
              'tpcds_date_edge.yaml',
+             'school_manytomany.yaml',
            ];
            // Same load defaults as the KC e2e/pull goldens, so the OSI golden
            // and the pull golden are directly comparable.

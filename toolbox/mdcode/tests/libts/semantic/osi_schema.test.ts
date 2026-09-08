@@ -54,12 +54,21 @@ const fixtures = yamlFixtures(fixturesDir);
 // them too and tolerate *only* missing-`expression` errors. Once PR #290 (the
 // sql-expressions companion aspect) regenerates these goldens with expressions
 // they pass with no special-casing, and any other schema drift still fails now.
-function onlyMissingExpression(errors: typeof validate.errors): boolean {
+function isMissingExpression(e: SchemaError): boolean {
+  return e.keyword === 'required' &&
+    (e.params as {missingProperty?: string}).missingProperty === 'expression';
+}
+
+// One schema error, as Ajv reports it.
+type SchemaError = NonNullable<typeof validate.errors>[number];
+
+// True when every error is one a tolerance below accounts for. A fixture with
+// no errors never reaches here, so an empty list is not a pass.
+function onlyTolerated(
+  errors: typeof validate.errors,
+  tolerated: Array<(e: SchemaError) => boolean>): boolean {
   return !!errors && errors.length > 0 &&
-    errors.every(
-      e => e.keyword === 'required' &&
-        (e.params as {missingProperty?: string}).missingProperty ===
-          'expression');
+    errors.every(e => tolerated.some(ok => ok(e)));
 }
 
 // `extends` (entity-level inheritance, the target of OWL rdfs:subClassOf) is a
@@ -167,21 +176,18 @@ function onlyActionsExtension(errors: typeof validate.errors): boolean {
 // tolerate EXACTLY those three errors on a /relationships/<n> path and nothing
 // else. When upstream OSI adopts a junction-table syntax, re-vendoring the
 // schema makes this pass with no special-casing.
-function onlyAssociationExtension(errors: typeof validate.errors): boolean {
+function isAssociationSuperset(e: SchemaError): boolean {
   const missingOk = new Set(['from_columns', 'to_columns']);
-  return !!errors && errors.length > 0 &&
-    errors.every(e => {
-      if (!/\/relationships\/\d+$/.test(e.instancePath)) return false;
-      if (e.keyword === 'required') {
-        return missingOk.has(
-          (e.params as {missingProperty?: string}).missingProperty ?? '');
-      }
-      if (e.keyword === 'additionalProperties') {
-        return (e.params as {additionalProperty?: string})
-          .additionalProperty === 'association';
-      }
-      return false;
-    });
+  if (!/\/relationships\/\d+$/.test(e.instancePath)) return false;
+  if (e.keyword === 'required') {
+    return missingOk.has(
+      (e.params as {missingProperty?: string}).missingProperty ?? '');
+  }
+  if (e.keyword === 'additionalProperties') {
+    return (e.params as {additionalProperty?: string}).additionalProperty ===
+      'association';
+  }
+  return false;
 }
 
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
@@ -197,9 +203,15 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
       if (!ok) {
         // A .pull.golden.yaml from an expression-free push is a known #290 gap
         // when its ONLY failures are missing `expression`; anything else is a
-        // real regression and still fails.
+        // real regression and still fails. A junction-backed fixture's pull
+        // faithfully reproduces the association superset too, so that one
+        // tolerates both.
         if (rel.endsWith('.pull.golden.yaml') &&
-            onlyMissingExpression(validate.errors)) {
+            onlyTolerated(
+              validate.errors,
+              rel.startsWith('school_manytomany') ?
+                [isMissingExpression, isAssociationSuperset] :
+                [isMissingExpression])) {
           return;
         }
         // The OWL import goldens are purely logical models (a pre-OSI superset,
@@ -227,9 +239,10 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
           return;
         }
         // A junction-backed relationship is a deliberate superset too; tolerate
-        // exactly its three errors, and only on the fixture that carries one.
-        if (rel === 'school_manytomany.yaml' &&
-            onlyAssociationExtension(validate.errors)) {
+        // exactly its three errors, and only on the fixture that carries one
+        // (and the goldens generated from it).
+        if (rel.startsWith('school_manytomany') &&
+            onlyTolerated(validate.errors, [isAssociationSuperset])) {
           return;
         }
         const details = (validate.errors ?? [])

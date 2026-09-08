@@ -33,7 +33,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Unique keys                                                    | `schema.uniqueConstraints`      | ✓                                              | — dropped (only PK emitted)                                          | — dropped (only PK emitted)                                          |
 | Metric                                                         | `semantic-metric` entry         | name, entity, description, instructions, type⁵ | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
 | Relationship (1:1 / 1:N)                                       | `schema-join` link              | ✓ (name normalized⁶)                           | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
-| Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
+| Relationship (M:N / `association`)                             | `semantic-association` entry¹³  | ✓¹³                                            | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
 | Entity `extends`                                               | — not modelled                  | —                                              | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not represented (write-side)                                       | — not represented (write-side)                                       |
 | `description` (entity / metric / field / relationship)         | entry description / aspect      | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
@@ -63,14 +63,18 @@ agree on every structural row and differ only where a Spanner target has no
 5. **Metric type.** A metric's expression is gated behind `--emit-expressions`;
    its data type round-trips only for a concrete type (e.g. `Decimal`) — an
    untyped, `String`, or `Opaque` metric comes back un-typed.
-6. **Relationship name.** Relationship names come back lowercased/hyphenated
-   (`Places Order` → `places-order`) — the catalog stores the name only in the
-   link id. See [Writer-side follow-up](#writer-side-follow-up).
+6. **Relationship name.** A one-to-many relationship's name comes back
+   lowercased/hyphenated (`Places Order` → `places-order`) — the catalog stores
+   the name only in the link id. See
+   [Writer-side follow-up](#writer-side-follow-up). A many-to-many relationship
+   is stored as an entry, not a link, so its name comes back verbatim.
 7. **Guidelines aspect.** The `guidelines` aspect exists only for the model,
    entities, and metrics — not fields or relationships, so field- and
    relationship-level `ai_context.instructions` has no Knowledge Catalog home (a
    relationship's instructions still reach BigQuery, folded into the edge's
-   `OPTIONS(description)`).
+   `OPTIONS(description)`). The one exception is a many-to-many relationship,
+   whose `semantic-association` aspect carries its `instructions` — that aspect
+   type is ours, so it has a field for them.
 8. **Model-level metadata.** Neither graph has a home for statement-level
    metadata — BigQuery silently drops graph-statement `OPTIONS`, and Spanner
    carries no `OPTIONS` at all — so the model's `description` and
@@ -103,12 +107,23 @@ agree on every structural row and differ only where a Spanner target has no
     scope: an action's `precondition` and `affects` are not modelled, so nothing
     about them is stored either way. See
     [Modeling write operations](actions.md).
+13. **Many-to-many relationships.** The `schema-join` link holds exactly one
+    source/target column pair, so it cannot describe an edge that runs through a
+    junction table. A many-to-many relationship is published instead as one
+    `semantic-association` entry under the model entry, holding the two entities
+    it pairs, the junction table, and the junction's keys, join columns, and
+    fields. The whole `association` block round-trips — including the edge's own
+    fields and their expressions, which are stored unconditionally (the aspect
+    type is ours, so it has fields for them; the `--emit-expressions` gate exists
+    for the published system templates that do not). See
+    [Model spec §2.2.1](model_spec.md#221-many-to-many-association).
 
 ## To Knowledge Catalog
 
 The catalog holds metadata rather than a full copy of your model. Every resource
 type it uses is a built-in system type under `dataplex-types/global`, apart from
-the custom `semantic-action` pair that `kcmd init` provisions — push references
+the custom `semantic-association` and `semantic-action` pairs that `kcmd init`
+provisions — push references
 types, it never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
@@ -134,6 +149,16 @@ templates gain the fields. The catalog never stores `ai_context.synonyms` /
 SQL (`importedExpression` — for example the MAQL or Snowflake form a metric was
 imported from). Those stay in your authored document; the vendor SQL and
 expressions are still used when generating graph SQL.
+
+**Many-to-many relationships** get an entry rather than a link. A `schema-join`
+link holds one source/target column pair, which cannot describe an edge that
+runs through a junction table, and Knowledge Catalog has no custom *link* types
+— only custom entry and aspect types. So each many-to-many relationship becomes
+a `semantic-association` entry under the model entry, carrying the two entities
+it pairs and the junction table with its keys, join columns, and fields. The
+whole block round-trips through `pull`, name included. The entry type is custom,
+so `kcmd init` creates it; a model with no many-to-many relationship never needs
+it.
 
 **Actions** follow the same one-entry-per-element rule as everything else: each
 becomes a `semantic-action` entry under the model entry, carrying its executor
@@ -205,9 +230,10 @@ returns that view. Two things about *how* it comes back:
 
 **Normalized** — the content survives, the form changes:
 
-- Relationship *names* come back lowercased/hyphenated (`Places Order` →
-  `places-order`); the catalog stores the name only in the link id. See
-  [Writer-side follow-up](#writer-side-follow-up).
+- A one-to-many relationship's *name* comes back lowercased/hyphenated
+  (`Places Order` → `places-order`); the catalog stores the name only in the link
+  id. See [Writer-side follow-up](#writer-side-follow-up). A many-to-many
+  relationship is stored as an entry instead, so its name comes back verbatim.
 - Field types round-trip except two collapses: a field authored with no type
   comes back as `Opaque`, and a field authored as `String` comes back un-typed
   (both store `dataType STRING`, kept distinct by a field's `metadataType` — see
@@ -232,8 +258,8 @@ One reduction above is a limit of what push currently *writes* rather than of
 what pull can recover. It is recorded here as a write-side follow-up; the reader
 (pull) already returns everything the catalog holds.
 
-- **Relationship names.** The `schema-join` aspect type's `metadataTemplate` has
-  no field for the relationship name, so push cannot store it and pull recovers
+- **Relationship names** (one-to-many only). The `schema-join` aspect type's
+  `metadataTemplate` has no field for the relationship name, so push cannot store it and pull recovers
   it from the link id — which is lowercased and hyphenated (the entry-link id
   format forbids the original casing/underscores). Returning the name verbatim
   requires adding a name field to the built-in `schema-join` aspect type in

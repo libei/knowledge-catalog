@@ -282,25 +282,114 @@ describe('relationship recovery (schema-join links -> IR)', () => {
             .toBe('places-order');
       });
 
-  test('a many-to-many (association) relationship is not recovered', () => {
+  test('a many-to-many relationship round-trips through its own entry', () => {
+    // It is not a schema-join link but a semantic-association entry, so it
+    // comes back from `entries` rather than `entryLinks` -- and keeps its
+    // authored name, which the entry carries verbatim.
     const model: SemanticModel = {
       name: 'sales',
       entities: twoEntities,
       relationships: [{
-        name: 'enrolls',
-        source: {entity: 'orders', columns: ['o_custkey']},
-        destination: {entity: 'customer', columns: ['c_custkey']},
+        name: 'Promoted_By',
+        source: {entity: 'orders', columns: []},
+        destination: {entity: 'customer', columns: []},
+        description: 'which customers an order reached',
         association: {
           dataSource: 'p.d.junction',
           keys: ['id'],
+          sourceColumns: ['j_orderkey'],
+          destinationColumns: ['j_custkey'],
+          fields: [{name: 'discount', expression: 'j.discount',
+                    type: 'Decimal'}],
+        },
+      }],
+      metrics: [],
+    };
+    expect(roundTrip(model).models[0].relationships).toEqual([
+      model.relationships[0]
+    ]);
+  });
+
+  test('a many-to-many relationship and a foreign key coexist', () => {
+    const model: SemanticModel = {
+      name: 'sales',
+      entities: twoEntities,
+      relationships: [
+        {
+          name: 'places',
+          source: {entity: 'orders', columns: ['o_custkey']},
+          destination: {entity: 'customer', columns: ['c_custkey']},
+        },
+        {
+          name: 'promoted-by',
+          source: {entity: 'orders', columns: []},
+          destination: {entity: 'customer', columns: []},
+          association: {
+            dataSource: 'p.d.junction',
+            keys: [],
+            sourceColumns: ['j_orderkey'],
+            destinationColumns: ['j_custkey'],
+          },
+        },
+      ],
+      metrics: [],
+    };
+    expect(roundTrip(model).models[0].relationships.map(r => r.name))
+        .toEqual(['places', 'promoted-by']);
+  });
+
+  test('an association entry naming an unknown entity is skipped', () => {
+    const model: SemanticModel = {
+      name: 'sales',
+      entities: twoEntities,
+      relationships: [{
+        name: 'promoted-by',
+        source: {entity: 'orders', columns: []},
+        destination: {entity: 'customer', columns: []},
+        association: {
+          dataSource: 'p.d.junction',
+          keys: [],
           sourceColumns: ['j_orderkey'],
           destinationColumns: ['j_custkey'],
         },
       }],
       metrics: [],
     };
-    // The emitter never publishes M:N, so no schema-join link exists to read.
-    expect(roundTrip(model).models[0].relationships).toEqual([]);
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const assoc = entries.find(
+        e => e.entryType.endsWith('/entryTypes/semantic-association'))!;
+    assoc.aspects!['dest.global.semantic-association'].data!.toEntity =
+        'ghost';
+    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    expect(models[0].relationships).toEqual([]);
+    expect(warnings.some(w => w.includes('ghost'))).toBe(true);
+  });
+
+  test('an association entry with no junction columns is skipped', () => {
+    const model: SemanticModel = {
+      name: 'sales',
+      entities: twoEntities,
+      relationships: [{
+        name: 'promoted-by',
+        source: {entity: 'orders', columns: []},
+        destination: {entity: 'customer', columns: []},
+        association: {
+          dataSource: 'p.d.junction',
+          keys: [],
+          sourceColumns: ['j_orderkey'],
+          destinationColumns: ['j_custkey'],
+        },
+      }],
+      metrics: [],
+    };
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const assoc = entries.find(
+        e => e.entryType.endsWith('/entryTypes/semantic-association'))!;
+    delete assoc.aspects!['dest.global.semantic-association']
+        .data!.toColumns;
+    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    expect(models[0].relationships).toEqual([]);
+    expect(warnings.some(w => w.includes('no junction column'))).toBe(true);
   });
 
   test(
@@ -741,9 +830,9 @@ describe('metric expression referencing no known entity', () => {
 // entries and entry links a push produced) back through the reader and
 // serializes the reconstructed IR to `<fixture>.pull.golden.yaml`. Open that
 // next to the fixture's `.osi.golden.yaml` to see, as whole files, what a
-// Knowledge Catalog round trip preserves (including 1:1 / 1:N relationships and
-// deployment targets) and what it drops (keys, ai_context, labels, vendor SQL,
-// M:N relationships).
+// Knowledge Catalog round trip preserves (including relationships of both
+// arities and deployment targets) and what it drops (ai_context beyond
+// instructions, labels, vendor SQL).
 //
 //   Regenerate after an intentional reader/serializer change:
 //     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/kc_converter.test.ts
@@ -753,6 +842,7 @@ describe(
         'sales_bq_graph_target.yaml',
         'star_orders_customer.yaml',
         'tpcds_date_edge.yaml',
+        'school_manytomany.yaml',
       ];
       const kcGoldenPath = (fixture: string) => path.join(
           FIXTURES,
@@ -797,14 +887,15 @@ describe(
 // the documented losses and normalizations applied (`stripToKcFloor`). Applying
 // that same reduction to BOTH sides makes `toEqual` flag only UNDOCUMENTED
 // divergence, so a new emitter/reader regression (a dropped column, a lost
-// description, an un-stripped M:N edge) fails here even though every individual
-// loss is already pinned by a targeted test above.
+// description, a junction that stopped round-tripping) fails here even though
+// every individual loss is already pinned by a targeted test above.
 describe(
     'symmetry: an emit -> read round trip drops only documented fields', () => {
       const CORPUS = [
         'sales_bq_graph_target.yaml',
         'star_orders_customer.yaml',
         'tpcds_date_edge.yaml',
+        'school_manytomany.yaml',
       ];
       // Same load defaults as the OSI / KC / pull goldens.
       const LOAD = {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'};
@@ -893,13 +984,42 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
     }
   }
 
-  // M:N (association) edges are never published; a 1:1 / 1:N name comes back
-  // normalized via the emitter's slug (its exact form is pinned above).
-  m.relationships = m.relationships.filter(r => !r.association).map(r => {
+  // The two arities lose different things, because they are published as
+  // different resources. A direct foreign key is a schema-join entry LINK,
+  // which carries no name field and no aspect for guidelines, so the name comes
+  // back normalized via the emitter's slug and ai_context is gone. A
+  // many-to-many edge is an ENTRY of the custom semantic-association type,
+  // which carries its own display name and folds instructions and the edge's
+  // fields into its own aspect, so all three survive.
+  m.relationships = m.relationships.map(r => {
     const rel = structuredClone(r);
-    rel.name = linkNamePrefix(rel.name);
-    delete rel.aiContext;
     delete rel.customExtensions;
+    if (!rel.association) {
+      rel.name = linkNamePrefix(rel.name);
+      delete rel.aiContext;
+      return rel;
+    }
+    floorAiContext(rel);
+    // An empty field list is written as nothing and reads back absent.
+    if (rel.association.fields && !rel.association.fields.length) {
+      delete rel.association.fields;
+    }
+    for (const f of rel.association.fields ?? []) {
+      delete f.aiContext;
+      delete f.importedExpression;
+      delete f.importedDialect;
+      delete f.customExtensions;
+      // The association aspect has no slot for a display label or a dimension
+      // role. It does store the field's expression -- unlike an entity field,
+      // whose expression is gated off because the BUILT-IN schema template has
+      // nowhere to put it; this template is ours, so it carries one.
+      delete f.label;
+      delete f.dimension;
+      // An un-typed field is published as Opaque, the explicit "type unknown"
+      // marker, and reads back as Opaque. Unlike an entity field, `String` is
+      // stored verbatim rather than collapsing into a bare STRING.
+      if (f.type === undefined) f.type = 'Opaque';
+    }
     return rel;
   });
 

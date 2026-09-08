@@ -557,23 +557,14 @@ describe('relationships map to schema-join entry links', () => {
     expect(warnings.length).toBe(0);
   });
 
-  test(
-      'a many-to-many (association) edge is skipped and warned, no link',
-      () => {
-        const model = directFkModel();
-        model.relationships[0].association = {
-          dataSource: 'p.d.order_customer',
-          keys: ['id'],
-          sourceColumns: ['o_key'],
-          destinationColumns: ['c_key'],
-        };
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
-        expect(entryLinks.length).toBe(0);
-        expect(warnings.some(
-                   w => w.includes('orders-to-customer') &&
-                       w.includes('many-to-many')))
-            .toBe(true);
-      });
+  test('a many-to-many edge produces no link (it is an entry instead)', () => {
+    const {entryLinks, warnings} = generateCatalogResources(mnModel(), OPTS);
+    expect(entryLinks.length).toBe(0);
+    // Silently, because the edge is published -- as an entry, asserted in the
+    // many-to-many describe below. A warning here would say a supported
+    // construct was dropped.
+    expect(warnings.length).toBe(0);
+  });
 
   test('an edge to an unpublished entity is skipped and warned', () => {
     const model = directFkModel();
@@ -619,6 +610,169 @@ describe('relationships map to schema-join entry links', () => {
                        w.includes('orders-to-customer')))
             .toBe(true);
       });
+});
+
+
+// The same two entities paired through a junction table instead of a foreign
+// key: an order is on many promotions and a promotion covers many orders, so
+// the pairs live in `p.d.order_promotion` with a `discount` of their own.
+function mnModel(): SemanticModel {
+  return {
+    name: 'm',
+    metrics: [],
+    entities: [
+      {name: 'orders', dataSource: 'p.d.orders', keys: ['o_key'], fields: []},
+      {
+        name: 'customer',
+        dataSource: 'p.d.customer',
+        keys: ['c_key'],
+        fields: []
+      },
+    ],
+    relationships: [{
+      name: 'order-customer',
+      source: {entity: 'orders', columns: []},
+      destination: {entity: 'customer', columns: []},
+      description: 'which customers an order reached',
+      association: {
+        dataSource: 'p.d.order_customer',
+        keys: ['id'],
+        sourceColumns: ['j_orderkey'],
+        destinationColumns: ['j_custkey'],
+        fields: [{name: 'discount', expression: 'j.discount', type: 'Decimal'}],
+      },
+    }],
+  };
+}
+
+// The sole semantic-association entry of a generated model.
+function associationEntry(model: SemanticModel) {
+  const {entries} = generateCatalogResources(model, OPTS);
+  const found =
+      entries.filter(e => e.entryType.endsWith('/entryTypes/semantic-association'));
+  expect(found.length).toBe(1);
+  return found[0];
+}
+
+// A many-to-many relationship has no built-in Knowledge Catalog type: it is not
+// a schema-join (a junction is two joins) and Dataplex has no custom entry LINK
+// types. It publishes as an entry of the custom `semantic-association` type
+// instead, the same mechanism actions use. See kc_associations.ts.
+describe('a many-to-many relationship becomes a semantic-association entry', () => {
+  test('the entry is typed, named and parented to the model anchor', () => {
+    const entry = associationEntry(mnModel());
+    expect(entry.name!.endsWith('/entries/m.associations.order-customer'))
+        .toBe(true);
+    // The custom type lives in the DESTINATION project (kcmd init creates it
+    // there), not under dataplex-types with the built-in types.
+    expect(entry.entryType)
+        .toBe(
+            'projects/dest-proj/locations/global/entryTypes/semantic-association');
+    expect(entry.parentEntry!.endsWith('/entries/m')).toBe(true);
+    // The authored name rides the entry source verbatim, so unlike a
+    // schema-join relationship it is not normalized on the way back.
+    expect(entry.entrySource!.displayName).toBe('order-customer');
+    expect(entry.entrySource!.description)
+        .toBe('which customers an order reached');
+  });
+
+  test('the aspect carries both endpoints, the junction and its columns', () => {
+    const entry = associationEntry(mnModel());
+    const aspect = entry.aspects!['dest-proj.global.semantic-association'];
+    expect(aspect.aspectType)
+        .toBe(
+            'projects/dest-proj/locations/global/aspectTypes/semantic-association');
+    const data = aspect.data!;
+    expect(data.fromEntity).toBe('orders');
+    expect(data.toEntity).toBe('customer');
+    // The junction is addressed the way an entity's backing table is: the
+    // BigQuery linked-resource URI, not the dotted form.
+    expect(data.junction)
+        .toBe(
+            '//bigquery.googleapis.com/projects/p/datasets/d/tables/order_customer');
+    expect(data.keys).toEqual(['id']);
+    expect(data.fromColumns).toEqual(['j_orderkey']);
+    expect(data.toColumns).toEqual(['j_custkey']);
+  });
+
+  test('edge properties ride the association aspect, not a schema aspect', () => {
+    // The entry's type is custom, so the built-in `schema` aspect type is not
+    // available to it (a pull derives the aspect base from the entry type's
+    // project). The edge's own fields therefore live on this aspect.
+    const entry = associationEntry(mnModel());
+    expect(Object.keys(entry.aspects!)).toEqual([
+      'dest-proj.global.semantic-association'
+    ]);
+    const data = entry.aspects!['dest-proj.global.semantic-association'].data!;
+    expect(data.fields).toEqual([
+      {name: 'discount', dataType: 'Decimal', expression: 'j.discount'},
+    ]);
+  });
+
+  test('an untyped edge property is published as Opaque', () => {
+    const model = mnModel();
+    delete model.relationships[0].association!.fields![0].type;
+    const data = associationEntry(model)
+                     .aspects!['dest-proj.global.semantic-association']
+                     .data!;
+    expect(data.fields[0].dataType).toBe('Opaque');
+  });
+
+  test('ai_context.instructions ride the association aspect too', () => {
+    const model = mnModel();
+    model.relationships[0].aiContext = {instructions: 'one row per pairing'};
+    const data = associationEntry(model)
+                     .aspects!['dest-proj.global.semantic-association']
+                     .data!;
+    expect(data.instructions).toBe('one row per pairing');
+    // Not the built-in guidelines aspect, which this entry type cannot require.
+    expect(Object.keys(associationEntry(model).aspects!)).toEqual([
+      'dest-proj.global.semantic-association'
+    ]);
+  });
+
+  test('the associations prefix is owned, so a dropped edge is reconciled', () => {
+    const {ownedPrefixes} = generateCatalogResources(mnModel(), OPTS);
+    expect(ownedPrefixes).toContain('m.associations.');
+  });
+
+  test('a model of only foreign-key edges emits no association entry', () => {
+    const model = mnModel();
+    delete model.relationships[0].association;
+    model.relationships[0].source.columns = ['custkey'];
+    model.relationships[0].destination.columns = ['c_key'];
+    const {entries, ownedPrefixes} = generateCatalogResources(model, OPTS);
+    expect(entries.some(
+               e => e.entryType.endsWith('/entryTypes/semantic-association')))
+        .toBe(false);
+    // The prefix is still owned, so an edge deleted from the model has its
+    // entry removed on the next push.
+    expect(ownedPrefixes).toContain('m.associations.');
+  });
+
+  test('an edge to an unpublished entity is skipped and warned', () => {
+    const model = mnModel();
+    model.relationships[0].destination.entity = 'ghost';
+    const {entries, warnings} = generateCatalogResources(model, OPTS);
+    expect(entries.some(
+               e => e.entryType.endsWith('/entryTypes/semantic-association')))
+        .toBe(false);
+    expect(warnings.some(
+               w => w.includes('order-customer') && w.includes('ghost')))
+        .toBe(true);
+  });
+
+  test('a logical-only junction omits the table rather than storing a blank',
+       () => {
+         const model = mnModel();
+         model.relationships[0].association!.dataSource = '';
+         const data = associationEntry(model)
+                          .aspects!['dest-proj.global.semantic-association']
+                          .data!;
+         expect('junction' in data).toBe(false);
+         // The logical shape survives: the edge still says what it pairs.
+         expect(data.fromColumns).toEqual(['j_orderkey']);
+       });
 });
 
 

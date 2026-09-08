@@ -20,7 +20,8 @@ import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {SemanticModel} from './ir';
 import {actionAspectTypes} from './kc_actions';
-import {ACTION_TYPE_ID} from './kc_custom_types';
+import {associationAspectTypes} from './kc_associations';
+import {ACTION_TYPE_ID, ASSOCIATION_TYPE_ID} from './kc_custom_types';
 import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
 
 export interface KcPullOptions {
@@ -165,6 +166,10 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
       // `typeBase` already points there, and kc_actions.ts names the aspects
       // to fetch beneath it.
       return actionAspectTypes(typeBase);
+    case ASSOCIATION_TYPE_ID:
+      // Likewise for a many-to-many relationship: its entry type is custom, and
+      // kc_associations.ts names the one aspect that holds the junction.
+      return associationAspectTypes(typeBase);
     default:
       return undefined;
   }
