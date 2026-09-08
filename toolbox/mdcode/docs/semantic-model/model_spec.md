@@ -199,17 +199,19 @@ A relationship is a directed edge between two datasets.
 | `name` | string | required |
 | `from` | string | required; a declared dataset name |
 | `to` | string | required; a declared dataset name |
-| `from_columns` | list of strings | join key on `from` |
-| `to_columns` | list of strings | join key on `to` |
-| `association` | [association](#221-many-to-many-association) | `/google` only; a many-to-many edge |
+| `from_columns` | list of strings | join key reaching `from` |
+| `to_columns` | list of strings | join key reaching `to` |
+| `through` | string | `/google` only; a table holding the pairs · [§2.2.1](#221-many-to-many-through) |
+| `keys` | list of strings | `/google` only; requires `through` |
+| `fields` | list of [field](#211-field) | `/google` only; requires `through` |
 | `description` | string | |
 | `ai_context` | [ai_context](#24-ai_context) | |
 | `custom_extensions` | list | [§6](#6-the-extension-mechanism) |
 
 `from_columns` and `to_columns` are the edge's join keys. They MUST be given
 together (a bound edge) or both omitted (a logical edge); one without the other is
-rejected. When both are given they MUST have equal length. `from` and `to` MUST
-name datasets declared in the same model.
+rejected. Without `through` they MUST have equal length, because they pair up
+positionally. `from` and `to` MUST name datasets declared in the same model.
 
 Ossie **requires** both join-column lists; allowing both to be omitted — a
 logical edge with no join keys — is a `kcmd` **relaxation** ([§4](#4-narrowings-and-relaxations))
@@ -218,44 +220,46 @@ requires them (see [§4](#4-narrowings-and-relaxations)). Unlike `source` and fi
 join columns are declared on the logical model and are not profile-swappable
 ([§7](#7-the-binding-layer)).
 
-#### 2.2.1. Many-to-many (`association`)
+#### 2.2.1. Many-to-many (`through`)
 
-A relationship whose two sides each match many of the other cannot be a foreign
-key: a foreign-key column holds one value, so it references at most one row. The
-pairs live in a table of their own — one row per pair — and the edge is declared
-with an `association` block instead of the relationship's own join columns.
-
-| Key | Type | Rule |
-|---|---|---|
-| `source` | string | required; the table holding the pairs |
-| `from_columns` | list of strings | required; columns on that table referencing `from` |
-| `to_columns` | list of strings | required; columns on that table referencing `to` |
-| `keys` | list of strings | the pairing's own key; defaults to the two column lists combined |
-| `fields` | list of [field](#211-field) | properties of the pairing itself |
+A relationship whose two sides each match many of the other cannot be carried by
+a foreign key: a foreign-key column holds one value, so it references at most one
+row. The pairs live in a table of their own — one row per pair — and the
+relationship names it with `through`.
 
 ```yaml
 relationships:
   - name: enrollment
     from: students
     to: courses
-    association:
-      source: analytics.school.enrollment
-      keys: [enrollment_id]
-      from_columns: [student_id]
-      to_columns: [course_id]
-      fields:
-        - name: grade
-          expression: enrollment.grade
+    through: analytics.school.enrollment
+    keys: [enrollment_id]
+    from_columns: [student_id]
+    to_columns: [course_id]
+    fields:
+      - name: grade
+        expression: enrollment.grade
 ```
 
-The columns named inside the block are columns of the **pairing table**, not of
-either endpoint, and each list references the corresponding endpoint's declared
-`primary_key`. A relationship MUST NOT carry both an `association` and its own
-`from_columns`/`to_columns`: an edge is one shape or the other. `fields` are
-properties of the pairing rather than of either side — a grade belongs to the
-enrollment, not to the student or the course.
+`through` changes where `from_columns` and `to_columns` live, not what they mean.
+Without it they are on the two endpoints' own tables; with it both are on the
+table named by `through`, one list reaching each endpoint's declared
+`primary_key`. Because the two lists no longer pair up with each other, they need
+not have equal length. Both are required when `through` is given: without them
+nothing says which pairs the table holds.
 
-`association` is a native key of the extended profile
+`keys` is the edge's own key, on the `through` table. It defaults to the two
+column lists combined and deduplicated, which is unique whenever a pair appears
+at most once; give it explicitly for a surrogate key, or when a pair may
+legitimately repeat (an enrollment per term).
+
+`fields` are properties of the pairing rather than of either endpoint — a grade
+belongs to the enrollment, not to the student or the course.
+
+`keys` and `fields` both require `through`. An edge carried by a foreign key has
+no table of its own, so it has nowhere to put a key or a property.
+
+`through`, `keys`, and `fields` are native keys of the extended profile
 ([§5](#5-extensions)); vanilla Ossie has no syntax for a pairing table.
 
 ### 2.3. Metric
@@ -341,7 +345,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
-| relationship M:N (`association`) | — | added | pairing table + its own key and fields; `/google` only · [§2.2.1](#221-many-to-many-association), [§5](#5-extensions) |
+| relationship M:N (`through`) | — | added | pairing table + its own key and fields; `/google` only · [§2.2.1](#221-many-to-many-through), [§5](#5-extensions) |
 | `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and aggregate · [§4.1](#41-narrowings-stricter-than-ossie) |
 | `expression.dialects` | closed enum | any dialect string | tolerate imported / newer input · [§4.2](#42-relaxations-looser-than-ossie) |
 | field `expression` (column binding) | required | optional | model before binding; unbound is pruned · [§4.2](#42-relaxations-looser-than-ossie), [§7](#7-the-binding-layer) |
@@ -390,8 +394,8 @@ Each rule and its reason:
 
 - **A graph-bound relationship MUST have its join columns bound.** For any graph
   target, a relationship MUST supply both `from_columns` and `to_columns` before
-  deploy — on the relationship itself, or, for a many-to-many edge, inside its
-  `association` block. *Why:* the edge table needs both keys.
+  deploy, whether they sit on the endpoints' own tables or on a `through` table.
+  *Why:* the edge table needs both keys.
 
 - **Unknown keys are rejected.** Every object is validated closed: an unrecognized
   sibling key is a hard load error, not silently dropped. Combined with the version
@@ -490,11 +494,11 @@ reads the document ([§6](#6-the-extension-mechanism)).
   bindings, so one logical model serves several stores. Not part of the Ossie
   document; a `kcmd`-specific file alongside it ([§7](#7-the-binding-layer)).
 
-- **`association` (extended profile only).** A many-to-many relationship, backed
+- **`through` (extended profile only).** A many-to-many relationship, backed
   by a table of pairs with its own key and its own properties. Ossie's
   relationship is a foreign key only, and the carrier cannot express one either:
   a `custom_extensions` block holds opaque data, and this edge has to be read by
-  the graph generators. Grammar in [§2.2.1](#221-many-to-many-association).
+  the graph generators. Grammar in [§2.2.1](#221-many-to-many-through).
 
 ## 6. The extension mechanism
 
@@ -643,7 +647,7 @@ The full merge behavior and worked examples are in
   and constructs with no vanilla form (inheritance, the `entities` spelling) are
   simply unavailable there — a model that needs them uses `0.2.0.dev0/google`.
 
-- **Extensions are additive.** `association` and `actions` were both added to
+- **Extensions are additive.** `through` and `actions` were both added to
   the extended profile after `0.2.0.dev0/google` was first published, each as a
   new optional key. A document that used neither is unaffected, which is the
   shape any further extension takes.

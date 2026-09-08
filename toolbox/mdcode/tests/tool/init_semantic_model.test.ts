@@ -4,8 +4,8 @@
 // Both are created at init -- not on push -- so a semantic-model push writes
 // only entries, matching how the standard layout operates (its push creates
 // entries, never the entry group). The types kcmd creates rather than
-// references are declared in kc_custom_types.ts, which today holds the one
-// action pair and the many-to-many association pair. The tests below assert
+// references are declared in kc_custom_types.ts, which today holds the action
+// pair and the relationship pair. The tests below assert
 // over CUSTOM_TYPES rather than naming those two, so adding a third type does
 // not need them rewritten. They spy on the catalog client so no network call is
 // made and run init

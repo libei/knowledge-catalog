@@ -21,8 +21,8 @@
 // TO ADD A NEW CUSTOM TYPE. Append a record. Provisioning, naming and the init
 // wiring are generic over this list, so no other file in this directory needs
 // to change; what does need writing is the encoding that fills the aspect, the
-// way kc_actions.ts does for `semantic-action` and kc_associations.ts does for
-// `semantic-association`.
+// way kc_actions.ts does for `semantic-action` and kc_relationships.ts does for
+// `semantic-relationship`.
 //
 // A CUSTOM TYPE IS ONE ENTRY TYPE PLUS ONE ASPECT TYPE that share an id, the
 // way the built-in `semantic-metric` entry type and aspect type share theirs.
@@ -197,19 +197,22 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   },
 };
 
-// The id of the association type. An association is the junction table backing
-// a many-to-many relationship; kc_associations.ts holds the encoding that fills
-// its aspect.
-export const ASSOCIATION_TYPE_ID = 'semantic-association';
+// The id of the relationship type. kc_relationships.ts holds the encoding that
+// fills its aspect.
+export const RELATIONSHIP_TYPE_ID = 'semantic-relationship';
 
-// The aspect that carries a many-to-many relationship.
+// The aspect that carries a relationship -- any relationship, one-to-many and
+// many-to-many alike.
 //
-// The built-in `schema-join` entry link already models a relationship, but only
-// a direct foreign key: it holds ONE source/target column pair. A many-to-many
-// edge is two joins through a third table, so it does not fit, and a custom
-// entry LINK type is not available -- Dataplex accepts only its own link types.
-// That leaves an entry, which is what this type is: one per many-to-many
-// relationship, parented to the model anchor beside the entities and metrics.
+// The built-in `schema-join` entry link already models a join, but only a direct
+// foreign key: it holds ONE source/target column pair. A many-to-many edge is
+// two joins through a third table, so it does not fit, and a custom entry LINK
+// type is not available -- Dataplex accepts only its own link types. schema-join
+// also has no field for the relationship's own name, which is why a link's name
+// survives only in its lowercased, hyphenated id. That leaves an entry, which is
+// what this type is: one per relationship, parented to the model anchor beside
+// the entities and metrics. A foreign-key edge still emits its schema-join link
+// as well, for the Dataplex surfaces that already read links.
 //
 // The endpoints are recorded as entity NAMES rather than as entry references
 // because the two entity entries are already the link endpoints a consumer
@@ -217,19 +220,21 @@ export const ASSOCIATION_TYPE_ID = 'semantic-association';
 // action parameter's `type`), and a name survives the project-number
 // normalization that rewrites resource names on the way back.
 //
-// `fields` is the association's own properties -- an enrollment's grade, which
-// belongs to neither endpoint. They ride here rather than in the built-in
-// `schema` aspect for the same reason `instructions` does not use `guidelines`:
-// a pull derives which aspect types to hydrate from the project the ENTRY type
-// lives in, and a custom entry type lives in the destination project, where no
-// built-in aspect type exists.
-const ASSOCIATION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
-  displayName: 'Semantic Association',
+// `through`, `keys` and `fields` are set only on a many-to-many edge: it is the
+// one shape with a table of its own, hence a key of its own and properties --
+// an enrollment's grade -- belonging to neither endpoint. They ride here rather
+// than in the built-in `schema` aspect for the same reason `instructions` does
+// not use `guidelines`: a pull derives which aspect types to hydrate from the
+// project the ENTRY type lives in, and a custom entry type lives in the
+// destination project, where no built-in aspect type exists.
+const RELATIONSHIP_ASPECT_TYPE: Omit<AspectType, 'name'> = {
+  displayName: 'Semantic Relationship',
   description:
-      'A many-to-many relationship in a semantic model: the two entities it ' +
-      'pairs, and the junction table that holds the pairs.',
+      'A relationship in a semantic model: the two entities it connects, the ' +
+      'columns that reach them, and -- when it is many-to-many -- the table ' +
+      'it runs through.',
   metadataTemplate: {
-    name: ASSOCIATION_TYPE_ID,
+    name: RELATIONSHIP_TYPE_ID,
     type: 'record',
     recordFields: [
       {
@@ -258,13 +263,15 @@ const ASSOCIATION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
       },
       {
         index: 3,
-        name: 'junction',
+        name: 'through',
         type: 'string',
         annotations: {
-          displayName: 'Junction Table',
+          displayName: 'Through Table',
           description:
-              'Resource name of the table holding the pairs, one row per ' +
-              '(from, to). Empty on a model with no physical binding.',
+              'Resource name of the table a many-to-many edge runs through, ' +
+              'holding one row per (from, to) pair. Empty on a foreign-key ' +
+              'edge, which has no table of its own, and on a model with no ' +
+              'physical binding.',
         },
       },
       {
@@ -274,7 +281,10 @@ const ASSOCIATION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         arrayItems: {name: 'key', type: 'string'},
         annotations: {
           displayName: 'Keys',
-          description: 'The edge\'s own key columns on the junction table.',
+          description:
+              'The edge\'s own key columns, on the table it runs through. ' +
+              'Empty on a foreign-key edge, which is keyed by its source ' +
+              'entity.',
         },
       },
       {
@@ -285,7 +295,9 @@ const ASSOCIATION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         annotations: {
           displayName: 'From Columns',
           description:
-              'Junction-table columns referencing the from entity\'s key.',
+              'Columns reaching the from entity: on that entity\'s own table ' +
+              'for a foreign-key edge, on the through table for a ' +
+              'many-to-many one.',
         },
       },
       {
@@ -296,7 +308,9 @@ const ASSOCIATION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         annotations: {
           displayName: 'To Columns',
           description:
-              'Junction-table columns referencing the to entity\'s key.',
+              'Columns reaching the to entity: on that entity\'s own table ' +
+              'for a foreign-key edge, on the through table for a ' +
+              'many-to-many one.',
         },
       },
       {
@@ -336,7 +350,7 @@ const ASSOCIATION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               annotations: {
                 displayName: 'Expression',
                 description:
-                    'The junction-table column the field binds to. Empty on ' +
+                    'The through-table column the field binds to. Empty on ' +
                     'a model with no physical binding.',
               },
             },
@@ -345,8 +359,8 @@ const ASSOCIATION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         annotations: {
           displayName: 'Fields',
           description:
-              'Properties of the pairing itself, belonging to neither ' +
-              'endpoint (an enrollment\'s grade).',
+              'Properties of a many-to-many edge itself, belonging to ' +
+              'neither endpoint (an enrollment\'s grade).',
         },
       },
       {
@@ -375,14 +389,12 @@ export const CUSTOM_TYPES: readonly CustomType[] = [
     aspectType: ACTION_ASPECT_TYPE,
   },
   {
-    id: ASSOCIATION_TYPE_ID,
+    id: RELATIONSHIP_TYPE_ID,
     entryType: {
-      displayName: 'Semantic Association',
-      description:
-          'A many-to-many relationship in a semantic model, backed by a ' +
-          'junction table.',
+      displayName: 'Semantic Relationship',
+      description: 'A relationship between two entities of a semantic model.',
     },
-    aspectType: ASSOCIATION_ASPECT_TYPE,
+    aspectType: RELATIONSHIP_ASPECT_TYPE,
   },
 ];
 

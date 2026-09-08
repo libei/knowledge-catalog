@@ -36,13 +36,14 @@
 // any other vendor extension on the IR is dropped with a warning (its carrier's
 // fate under '/google' is still open). See serialize.test.ts.
 //
-// A many-to-many relationship round-trips whole: its `association` block is a
-// native key of the extended profile, so the junction table, the edge's key,
-// the junction-side columns and the edge properties are all written back.
+// A many-to-many relationship round-trips whole: `through`, `keys`, and
+// `fields` are native keys of the extended profile, so the table the edge runs
+// through, its own key, the columns on it, and its properties are all written
+// back.
 
 import * as yaml from 'yaml';
 
-import {Action, AiContext, Association, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, AiContext, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -81,8 +82,8 @@ export interface SerializeResult {
  * `pull` writes one file per model
  * (catalog/EntryGroups/<entryGroup>/<model>.yaml).
  *
- * Warnings flag IR content that has no loadable representation (an association
- * relationship's junction detail), so the caller can surface the lossy edge.
+ * Warnings flag IR content that has no loadable representation, so the caller
+ * can surface the lossy edge.
  *
  * `logical` marks the model as a purely logical one (no physical binding), so
  * the missing-source and missing-expression warnings -- which flag a lossy pull
@@ -309,43 +310,30 @@ function executorDoc(ex: Executor): Record<string, any> {
 }
 
 // Inverts loader.convertRelationship: `from`/`to` are the endpoint entities and
-// `from_columns`/`to_columns` are their positional join columns. A many-to-many
-// edge instead carries an `association` block and, per the format, no join
-// columns of its own -- the columns that bind it are on the junction table.
+// `from_columns`/`to_columns` are the columns that reach them. A many-to-many
+// edge adds the table it runs `through` -- the table those columns are on --
+// plus the key and properties that table gives it.
+//
+// `keys` is always written even though the format lets it be omitted: the
+// loader's default is derived from the two column lists, and re-deriving it on
+// the way out would silently rewrite an edge whose authored key differed from
+// that default.
 function relationshipDoc(
     rel: Relationship, warnings: string[],
     logical: boolean): Record<string, any> {
   dropExtensions(rel.customExtensions, `relationship '${rel.name}'`, warnings);
-  const association = rel.association ?
-      associationDoc(rel.association, rel.name, warnings, logical) :
-      undefined;
   return compact({
     name: rel.name,
     from: rel.source.entity,
     to: rel.destination.entity,
-    from_columns: association ? undefined : nonEmpty(rel.source.columns),
-    to_columns: association ? undefined : nonEmpty(rel.destination.columns),
-    association,
+    through: rel.through,
+    keys: rel.through ? nonEmpty(rel.keys ?? []) : undefined,
+    from_columns: nonEmpty(rel.source.columns),
+    to_columns: nonEmpty(rel.destination.columns),
+    fields:
+        nonEmpty((rel.fields ?? []).map(f => fieldDoc(f, warnings, logical))),
     description: rel.description,
     ai_context: aiContextDoc(rel.aiContext),
-  });
-}
-
-// Inverts loader.convertAssociation. `keys` is always written even though the
-// format lets it be omitted: the loader's default is derived from the two
-// column lists, and re-deriving it on the way out would silently rewrite an
-// edge whose authored key differed from that default.
-function associationDoc(
-    assoc: Association, relName: string, warnings: string[],
-    logical: boolean): Record<string, any> {
-  return compact({
-    source: assoc.dataSource,
-    keys: nonEmpty(assoc.keys),
-    from_columns: nonEmpty(assoc.sourceColumns),
-    to_columns: nonEmpty(assoc.destinationColumns),
-    fields: nonEmpty(
-        (assoc.fields ?? [])
-            .map(f => fieldDoc(f, warnings, logical))),
   });
 }
 

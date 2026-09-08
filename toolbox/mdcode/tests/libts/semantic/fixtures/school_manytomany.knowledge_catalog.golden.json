@@ -99,19 +99,19 @@
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph.associations.enrollment",
-      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-association",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph.relationships.enrollment",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-relationship",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph",
       "entrySource": {
         "displayName": "enrollment"
       },
       "aspects": {
-        "sqlgen-testing.global.semantic-association": {
-          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-association",
+        "sqlgen-testing.global.semantic-relationship": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-relationship",
           "data": {
             "fromEntity": "students",
             "toEntity": "courses",
-            "junction": "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/bei_semantic_ir_verify/tables/enrollment",
+            "through": "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/bei_semantic_ir_verify/tables/enrollment",
             "keys": [
               "enrollment_id"
             ],

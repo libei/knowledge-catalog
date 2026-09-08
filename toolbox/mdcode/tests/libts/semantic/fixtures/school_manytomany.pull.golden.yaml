@@ -26,19 +26,18 @@ semantic_model:
       - name: enrollment
         from: students
         to: courses
-        association:
-          source: sqlgen-testing.bei_semantic_ir_verify.enrollment
-          keys:
-            - enrollment_id
-          from_columns:
-            - student_id
-          to_columns:
-            - course_id
-          fields:
-            - name: grade
-              expression:
-                dialects:
-                  - dialect: BIGQUERY
-                    expression: enrollment.grade
-              datatype: Opaque
-              description: Letter grade
+        through: sqlgen-testing.bei_semantic_ir_verify.enrollment
+        keys:
+          - enrollment_id
+        from_columns:
+          - student_id
+        to_columns:
+          - course_id
+        fields:
+          - name: grade
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: enrollment.grade
+            datatype: Opaque
+            description: Letter grade

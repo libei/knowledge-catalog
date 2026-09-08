@@ -2,10 +2,10 @@
 # taken by many students, so the pairs live in an `enrollment` table of their
 # own rather than in a foreign key on either side.
 #
-# The `association` block is a native key of the extended profile, so this
-# document declares `0.2.0.dev0/google`. Its BigQuery and Spanner DDL are the
-# committed `school_manytomany.*.golden.sql` goldens, which were run against a
-# live BigQuery instance and traversed with a GQL MATCH.
+# `through` (and the `keys`/`fields` it brings) is a native key of the extended
+# profile, so this document declares `0.2.0.dev0/google`. Its BigQuery and
+# Spanner DDL are the committed `school_manytomany.*.golden.sql` goldens, which
+# were run against a live BigQuery instance and traversed with a GQL MATCH.
 
 version: "0.2.0.dev0/google"
 
@@ -47,19 +47,18 @@ semantic_model:
       - name: enrollment
         from: students
         to: courses
-        # No from_columns/to_columns on the relationship itself: neither student
-        # nor course holds a foreign key. The columns that bind the edge are on
-        # the junction table below.
-        association:
-          source: sqlgen-testing.bei_semantic_ir_verify.enrollment
-          keys: [enrollment_id]
-          from_columns: [student_id]
-          to_columns: [course_id]
-          # A property of the pairing, not of either endpoint.
-          fields:
-            - name: grade
-              expression:
-                dialects:
-                  - dialect: BIGQUERY
-                    expression: enrollment.grade
-              description: Letter grade
+        # The edge runs through the enrollment table, so from_columns and
+        # to_columns are columns on THAT table, not on students or courses --
+        # neither endpoint holds a foreign key.
+        through: sqlgen-testing.bei_semantic_ir_verify.enrollment
+        keys: [enrollment_id]
+        from_columns: [student_id]
+        to_columns: [course_id]
+        # A property of the pairing, not of either endpoint.
+        fields:
+          - name: grade
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: enrollment.grade
+            description: Letter grade

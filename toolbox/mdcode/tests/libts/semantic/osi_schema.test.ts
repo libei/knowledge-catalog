@@ -168,26 +168,21 @@ function onlyActionsExtension(errors: typeof validate.errors): boolean {
         /\/semantic_model\/\d+$/.test(e.instancePath));
 }
 
-// A many-to-many `association` block is the other deliberate SUPERSET of
-// released Apache OSI. The released schema knows only the direct foreign-key
-// edge, so a junction-backed relationship trips it twice: `association` is an
-// additional property, and the `from_columns`/`to_columns` it required are
-// absent -- correctly, because a many-to-many edge has none of its own. We
-// tolerate EXACTLY those three errors on a /relationships/<n> path and nothing
-// else. When upstream OSI adopts a junction-table syntax, re-vendoring the
-// schema makes this pass with no special-casing.
-function isAssociationSuperset(e: SchemaError): boolean {
-  const missingOk = new Set(['from_columns', 'to_columns']);
-  if (!/\/relationships\/\d+$/.test(e.instancePath)) return false;
-  if (e.keyword === 'required') {
-    return missingOk.has(
-      (e.params as {missingProperty?: string}).missingProperty ?? '');
-  }
-  if (e.keyword === 'additionalProperties') {
-    return (e.params as {additionalProperty?: string}).additionalProperty ===
-      'association';
-  }
-  return false;
+// An edge that runs THROUGH a table of its own is the other deliberate SUPERSET
+// of released Apache OSI. The released schema knows only the direct foreign-key
+// edge -- one carried by a column on the source entity's own table -- so it has
+// no keyword for the table an edge runs through, for that table's key, or for
+// the properties of the pairing it holds. A relationship carrying them trips
+// `additionalProperties: false` once per keyword. We tolerate EXACTLY those
+// three extra properties on a /relationships/<n> path and nothing else. When
+// upstream OSI adopts a through-table syntax, re-vendoring the schema makes this
+// pass with no special-casing.
+function isThroughSuperset(e: SchemaError): boolean {
+  const extraOk = new Set(['through', 'keys', 'fields']);
+  return e.keyword === 'additionalProperties' &&
+    /\/relationships\/\d+$/.test(e.instancePath) &&
+    extraOk.has(
+      (e.params as {additionalProperty?: string}).additionalProperty ?? '');
 }
 
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
@@ -203,14 +198,13 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
       if (!ok) {
         // A .pull.golden.yaml from an expression-free push is a known #290 gap
         // when its ONLY failures are missing `expression`; anything else is a
-        // real regression and still fails. A junction-backed fixture's pull
-        // faithfully reproduces the association superset too, so that one
-        // tolerates both.
+        // real regression and still fails. A through-edge fixture's pull
+        // faithfully reproduces that superset too, so that one tolerates both.
         if (rel.endsWith('.pull.golden.yaml') &&
             onlyTolerated(
               validate.errors,
               rel.startsWith('school_manytomany') ?
-                [isMissingExpression, isAssociationSuperset] :
+                [isMissingExpression, isThroughSuperset] :
                 [isMissingExpression])) {
           return;
         }
@@ -238,11 +232,11 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
             onlyActionsExtension(validate.errors)) {
           return;
         }
-        // A junction-backed relationship is a deliberate superset too; tolerate
-        // exactly its three errors, and only on the fixture that carries one
-        // (and the goldens generated from it).
+        // A relationship running through a table of its own is a deliberate
+        // superset too; tolerate exactly its three extra keywords, and only on
+        // the fixture that carries one (and the goldens generated from it).
         if (rel.startsWith('school_manytomany') &&
-            onlyTolerated(validate.errors, [isAssociationSuperset])) {
+            onlyTolerated(validate.errors, [isThroughSuperset])) {
           return;
         }
         const details = (validate.errors ?? [])

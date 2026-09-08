@@ -188,18 +188,14 @@ describe('expression + datatype + dimension mapping', () => {
 
 
 describe('many-to-many relationships', () => {
-  test('an association round-trips whole', () => {
+  test('an edge through a table of its own round-trips whole', () => {
     const rel: Relationship = {
       name: 'enrollment',
-      source: {entity: 'student', columns: []},
-      destination: {entity: 'course', columns: []},
-      association: {
-        dataSource: 'p.d.enrollment',
-        keys: ['student_id', 'course_id'],
-        sourceColumns: ['student_id'],
-        destinationColumns: ['course_id'],
-        fields: [{name: 'grade', expression: 'grade', type: 'String'}],
-      },
+      source: {entity: 'student', columns: ['student_id']},
+      destination: {entity: 'course', columns: ['course_id']},
+      through: 'p.d.enrollment',
+      keys: ['student_id', 'course_id'],
+      fields: [{name: 'grade', expression: 'grade', type: 'String'}],
     };
     const model: SemanticModel = {
       name: 'school',
@@ -211,26 +207,24 @@ describe('many-to-many relationships', () => {
       metrics: [],
     };
     const {yaml: text, warnings} = serializeModel(model);
-    expect(warnings.some(w => /association/i.test(w))).toBe(false);
+    expect(warnings.some(w => /through/i.test(w))).toBe(false);
 
-    // The junction detail is a native key now, so it survives serialization
-    // instead of collapsing to a direct-FK view.
+    // `through` and what it brings are native keys now, so they survive
+    // serialization instead of collapsing to a direct-FK view.
     const relDoc = yaml.parse(text).semantic_model[0].relationships[0];
     expect(relDoc.from).toBe('student');
     expect(relDoc.to).toBe('course');
-    // A many-to-many edge carries no join columns of its own; the columns that
-    // bind it are on the junction table.
-    expect(relDoc.from_columns).toBeUndefined();
-    expect(relDoc.to_columns).toBeUndefined();
-    expect(relDoc.association.source).toBe('p.d.enrollment');
-    expect(relDoc.association.keys).toEqual(['student_id', 'course_id']);
-    expect(relDoc.association.from_columns).toEqual(['student_id']);
-    expect(relDoc.association.to_columns).toEqual(['course_id']);
-    expect(relDoc.association.fields[0].name).toBe('grade');
+    expect(relDoc.through).toBe('p.d.enrollment');
+    expect(relDoc.keys).toEqual(['student_id', 'course_id']);
+    // The join columns are the same keys a foreign-key edge uses; `through`
+    // says they are on that table rather than on either endpoint.
+    expect(relDoc.from_columns).toEqual(['student_id']);
+    expect(relDoc.to_columns).toEqual(['course_id']);
+    expect(relDoc.fields[0].name).toBe('grade');
 
     // And it reloads into the same IR.
     const reloaded = fromDocument(yaml.parse(text)).models[0];
-    expect(reloaded.relationships[0].association).toEqual(rel.association!);
+    expect(reloaded.relationships[0]).toEqual(rel);
   });
 });
 

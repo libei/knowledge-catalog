@@ -33,10 +33,10 @@
 // (re-derived from its expression, as the loader does, when the catalog holds
 // one, else the value the emitter persisted), the model's deployment targets
 // (from the semantic-model aspect, back into the GOOGLE `custom_extensions`
-// block), 1:1 / 1:N relationships (from the `schema-join` entry links a pull
-// fetched -- see `modelsFromCatalogResources`'s `entryLinks` argument), and
-// many-to-many relationships (from the `semantic-association` entries, which
-// carry the junction table and both column pairs -- see kc_associations.ts).
+// block), and relationships (from the `semantic-relationship` entries, which
+// carry the whole edge -- see kc_relationships.ts -- falling back to the
+// `schema-join` entry links a pull fetched, see `modelsFromCatalogResources`'s
+// `entryLinks` argument, for a catalog written before those entries existed).
 // The per-field `semantics` block -- field/metric expressions and the DIMENSION
 // role
 // -- is gated off the catalog by default: the emitter writes it only under
@@ -59,7 +59,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {Action, AiContext, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
-import {isAssociationEntry, readAssociation} from './kc_associations';
+import {isRelationshipEntry, readRelationshipEntry} from './kc_relationships';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -93,7 +93,7 @@ export function modelsFromCatalogResources(
   // and recognizes an entry carrying it. A many-to-many relationship is the
   // same arrangement, in `kc_associations.ts`.
   const actionEntries = entries.filter(isActionEntry);
-  const associationEntries = entries.filter(isAssociationEntry);
+  const relationshipEntries = entries.filter(isRelationshipEntry);
 
   if (!anchors.length) {
     warnings.push('no semantic-model entry found; nothing to reconstruct');
@@ -128,16 +128,23 @@ export function modelsFromCatalogResources(
     entityEntriesForModel.forEach(
         (e, i) => entityByEntryId.set(idOf(e.name), entities[i]));
 
-    // A direct foreign-key relationship comes from the schema-join entry link
-    // whose two endpoints are both this model's entity entries. A many-to-many
-    // one is not a link but an entry of its own, so it is read separately and
-    // appended; the two together are the model's edges.
-    const relationships = [
-      ...readRelationships(entryLinks, name, entityByEntryId, warnings),
-      ...childrenOf(anchor.name, associationEntries)
-          .map(e => readAssociation(e, entityNames, warnings))
-          .filter((r): r is Relationship => r !== undefined),
-    ];
+    // Relationships come from the `semantic-relationship` entries parented to
+    // this model, which hold the whole edge: its name verbatim, its endpoints
+    // and their columns, its instructions, and -- for a many-to-many edge --
+    // the table it runs through and the edge's own properties.
+    //
+    // A push that wrote those entries wrote one for EVERY relationship, so when
+    // any are present they are the complete set, and the schema-join links are
+    // the same edges in lossier form -- reading both would double every
+    // foreign-key relationship. The links are the fallback instead, for a
+    // catalog last written by a kcmd that published links only.
+    const relationshipEntriesForModel =
+        childrenOf(anchor.name, relationshipEntries);
+    const relationships = relationshipEntriesForModel.length ?
+        relationshipEntriesForModel
+            .map(e => readRelationshipEntry(e, entityNames, warnings))
+            .filter((r): r is Relationship => r !== undefined) :
+        readRelationships(entryLinks, name, entityByEntryId, warnings);
 
     const model: SemanticModel = {name, entities, relationships, metrics};
     const description = anchor.entrySource?.description;
@@ -159,7 +166,7 @@ export function modelsFromCatalogResources(
   // multiple anchors, where the sole-anchor fallback does not apply).
   if (!soleAnchor) {
     for (const child of [...entityEntries, ...metricEntries, ...actionEntries,
-                         ...associationEntries]) {
+                         ...relationshipEntries]) {
       if (!child.parentEntry || !anchorNames.has(child.parentEntry)) {
         warnings.push(`entry '${
             child.name}' has no resolvable parent semantic-model; omitted`);

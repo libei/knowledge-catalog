@@ -42,20 +42,26 @@
 // system-type templates yet, so they are gated behind
 // KcGenerateOptions.emitExpressions (off by default) and omitted above.
 //
-// A direct foreign-key relationship becomes a `schema-join` entry link between
-// the two entity entries. schema-join is a built-in, undirected entry link type
-// in `dataplex-types/global` whose required `schema-join` aspect carries the
-// join detail (the paired join columns, JOIN vs FOREIGN_KEY, USER inference).
-// The join's direction -- which side holds the foreign key -- is preserved
-// inside that aspect, not by the link.
+// EVERY relationship becomes an ENTRY parented to the anchor, using the same
+// custom-type mechanism as an action: `kc_custom_types.ts` declares the
+// `semantic-relationship` pair and `kc_relationships.ts` encodes the aspect.
+// This module only appends the entries it returns. That entry is the fidelity
+// record -- it has room for the relationship's own name, its instructions, and
+// (on a many-to-many edge) the table it runs through and the edge's own
+// properties, none of which a link can hold.
 //
-// A MANY-TO-MANY relationship is not a link at all. A junction is two joins
-// through a third table, which schema-join's single source/target pair does not
-// model, and Dataplex has no custom entry LINK types to define one with. It
-// publishes as an ENTRY instead, one per relationship parented to the anchor,
-// using the same custom-type mechanism as an action: `kc_custom_types.ts`
-// declares the `semantic-association` pair and `kc_associations.ts` encodes the
-// aspect. This module only appends the entries it returns.
+// A DIRECT FOREIGN-KEY relationship ALSO becomes a `schema-join` entry link
+// between the two entity entries. schema-join is a built-in, undirected entry
+// link type in `dataplex-types/global` whose required `schema-join` aspect
+// carries the join detail (the paired join columns, JOIN vs FOREIGN_KEY, USER
+// inference). The join's direction -- which side holds the foreign key -- is
+// preserved inside that aspect, not by the link. It is kept alongside the entry
+// because other Dataplex surfaces already read links; the two agree, and a pull
+// prefers the entry.
+//
+// A relationship with a `through` table gets no link: an edge through a third
+// table is two joins, which schema-join's single source/target pair does not
+// model, and Dataplex has no custom entry LINK types to define one with.
 //
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
@@ -63,7 +69,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 import {actionEntries, actionOwnedPrefix} from './kc_actions';
-import {associationEntries, associationOwnedPrefix} from './kc_associations';
+import {relationshipEntries, relationshipOwnedPrefix} from './kc_relationships';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -223,24 +229,23 @@ export function generateCatalogResources(
     publishedEntities: new Set(entityEntryName.keys()),
   }, warnings));
 
-  // One entry per many-to-many relationship, for the same reason: a junction
-  // has no built-in type either, so `kc_associations.ts` fills the custom
-  // `semantic-association` aspect declared in `kc_custom_types.ts`. It returns
-  // nothing when every relationship is a direct foreign key.
-  entries.push(...associationEntries(model, modelId, {
+  // One entry per relationship, for the same reason: there is no built-in
+  // relationship ENTRY type either, so `kc_relationships.ts` fills the custom
+  // `semantic-relationship` aspect declared in `kc_custom_types.ts`.
+  entries.push(...relationshipEntries(model, modelId, {
     project: opts.project,
     entry: (id: string) => names.entry(id),
     anchor: modelEntryName,
     claim: (id: string, label: string) =>
         claim(seen, id, 'entry', label, warnings),
     publishedEntities: new Set(entityEntryName.keys()),
-    // The junction table is addressed the same way an entity's backing table
-    // is, so the emitter's own mapping is what renders it.
+    // The table a many-to-many edge runs through is addressed the same way an
+    // entity's backing table is, so the emitter's own mapping renders it.
     resource: resourcePath,
   }, warnings));
 
-  // A direct foreign-key relationship maps to a schema-join entry link between
-  // its endpoint entries. A many-to-many one became an entry above.
+  // A direct foreign-key relationship ALSO maps to a schema-join entry link
+  // between its endpoint entries, alongside the entry emitted above.
   const entryLinks: EntryLink[] = [];
   const seenLinks = new Set<string>();
   for (const rel of relationships) {
@@ -254,50 +259,42 @@ export function generateCatalogResources(
     entryLinks,
     warnings: [...new Set(warnings)],
     // Ossie ids are dotted: `<model>.entities.<name>` / `<model>.metrics.<name>`
-    // / `<model>.actions.<name>` / `<model>.associations.<name>`.
+    // / `<model>.actions.<name>` / `<model>.relationships.<name>`.
     ownedPrefixes: [
       `${modelId}.entities.`,
       `${modelId}.metrics.`,
       actionOwnedPrefix(modelId),
-      associationOwnedPrefix(modelId),
+      relationshipOwnedPrefix(modelId),
     ],
   };
 }
 
 
 // Builds the schema-join entry link for one direct foreign-key relationship, or
-// undefined when it cannot be published. A many-to-many edge returns undefined
-// without a warning: it is not a link, and `associationEntries` has already
-// published it as an entry. Two cases are skipped WITH a warning: an edge whose
-// endpoint entity was not emitted (e.g. skipped for a duplicate id), and a
-// column-less (purely logical) edge, whose join columns must be added to the
-// model before it can publish. The BigQuery property graph still carries the
-// latter once bound.
+// undefined when there is no link to build.
+//
+// Every skip here is SILENT, because the link is no longer the relationship's
+// only route into the catalog -- `relationshipEntries` has already published
+// the relationship itself, so a missing link is a missing projection, not lost
+// metadata. Three cases skip: a many-to-many edge (not a link at all), an edge
+// whose endpoint entity was not emitted (the entry emitter warned about that
+// one already, and warning twice for one relationship reads as two problems),
+// and a column-less purely logical edge.
 function relationshipLink(
     names: Namer, model: SemanticModel, rel: Relationship,
     entityEntryName: Map<string, string>, seenLinks: Set<string>,
     warnings: string[]): EntryLink|undefined {
-  if (rel.association) return undefined;
+  if (rel.through) return undefined;
   const src = entityEntryName.get(rel.source.entity);
   const dst = entityEntryName.get(rel.destination.entity);
-  if (!src || !dst) {
-    const missing = !src ? rel.source.entity : rel.destination.entity;
-    warnings.push(
-        `relationship '${rel.name}': endpoint entity '${missing}' is not a ` +
-        `published entity; the relationship link is skipped.`);
-    return undefined;
-  }
+  if (!src || !dst) return undefined;
   // A purely logical edge (an OWL import) carries no join columns. schema-join
   // is a server-defined CLOSED metadataTemplate whose `fields` requirement we
   // cannot depend on, so rather than risk a rejected aspect on a KC push we skip
-  // the link until the edge is bound. Add the relationship's from_columns /
-  // to_columns to the model and it publishes; the edge still lives in the model
-  // (and, once bound, the BigQuery/Spanner graph).
+  // the link until the edge is bound. The relationship itself is published
+  // either way, by its own entry; add its from_columns / to_columns to the
+  // model and the link appears too.
   if (!rel.source.columns.length || !rel.destination.columns.length) {
-    warnings.push(
-        `relationship '${rel.name}': no join columns, so it is not published ` +
-        `to Knowledge Catalog yet; add its from_columns and to_columns to the ` +
-        `relationship in the model to publish the link.`);
     return undefined;
   }
   const linkId = names.linkId(model, rel);
@@ -306,18 +303,11 @@ function relationshipLink(
           warnings))
     return undefined;
 
-  // The name lives only in the link id (schema-join's aspect has no name
-  // field), and link ids are normalized -- lowercase, hyphens only. When the
-  // authored name is not already in that form, a later pull recovers it
-  // lowercased and hyphenated, not verbatim; warn so the round-trip change is
-  // not a surprise.
-  const normalizedName = linkSlug(rel.name);
-  if (normalizedName !== rel.name) {
-    warnings.push(
-        `relationship '${rel.name}': Knowledge Catalog stores the name only ` +
-        `in the normalized link id, so a pull returns it lowercased/hyphenated ` +
-        `(e.g. '${normalizedName}'), not '${rel.name}'.`);
-  }
+  // The link's own name survives only in its id, which is normalized to
+  // lowercase and hyphens (schema-join's aspect has no name field). That used
+  // to be how a pull recovered the name, and so used to cost the authored
+  // casing; the relationship entry now carries the name verbatim and a pull
+  // reads it from there, so the normalized id is just an id.
 
   return {
     name: names.entryLink(linkId),

@@ -115,12 +115,12 @@ metric's `expression` may be a bare formula over the logical fields or the fulle
 per-dialect form. `entities` may also be written `datasets` (the two are interchangeable under the `/google` version).
 
 A relationship that pairs many rows on each side — a student takes many courses,
-a course has many students — is written with an `association` block instead of
-`from_columns` / `to_columns`. The block names the junction table that holds the
-pairs, the columns that reach each side, and any fields the pairing itself
-carries (an enrollment's grade, say). Both graphs deploy it as an edge table over
-the junction; Knowledge Catalog stores it as a `semantic-association` entry. See
-[Model spec §2.2.1](model_spec.md#221-many-to-many-association).
+a course has many students — adds `through`, naming the table that holds the
+pairs. `from_columns` and `to_columns` then reach each side from that table
+rather than from the endpoints, and the relationship may carry a key of its own
+plus any fields the pairing itself has (an enrollment's grade, say). Both graphs
+deploy it as an edge table over that table. See
+[Model spec §2.2.1](model_spec.md#221-many-to-many-through).
 
 Entities can **extend** other entities (`extends: [Parent]`); push flattens the
 supertype's fields down and expresses the hierarchy as graph labels, so a query
