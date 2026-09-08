@@ -1,19 +1,21 @@
-// Behavior specification for model-level CONSTRAINTS -- the named invariants
-// that gate an action -- across the pipeline: loader parsing, the push-time
-// validation gate, the OSI round trip, and the Knowledge Catalog publish/pull
-// round trip. Constraints have no built-in system type, so they publish as one
-// entry each under the custom `semantic-constraint` type, exactly as actions
-// publish under `semantic-action`.
+// Behavior specification for model-level CONSTRAINTS: the named invariants a
+// model states over its ontology. Covers the whole pipeline -- loader parsing,
+// the push-time validation gate, the OSI round trip, and the Knowledge Catalog
+// publish/pull round trip. Dataplex has no built-in constraint type, so a
+// constraint publishes as one entry under the custom `semantic-constraint`
+// type, the way an action publishes under `semantic-action`.
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
+import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -177,8 +179,9 @@ describe('validatePushRequirements gates constraints', () => {
 
   test('a leading qualifier that is not an entity is left to the evaluator',
        () => {
-         // `OrderedAs` is a relationship, not an entity -- guessing here would
-         // falsely reject a valid constraint, so validation stays out of it.
+         // `OrderedAs` names a relationship rather than an entity. Guessing
+         // here would falsely reject a valid constraint, so validation stays
+         // out of it.
          const errs = validatePushRequirements(
              [loaded([{name: 'C', expression: 'OrderedAs.quantity > 0'}])]);
          expect(errs).toEqual([]);
@@ -188,6 +191,69 @@ describe('validatePushRequirements gates constraints', () => {
     const errs = validatePushRequirements(
         [loaded([{name: 'C', expression: 'COUNT(*) > 0'}])]);
     expect(errs).toEqual([]);
+  });
+
+  // The field check reads a field list, and by the time this gate runs the
+  // model's field lists are no longer what the author wrote. Both directions
+  // of that gap rejected a valid constraint.
+
+  // `extends` is flattened by the graph legs, which run AFTER this gate, so a
+  // subtype's own `fields` omit everything it inherits.
+  function withInheritance(expression: string): LoadedModel {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [
+        {
+          name: 'account',
+          dataSource: 'p.d.a',
+          keys: ['id'],
+          fields: [{name: 'balance'}],
+        },
+        {
+          name: 'savings',
+          dataSource: 'p.d.s',
+          keys: ['id'],
+          fields: [],
+          extends: ['account'],
+        },
+      ],
+      relationships: [],
+      metrics: [],
+      constraints: [{name: 'C', expression}],
+      customExtensions: [googleExt],
+    };
+    return {document: 'doc', model};
+  }
+
+  test('a constraint over an INHERITED field passes', () => {
+    const errs = validatePushRequirements([withInheritance('savings.balance >= 0')]);
+    expect(errs).toEqual([]);
+  });
+
+  test('a typo is still caught on an entity that inherits', () => {
+    const errs = validatePushRequirements([withInheritance('savings.blance >= 0')]);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain(`declares no field 'blance'`);
+  });
+
+  test('the field check stands down once the profile has pruned fields', () => {
+    // A profile push drops every field the profile leaves unbound before this
+    // gate sees the model, so the author's field is gone rather than misspelt.
+    // A constraint reaches no graph in any case, so failing the push here would
+    // refuse a deploy for no reason.
+    const errs = validatePushRequirements(
+        [loaded([{name: 'C', expression: 'customer.unbound >= 0'}])],
+        {fieldsPruned: true});
+    expect(errs).toEqual([]);
+  });
+
+  test('an empty expression is rejected even on a pruned model', () => {
+    // Standing down applies to the field check alone; the expression itself is
+    // still the constraint's whole content.
+    const errs = validatePushRequirements(
+        [loaded([{name: 'C', expression: '   '}])], {fieldsPruned: true});
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain('empty expression');
   });
 });
 
@@ -355,5 +421,40 @@ describe('Knowledge Catalog publish/pull round trip', () => {
         .toBe(true);
     // The actions, published under their own type, are unaffected.
     expect(models[0].actions).toHaveLength(1);
+  });
+});
+
+
+// Knowledge Catalog is the only system an action or a constraint reaches, so a
+// push to any other target deploys neither. Dropping them silently is the
+// failure mode worth guarding: an author who declared a rule and sees a clean
+// push has no way to learn it went nowhere.
+describe('a graph leg says what it dropped', () => {
+  const model = () => loadFixtureModel('actions_place_order.yaml');
+
+  for (const [backend, generate] of [
+           ['BigQuery', generatePropertyGraph],
+           ['Spanner', generateSpannerPropertyGraph],
+  ] as const) {
+    test(`the ${backend} leg warns about actions and constraints`, () => {
+      const {warnings} = generate(model());
+      // The fixture declares one action and two constraints.
+      expect(warnings.some(
+                 w => /1 action\(s\) reach Knowledge Catalog only/.test(w)))
+          .toBe(true);
+      expect(warnings.some(
+                 w => /2 constraint\(s\) reach Knowledge Catalog only/.test(w)))
+          .toBe(true);
+      // Named the system it does reach, and the one that drops it.
+      expect(warnings.some(w => w.includes(`the ${backend} push deploys none`)))
+          .toBe(true);
+    });
+  }
+
+  test('a model with neither is quiet about both', () => {
+    const {warnings} = generatePropertyGraph(
+        loadFixtureModel('star_orders_customer.yaml'));
+    expect(warnings.some(w => /reach Knowledge Catalog only/.test(w)))
+        .toBe(false);
   });
 });

@@ -1,33 +1,31 @@
 // How a model's CONSTRAINTS are encoded in Knowledge Catalog.
 //
-// A constraint is published exactly the way an action is: one entry per
-// constraint, parented to the model anchor, carrying one aspect that holds the
-// invariant. Its type is custom for the same reason an action's is -- Dataplex
-// has no built-in constraint type -- so it uses the `semantic-constraint` pair
-// DECLARED IN kc_custom_types.ts and created there by
-// `kcmd init --semantic-model`. That file is the list of what is custom; this
-// one is only the encoding that fills the aspect.
+// One entry per constraint, parented to the model anchor, carrying one aspect
+// that holds the invariant. An action is published the same way. Dataplex has
+// no built-in constraint type, so the entry and aspect types are the custom
+// `semantic-constraint` pair, declared in kc_custom_types.ts and created by
+// `kcmd init --semantic-model`. That file lists what is custom; this one holds
+// the encoding that fills the aspect.
 //
 // An entry of its own is what makes the invariant governable. A search can list
-// every rule a model enforces, the expression is a typed field rather than
-// prose, and dropping a constraint from the model deletes its entry, so the
-// catalog never advertises a rule the model stopped requiring.
+// every rule a model states. The expression is a typed field rather than prose.
+// Dropping a constraint from the model deletes its entry, so the catalog never
+// advertises a rule the model stopped requiring.
+//
+// The three authored fields land in two places. `expression` and `ai_context`
+// go on the aspect, the latter whole -- aiContextField in kc_custom_types.ts
+// says why. `description` goes on the entry source, where a pull of an action
+// already reads it, and because a violation quotes that sentence back to the
+// caller as the error, which makes it the entry's summary.
+//
+// Call sites: knowledge_catalog.ts emits the entries, kc_converter.ts reads
+// them back, pull_kc.ts hydrates the aspect.
 //
 // WHEN A BUILT-IN CONSTRAINT TYPE SHIPS, follow the instructions at the top of
-// kc_custom_types.ts. Nothing in this file changes: the readers below match a
-// type by its id suffix, so they do not care which project it lives in.
+// kc_custom_types.ts. Nothing in this file changes, because the readers below
+// match a type by its id suffix and ignore the project it lives in.
 //
-// The call sites are `knowledge_catalog.ts` (emit the entries),
-// `kc_converter.ts` (read them back), and `pull_kc.ts` (hydrate the aspect).
-//
-// `description` rides the entry source rather than the aspect: a violation
-// quotes it back to the caller as the error, which makes it the entry's
-// human-readable summary, and it is where a pull of an action already looks for
-// the same field. `ai_context` rides the constraint's own aspect, whole -- see
-// aiContextField in kc_custom_types.ts for why it is carried there, and why
-// every part of it is carried rather than `instructions` alone.
-//
-// The helpers at the bottom duplicate a few lines from the modules above on
+// The helpers at the bottom repeat a few lines from the modules above on
 // purpose. This module imports only the IR, the entry shape and the type
 // registry, so it can be swapped or deleted as a unit.
 
@@ -143,10 +141,10 @@ function constraintAspectData(constraint: Constraint): Record<string, any> {
 // Read side: a constraint entry -> the IR.
 // ---------------------------------------------------------------------------
 
-// True when an entry is one of a model's constraints, matched by the entry
-// type's id suffix so the project the type lives in need not be known -- which
-// is what lets a pull keep working when the custom type is replaced by a
-// built-in one.
+// True when an entry is one of a model's constraints. The match is on the entry
+// type's id suffix, so the project the type lives in need not be known. That is
+// what lets a pull keep working once the custom type is replaced by a built-in
+// one.
 export function isConstraintEntry(entry: Entry): boolean {
   return entry.entryType?.endsWith(`/entryTypes/${CONSTRAINT_TYPE_ID}`) ??
       false;

@@ -59,25 +59,24 @@ export interface CustomType {
 
 // The whole of a model element's `ai_context`, as one template field.
 //
-// Every element in the format carries the same three-part annotation --
-// instructions, synonyms, examples -- so a custom aspect carries all three. The
-// built-in `guidelines` aspect has a home for `instructions` alone, and an
-// element routed there loses the other two; kcmd owns this template, so there
-// is no reason to inherit that limit. Carrying a chosen part of one would mean
-// a document that loads cleanly comes back from a pull missing fields it
-// declared.
+// Every element in the format carries the same three-part annotation:
+// instructions, synonyms, examples. A custom aspect carries all three. Carrying
+// a chosen part instead would mean a document that loads cleanly comes back
+// from a pull missing fields it declared. The built-in `guidelines` aspect does
+// have a home for `instructions` alone, and an element routed there loses the
+// other two, but kcmd owns this template and has no reason to inherit that
+// limit.
 //
-// A custom aspect carries `ai_context` itself, rather than the entry being
-// given a `guidelines` aspect beside its own, because a pull hydrates aspect
-// types from the project the ENTRY type lives in, and `guidelines` is published
-// under `dataplex-types` instead.
+// The annotation goes on the custom aspect rather than on a `guidelines` aspect
+// beside it, because a pull hydrates aspect types from the project the ENTRY
+// type lives in, and `guidelines` is published under `dataplex-types`.
 //
 // `index` is a parameter because template field indexes are positional and
 // append-only (see the header), so each aspect places this field wherever its
 // own template has room. `semantic-action` still carries a flat `instructions`
-// string at index 9: it was provisioned before this existed, and renaming a
-// field is exactly the backwards-incompatible change Dataplex rejects, so it
-// moves over by APPENDING this field and retiring that one.
+// string at index 9. That type was provisioned before this field existed, and
+// renaming a template field is the backwards-incompatible change Dataplex
+// rejects, so it moves over by APPENDING this field and retiring that one.
 export function aiContextField(index: number): Record<string, any> {
   return {
     index,
@@ -314,11 +313,11 @@ export const CONSTRAINT_TYPE_ID = 'semantic-constraint';
 // The expression is the whole of the machine-readable content, so it is a
 // required field: a constraint entry without one states no invariant.
 //
-// The other two things an author can write are the ones every model element
-// carries, and they land in different places. `description` rides the entry
-// source, the way an action's and a metric's do, because a violation quotes it
-// back to the caller as the error, which makes it the entry's human-readable
-// summary rather than part of the rule. `ai_context` rides this aspect whole
+// The other two authored fields are the ones every model element carries, and
+// they land in different places. `description` rides the entry source, the way
+// an action's and a metric's do: a violation quotes it back to the caller as
+// the error, which makes it the entry's summary rather than part of the rule.
+// `ai_context` rides this aspect whole
 // (see aiContextField).
 const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   displayName: 'Semantic Constraint',
@@ -428,18 +427,28 @@ export interface ProvisionResult {
  * template lacks fails with an opaque parsing error. Dataplex rejects a
  * backwards-incompatible change, so the patch only ever adds appended fields.
  *
- * Stops at the first hard failure, and returns as soon as one type is refused
- * for lack of permission, since the same caller will be refused the next one.
+ * Stops at the first hard failure. A permission refusal does NOT stop it: the
+ * refusals differ per type and per operation -- patching a type that already
+ * exists needs `update`, creating one that does not needs `create` -- so a
+ * caller refused one type may well be allowed the next, and giving up early
+ * would leave a type uncreated that nothing was stopping. Every type is
+ * attempted and the first refusal is reported once they have been.
  */
 export async function provisionCustomTypes(
     cat: CatalogClient, dest: {project: string}): Promise<ProvisionResult> {
   const warnings: string[] = [];
+  let denied: ProvisionResult|undefined;
   for (const type of CUSTOM_TYPES) {
     const result = await provisionOne(cat, dest, type);
     if (result.warnings) warnings.push(...result.warnings);
-    if (result.error || result.denied)
+    // A hard failure is infrastructure-level and says nothing about the next
+    // type, so it still stops everything.
+    if (result.error)
       return {...result, warnings: warnings.length ? warnings : undefined};
+    if (result.denied && !denied) denied = result;
   }
+  if (denied)
+    return {...denied, warnings: warnings.length ? warnings : undefined};
   return warnings.length ? {warnings} : {};
 }
 

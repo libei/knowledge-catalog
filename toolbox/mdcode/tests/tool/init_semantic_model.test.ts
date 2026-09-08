@@ -4,11 +4,10 @@
 // Both are created at init -- not on push -- so a semantic-model push writes
 // only entries, matching how the standard layout operates (its push creates
 // entries, never the entry group). The types kcmd creates rather than
-// references are declared in kc_custom_types.ts, which today holds the one
-// action pair. These tests spy on the catalog client so no network call is
-// made and run init
-// inside a temp working directory (it writes catalog.yaml + the layout dirs
-// relative to cwd).
+// references are declared in kc_custom_types.ts, which today holds the action
+// and constraint pairs. These tests spy on the catalog client so no network
+// call is made, and run init inside a temp working directory (it writes
+// catalog.yaml + the layout dirs relative to cwd).
 
 import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -112,9 +111,9 @@ describe('init --semantic-model: entry-group provisioning', () => {
 
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
 
-    // Every registered type gets both halves, and both are custom, so they
-    // live in the destination project at `global` -- not beside the built-in
-    // types, and not in the entry group's region.
+    // Every registered type gets both halves. Both are custom, so both live in
+    // the destination project at `global`, rather than beside the built-in
+    // types or in the entry group's region.
     const ids = CUSTOM_TYPES.map(t => t.id);
     expect(ids).toContain('semantic-action');
     for (const spy of [aspectType, entryType]) {
@@ -224,6 +223,27 @@ describe('init --semantic-model: entry-group provisioning', () => {
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
     expect(fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
         .toBe(true);
+  });
+
+  test('a type refused for lack of permission does not skip the next one',
+       async () => {
+    // The refusals differ per type and per operation, so a caller refused one
+    // may well be allowed the next. Giving up at the first one left a type
+    // uncreated that nothing was stopping.
+    spyOn(CatalogClient.prototype, 'createEntryGroup')
+        .mockImplementation(async () => ok({name: 'sales-group'}));
+    const first = CUSTOM_TYPES[0].id;
+    const aspectType =
+        spyOn(CatalogClient.prototype, 'createAspectType')
+            .mockImplementation(async (_p: any, _l: any, id: string) =>
+                id === first ? err(403, 'permission denied') :
+                               ok({name: id}));
+
+    expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
+
+    // Every type is attempted, including the ones after the refusal.
+    expect(aspectType.mock.calls.map(c => c[2])).toEqual(
+        CUSTOM_TYPES.map(t => t.id));
   });
 
   test('a fatal action-type error fails init', async () => {

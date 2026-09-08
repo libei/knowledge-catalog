@@ -238,14 +238,16 @@ const actionSchema = z.object({
 
 // A constraint: a named boolean invariant over the ontology. `expression` is a
 // logical expression in the model's own language (`Customer.accountBalance >=
-// 0`), not a physical binding, so it stays a plain string -- it is resolved
-// against the ontology by the consumer that evaluates it, not here.
+// 0`) rather than a physical binding, so it stays a plain string. Whatever
+// evaluates the constraint resolves it against the ontology; the loader leaves
+// it alone.
 const constraintSchema = z.object({
   name: z.string(),
   expression: z.string(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
-  custom_extensions: z.array(customExtensionSchema).optional(),
+  // No `custom_extensions`: it is a vanilla-Ossie surface, and `constraints` is
+  // an extended-profile-only key, so the two never co-occur. See Constraint.
 });
 
 const modelBase = z.object({
@@ -881,17 +883,15 @@ function convertMetric(
   return metric;
 }
 
-// Converts a constraint document to the IR. The `expression` is kept verbatim
-// (a logical invariant resolved by the evaluator, not the loader); description
-// and AI context round-trip like everywhere else.
+// Converts a constraint document to the IR. The `expression` is kept verbatim:
+// it is a logical invariant, resolved against the ontology by whatever
+// evaluates it. Description and AI context round-trip like everywhere else.
 function convertConstraint(c: ConstraintDoc): Constraint {
   const constraint: Constraint = { name: c.name, expression: c.expression };
   const description = composeDescription(c.description);
   if (description) constraint.description = description;
   const ai = aiContextOrUndefined(c.ai_context);
   if (ai) constraint.aiContext = ai;
-  const ce = toCustomExtensions(c.custom_extensions);
-  if (ce) constraint.customExtensions = ce;
   return constraint;
 }
 

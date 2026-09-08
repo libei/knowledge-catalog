@@ -125,12 +125,12 @@ document is parsed, so the message above is what a blank one produces.
 kcmd push
 ```
 
-An action has no graph construct. It is write-side, and a property graph is a
-read surface, so the push emits no node, edge, or measure for it and warns once:
+Knowledge Catalog is the only system an action reaches. Every other push
+target deploys nothing for it and warns once:
 
 ```
-model 'payments': 1 action(s) published as semantic-action entries
-(actions have no BigQuery Graph representation).
+Warning: [payments] 1 action(s) reach Knowledge Catalog only; the BigQuery
+push deploys none of them.
 ```
 
 Knowledge Catalog is where actions land. Each action becomes its own entry,
@@ -196,11 +196,11 @@ knowing which they are decides how much you can lean on it.
 
 - **An action declares no precondition and no effects.** `precondition` (what
   has to hold before the call) and `affects` (what the call changes) are out of
-  scope here. A separate change adds model-level **constraints** and a runtime
-  that checks them against a write before it commits.
-- **Nothing checks the write.** Until that change lands, an action is a
-  declaration, and the correctness of what the executor does is the executor's
-  business.
+  scope here. Model-level **constraints** state the invariants a model requires,
+  and no constraint is attached to an action.
+- **Nothing checks the write.** No component evaluates a constraint, so an action
+  is a declaration and the correctness of what the executor does belongs to the
+  executor.
 - **`kcmd` does not call the executor.** Push publishes the action. Dispatching
   it is the job of whatever reads the model, which is why the executor names
   coordinates rather than a statement.

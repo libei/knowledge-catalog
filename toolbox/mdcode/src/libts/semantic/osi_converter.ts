@@ -199,7 +199,7 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     actions:
         nonEmpty((model.actions ?? []).map(a => actionDoc(a, warnings))),
     constraints: nonEmpty(
-        (model.constraints ?? []).map(c => constraintDoc(c, warnings))),
+        (model.constraints ?? []).map(c => constraintDoc(c))),
   });
 }
 
@@ -296,12 +296,10 @@ function actionDoc(action: Action, warnings: string[]): Record<string, any> {
   });
 }
 
-// Inverts loader.convertConstraint. The expression is a logical invariant, so
-// it round-trips verbatim -- there is nothing derived to drop.
-function constraintDoc(
-    constraint: Constraint, warnings: string[]): Record<string, any> {
-  dropExtensions(
-      constraint.customExtensions, `constraint '${constraint.name}'`, warnings);
+// Inverts loader.convertConstraint. The expression is a logical invariant and
+// round-trips verbatim, since nothing about it is derived.
+function constraintDoc(constraint: Constraint): Record<string, any> {
+  // No dropExtensions call: a constraint carries no custom extensions to drop.
   return compact({
     name: constraint.name,
     expression: constraint.expression,

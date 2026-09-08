@@ -12,7 +12,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {checkPushSelection, declaresGraphTarget} from '../../../src/tool/commands';
+import {catalogOnlyWarning, checkPushSelection, declaresGraphTarget} from '../../../src/tool/commands';
 
 describe('checkPushSelection', () => {
   // Both legs on, no binding-profile selection: the default `kcmd push`. Each
@@ -144,4 +144,28 @@ semantic_model:
         data: 'not json'
 `)).toBe(true);
        });
+});
+
+
+// --no-kc drops the only leg an action or a constraint deploys through. The
+// warning counted actions alone, so a model whose catalog-only content was all
+// constraints was dropped without a word.
+describe('catalogOnlyWarning', () => {
+  test('names constraints when the model declares only constraints', () => {
+    const msg = catalogOnlyWarning('sales', {actions: 0, constraints: 2});
+    expect(msg).toContain('2 constraint(s)');
+    expect(msg).not.toContain('action(s)');
+    expect(msg).toContain('--no-kc');
+  });
+
+  test('names actions when the model declares only actions', () => {
+    const msg = catalogOnlyWarning('sales', {actions: 1, constraints: 0});
+    expect(msg).toContain('1 action(s)');
+    expect(msg).not.toContain('constraint(s)');
+  });
+
+  test('names both, in one sentence, when the model declares both', () => {
+    expect(catalogOnlyWarning('sales', {actions: 1, constraints: 2}))
+        .toContain('1 action(s) and 2 constraint(s)');
+  });
 });

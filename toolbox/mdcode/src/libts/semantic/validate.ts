@@ -13,6 +13,7 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {Executor, SemanticModel} from './ir';
 import {LoadedModel} from './loader';
+import {resolveInheritance} from './resolve_inheritance';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -23,8 +24,14 @@ import {LoadedModel} from './loader';
 // graph. A graph leg never sets it, so a bq/spanner/all push still requires
 // exactly one target. A KC-only push ignores its deployment target entirely --
 // it deploys no graph.
+//
+// `fieldsPruned` says the caller has already dropped every field the selected
+// binding profile leaves unbound, so `entity.fields` is a subset of what the
+// author declared. Checks that read a field list have to stand down for such a
+// model (see validateConstraints).
 export function validatePushRequirements(
-    models: LoadedModel[], opts: {targetOptional?: boolean} = {}): string[] {
+    models: LoadedModel[],
+    opts: {targetOptional?: boolean; fieldsPruned?: boolean} = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     let deployInfo: ReturnType<typeof googleDeploymentTargets>;
@@ -118,7 +125,8 @@ export function validatePushRequirements(
     errors.push(...validateActions(model, document));
 
     // Constraints are logical invariants, target-independent like actions.
-    errors.push(...validateConstraints(model, document));
+    errors.push(
+        ...validateConstraints(model, document, !!opts.fieldsPruned));
   }
   return errors;
 }
@@ -151,35 +159,63 @@ function validateActions(model: SemanticModel, document: string): string[] {
 }
 
 
-// Static, target-independent checks for a model's constraints. A constraint's
-// `expression` is a logical boolean invariant, resolved against the ontology by
-// the evaluator at action time, so validation here is deliberately light:
+// Static, target-independent checks for a model's constraints. Two checks:
 //   - the expression must be non-empty;
-//   - when it opens with a `<Entity>.<field>` qualifier that names a KNOWN
-//     entity, that entity must actually declare the field -- this catches a typo
-//     that would otherwise surface only inside an agent's rejected action.
-// A leading qualifier that is not a known entity (a relationship-qualified name
-// like `OrderedAs.quantity`, a metric reference, or compound logic) is left to
-// the evaluator rather than guessed at here, so a valid constraint is never
-// falsely rejected.
-function validateConstraints(model: SemanticModel, document: string): string[] {
+//   - when it opens with a `<Entity>.<field>` qualifier naming a KNOWN entity,
+//     that entity must declare the field. This catches a typo that would
+//     otherwise surface only inside an agent's rejected action.
+// Everything else is left alone. The expression is a logical invariant, and
+// whatever evaluates it resolves it against the ontology. So a leading
+// qualifier that is not a known entity is not guessed at here: a
+// relationship-qualified name like `OrderedAs.quantity`, a metric reference,
+// compound logic. A valid constraint must never be falsely rejected.
+//
+// Keeping that promise takes care, because the model reaching this function is
+// not the document the author wrote. Its field lists have moved twice:
+//   - Inheritance is still AS DECLARED. `extends` is flattened by the graph
+//     legs, which run after this gate, so a subtype's `fields` here omit every
+//     field it inherits. Looking the field up on the resolved model fixes that.
+//   - A profile push has already pruned unbound fields (`fieldsPruned`). The
+//     author's field is gone from the model, and resolving does not bring it
+//     back, so the field check stands down. A constraint reaches no graph in
+//     any case, and failing a push over a field this profile does not bind
+//     would refuse a deploy for no reason.
+function validateConstraints(
+    model: SemanticModel, document: string, fieldsPruned: boolean): string[] {
   const errors: string[] = [];
-  for (const c of model.constraints ?? []) {
+  const constraints = model.constraints ?? [];
+  if (!constraints.length) return errors;
+  const fieldsByEntity = fieldsPruned ? undefined : declaredFields(model);
+
+  for (const c of constraints) {
     const where =
         `constraint '${c.name}' in model '${model.name}' (${document})`;
     if (!c.expression.trim()) {
       errors.push(`${where} has an empty expression.`);
       continue;
     }
+    if (!fieldsByEntity) continue;
     const ref = leadingFieldRef(c.expression);
     if (!ref) continue;
-    const entity = (model.entities ?? []).find(e => e.name === ref.entity);
-    if (entity && !entity.fields.some(f => f.name === ref.field)) {
+    const fields = fieldsByEntity.get(ref.entity);
+    if (fields && !fields.has(ref.field)) {
       errors.push(`${where} references '${ref.entity}.${ref.field}', but ` +
           `entity '${ref.entity}' declares no field '${ref.field}'.`);
     }
   }
   return errors;
+}
+
+// Every field each entity has, inherited ones included. Inheritance is resolved
+// through the same pass the graph legs use rather than by walking `extends`
+// here, so the two can never disagree about what a subtype has. The pass
+// clones, so it is skipped for a model that declares no inheritance.
+function declaredFields(model: SemanticModel): Map<string, Set<string>> {
+  const inherits = (model.entities ?? []).some(e => e.extends?.length);
+  const entities =
+      (inherits ? resolveInheritance(model).model : model).entities ?? [];
+  return new Map(
+      entities.map(e => [e.name, new Set((e.fields ?? []).map(f => f.name))]));
 }
 
 // The leading `<name>.<field>` qualifier of a constraint expression, or null

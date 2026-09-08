@@ -464,8 +464,8 @@ export async function push(options: PushOptions): Promise<number> {
               }
             }
           }
-          const validationErrors =
-              validatePushRequirements(models, {targetOptional: !prune});
+          const validationErrors = validatePushRequirements(
+              models, {targetOptional: !prune, fieldsPruned: prune});
           if (validationErrors.length) {
             for (const e of validationErrors) console.error(`Error: ${e}`);
             return null;
@@ -553,7 +553,18 @@ export async function push(options: PushOptions): Promise<number> {
     let deployedGraphs = 0;
     // Model name -> action count, and the documents already loaded below, so
     // the --no-kc actions warning can reuse this pass instead of repeating it.
-    const actionCounts = new Map<string, number>();
+    // Per model, what deploys through the Knowledge Catalog leg ALONE:
+    // actions and constraints both have a catalog home and no graph one, so a
+    // push that omits that leg has to account for either.
+    const catalogOnly = new Map<string, {actions: number; constraints: number}>();
+    const noteCatalogOnly = (loaded: LoadedModel[]) => {
+      for (const {model} of loaded) {
+        const actions = model.actions?.length ?? 0;
+        const constraints = model.constraints?.length ?? 0;
+        if (actions || constraints)
+          catalogOnly.set(model.name, {actions, constraints});
+      }
+    };
     const loadedDocs = new Set<string>();
     for (const profileName of graphProfileNames) {
       // --all-profiles fans out over every model's profiles, so a model that
@@ -569,9 +580,7 @@ export async function push(options: PushOptions): Promise<number> {
       const prepared = await prepareOnce(docs, profileName, true);
       if (!prepared) return 1;
       for (const d of docs) loadedDocs.add(d.name);
-      for (const {model} of prepared.models) {
-        if (model.actions?.length) actionCounts.set(model.name, model.actions.length);
-      }
+      noteCatalogOnly(prepared.models);
       // Fail before any deploy if this profile's targets collide with a graph an
       // earlier profile already claimed this run.
       for (const m of prepared.models) {
@@ -621,10 +630,10 @@ export async function push(options: PushOptions): Promise<number> {
           '.');
     }
 
-    // Actions and constraints have no BigQuery/Spanner Graph construct -- their
-    // only destination is Knowledge Catalog. A push that omits the KC leg
-    // (--no-kc) would validate them and then deploy them nowhere, so warn
-    // rather than drop them silently.
+    // Neither a BigQuery nor a Spanner property graph has a construct for an
+    // action or a constraint, so Knowledge Catalog is their only destination. A
+    // push that omits the KC leg (--no-kc) would validate them and then deploy
+    // them nowhere. Warn instead of dropping them silently.
     if (!kcEnabled) {
       // The loop above already loaded every document that contributes a graph.
       // Only the rest need loading, which is usually none, and a model that
@@ -640,16 +649,10 @@ export async function push(options: PushOptions): Promise<number> {
         // same document fails the default push through the Knowledge Catalog
         // leg, so --no-kc fails on it too.
         if (!prepared) return 1;
-        for (const {model} of prepared.models) {
-          if (model.actions?.length)
-            actionCounts.set(model.name, model.actions.length);
-        }
+        noteCatalogOnly(prepared.models);
       }
-      for (const [name, n] of actionCounts) {
-        console.warn(
-            `Warning: model '${name}' declares ${n} action(s), which ` +
-            `deploy only to Knowledge Catalog; --no-kc excludes that leg, so ` +
-            `they will not be deployed. Drop --no-kc to deploy them.`);
+      for (const [name, n] of catalogOnly) {
+        console.warn(`Warning: ${catalogOnlyWarning(name, n)}`);
       }
     }
 
@@ -1150,4 +1153,21 @@ export async function owl(
 // Selects the singular or plural form based on `n` (English count agreement).
 function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
+}
+
+
+// What `--no-kc` costs a model that declares catalog-only constructs. Both
+// actions and constraints deploy through the Knowledge Catalog leg alone, so
+// either one on its own is worth a warning, and a model with both gets one
+// sentence naming both. Exported for the same reason checkPushSelection is: it
+// is a pure decision about what a flag combination means.
+export function catalogOnlyWarning(
+    model: string, n: {actions: number; constraints: number}): string {
+  const declared = [
+    n.actions ? `${n.actions} action(s)` : '',
+    n.constraints ? `${n.constraints} constraint(s)` : '',
+  ].filter(part => part).join(' and ');
+  return `model '${model}' declares ${declared}, which deploy only to ` +
+      `Knowledge Catalog; --no-kc excludes that leg, so they will not be ` +
+      `deployed. Drop --no-kc to deploy them.`;
 }

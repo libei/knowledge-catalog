@@ -99,6 +99,8 @@ semantic_model:                # one or more models; kcmd deploys exactly one pe
     datasets: [ … ]            # one or more; the entities (§2.1). Spelled `entities:` under /google (§5)
     relationships: [ … ]       # optional (§2.2)
     metrics: [ … ]             # optional (§2.3)
+    actions: [ … ]             # optional; /google only (§5)
+    constraints: [ … ]         # optional; /google only (§5)
     description: "…"           # optional
     ai_context: { … }          # optional (§2.4)
     custom_extensions: [ … ]   # vanilla only (§6); rejected under /google
@@ -106,10 +108,10 @@ semantic_model:                # one or more models; kcmd deploys exactly one pe
 ```
 
 A document MUST contain at least one model, and each model MUST contain at least
-one dataset. Every named object (dataset, field, relationship, metric) MUST have a
-name unique within its scope; a duplicate name is a **hard load error** (agreed
-with Dmitri), because it would make the generated node, property, edge, or measure
-ambiguous.
+one dataset. Every named object (dataset, field, relationship, metric,
+action, constraint) MUST have a name unique within its scope. A duplicate name is
+a **hard load error** (agreed with Dmitri), because nothing reading the model can
+tell two objects of the same name apart.
 
 Objects are **closed**: an unknown sibling key inside a validated object is a
 **hard error**, not silently dropped (agreed with Dmitri). This is what makes the
@@ -308,6 +310,8 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | relationship M:N (`association`) | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
 | `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and aggregate · [§4.1](#41-narrowings-stricter-than-ossie) |
 | `expression.dialects` | closed enum | any dialect string | tolerate imported / newer input · [§4.2](#42-relaxations-looser-than-ossie) |
+| `actions` | — | added | write operations declared over the ontology; `/google` only · [§5](#5-extensions) |
+| `constraints` | — | added | named invariants over the ontology; `/google` only · [§5](#5-extensions) |
 | field `expression` (column binding) | required | optional | model before binding; unbound is pruned · [§4.2](#42-relaxations-looser-than-ossie), [§7](#7-the-binding-layer) |
 | `source` (table binding) | required | optional | logical-only models; graph deploy still needs it · [§4.2](#42-relaxations-looser-than-ossie), [§7.1](#71-table-sources) |
 | `ai_context` (`instructions`, `synonyms`, `examples`) | `examples` are strings | same; `examples` any shape | tolerate imports; non-strings dropped · [§2.4](#24-ai_context), [§4.2](#42-relaxations-looser-than-ossie) |
@@ -449,14 +453,27 @@ reads the document ([§6](#6-the-extension-mechanism)).
   `{"deploymentTargets": ["…"]}` ([§6](#6-the-extension-mechanism)). Grammar in
   [§7](#7-the-binding-layer).
 
+- **`actions` (extended profile only).** Model-level write operations, the
+  write-side counterpart to a metric. An action names an operation, points at the
+  executor that performs it, and types each parameter against the ontology, so an
+  entity-typed parameter is an object reference. Accepted only under
+  `0.2.0.dev0/google`. `kcmd` publishes an action and never calls its executor.
+  See [Modeling write operations](actions.md).
+
+- **`constraints` (extended profile only).** Model-level named boolean
+  invariants over the ontology, written in the same expression language as a
+  metric — `Account.balance >= 0`. Accepted only under `0.2.0.dev0/google`.
+  Status: authored, validated and published; no component evaluates a constraint,
+  so nothing today rejects a write that would break one. Rules in
+  [Reference → Validation](reference.md#validation).
+
 - **Binding profiles.** A separate document that supplies only the physical
   bindings, so one logical model serves several stores. Not part of the Ossie
   document; a `kcmd`-specific file alongside it ([§7](#7-the-binding-layer)).
 
-Deliberately **not** extensions in `0.2.0.dev0`, to avoid the impression they
-exist: there is **no `actions` block** and **no authorable M:N `association`
-syntax**. Both are reserved for future consideration; neither is part of the
-format today.
+One construct is reserved rather than added. `0.2.0.dev0` has **no authorable
+M:N `association` syntax**. The construct is under consideration for a future
+version and is not part of the format today.
 
 ## 6. The extension mechanism
 
@@ -605,9 +622,9 @@ The full merge behavior and worked examples are in
   and constructs with no vanilla form (inheritance, the `entities` spelling) are
   simply unavailable there — a model that needs them uses `0.2.0.dev0/google`.
 
-- **Reserved constructs.** `association` (M:N) and any `actions`-like write-side
-  construct are reserved: recognized as future work, not authorable today. A
-  document MUST NOT rely on either in `0.2.0.dev0`.
+- **Reserved constructs.** `association` (M:N) is reserved. It is under
+  consideration for a future version and cannot be authored today, so a document
+  MUST NOT rely on it in `0.2.0.dev0`.
 
 ## Appendix: annotated example
 

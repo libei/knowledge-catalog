@@ -165,10 +165,11 @@ function onlyExtendedModelBlocks(errors: typeof validate.errors): boolean {
 }
 
 // A `.pull.golden.yaml` of a fixture that declares actions or constraints trips
-// BOTH tolerated classes at once: the #290 missing-`expression` gap and the
+// two tolerated classes at once: the #290 missing-`expression` gap and the
 // extended model blocks. Each predicate above is all-or-nothing, so a document
-// hitting two of them passes neither. Tolerate the union for exactly that
-// combination rather than loosening either predicate for every other fixture.
+// hitting both passes neither. This one tolerates their union, and is applied
+// only to that combination, so neither predicate has to loosen for every other
+// fixture.
 function onlyExpressionGapAndExtendedBlocks(
   errors: typeof validate.errors): boolean {
   return !!errors && errors.length > 0 &&
@@ -217,11 +218,11 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
             onlyExtendsExtension(validate.errors)) {
           return;
         }
-        // The model-level `actions` and `constraints` blocks are a deliberate
-        // superset of released OSI (the Extended-spec proposal); tolerate
-        // exactly those extra properties and nothing else, and only on the
-        // fixtures that legitimately carry them -- so a stray `actions` or
-        // `constraints` slipping into any other fixture still fails.
+        // The model-level `actions` and `constraints` blocks are a superset
+        // of released OSI, proposed in the Extended spec. Tolerate those two
+        // extra properties and nothing else, and only on the fixtures that
+        // carry them, so a stray `actions` or `constraints` slipping into any
+        // other fixture still fails.
         if (rel.startsWith('actions_') &&
             (rel.endsWith('.pull.golden.yaml') ?
                  onlyExpressionGapAndExtendedBlocks(validate.errors) :

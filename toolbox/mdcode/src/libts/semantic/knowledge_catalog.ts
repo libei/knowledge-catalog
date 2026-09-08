@@ -19,13 +19,13 @@
 //   * semantic-entity entry -> { semantic-entity, schema, guidelines? }
 //   * semantic-metric entry -> { semantic-metric, guidelines? }
 //
-// An action (the model's write operations) and a constraint (an invariant the
-// model requires to hold) are published the same way, one entry each parented
-// to the anchor, but their entry and aspect types are CUSTOM: there is no
-// built-in type for either yet, so `kcmd init` provisions the pairs in the
-// destination project. `kc_custom_types.ts` declares those types, and
-// `kc_actions.ts` and `kc_constraints.ts` encode the aspects they carry; this
-// module only appends the entries those two return.
+// An action (a write operation the model defines) and a constraint (an
+// invariant the model states) are published the same way: one entry each,
+// parented to the anchor. Their entry and aspect types are CUSTOM, because
+// Dataplex has no built-in type for either yet, so `kcmd init` provisions the
+// pairs in the destination project. `kc_custom_types.ts` declares those types
+// and `kc_actions.ts` and `kc_constraints.ts` encode the aspects they carry.
+// This module only appends the entries those two return.
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):

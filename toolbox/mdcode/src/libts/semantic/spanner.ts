@@ -63,6 +63,22 @@ export function generateSpannerPropertyGraph(
   const relationships = resolved.model.relationships ?? [];
   const metrics = resolved.model.metrics ?? [];
 
+  // Knowledge Catalog is the only system an action or a constraint reaches, so
+  // this leg emits nothing for either. Warn once each, as the BigQuery leg
+  // does, so an author who declared them learns where they go.
+  const actions = resolved.model.actions ?? [];
+  if (actions.length) {
+    warnings.push(
+        `${actions.length} action(s) reach Knowledge Catalog only; the ` +
+        `Spanner push deploys none of them.`);
+  }
+  const constraints = resolved.model.constraints ?? [];
+  if (constraints.length) {
+    warnings.push(
+        `${constraints.length} constraint(s) reach Knowledge Catalog only; ` +
+        `the Spanner push deploys none of them.`);
+  }
+
   // Spanner Graph has no MEASURE, so a model-level metric cannot be expressed
   // in the graph. Drop each with a warning rather than silently omit it, so an
   // author who expects a metric in the graph learns it lives elsewhere (a

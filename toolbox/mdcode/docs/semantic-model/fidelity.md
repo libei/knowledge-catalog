@@ -35,8 +35,8 @@ agree on every structural row and differ only where a Spanner target has no
 | Relationship (1:1 / 1:N)                                       | `schema-join` link              | ✓ (name normalized⁶)                           | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
 | Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
 | Entity `extends`                                               | — not modelled                  | —                                              | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
-| Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not represented (write-side)                                       | — not represented (write-side)                                       |
-| Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not represented (write-side)                                       | — not represented (write-side)                                       |
+| Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
+| Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
 | `description` (entity / metric / field / relationship)         | entry description / aspect      | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
 | `ai_context.synonyms`                                          | — not stored                    | —                                              | `OPTIONS(synonyms=[...])`                                            | — dropped                                                            |
 | `ai_context.instructions`                                      | `guidelines` aspect⁷            | ✓⁷                                             | into `OPTIONS(description)`                                          | — dropped                                                            |
@@ -97,26 +97,24 @@ agree on every structural row and differ only where a Spanner target has no
     Snowflake form a metric was imported from) and uses that verbatim as the
     fallback when no canonical variant exists. See
     [Model spec §2.5](model_spec.md#25-expressions).
-12. **Actions.** Actions are write-side, so neither graph has a construct for
-    them: the push emits nothing for an action and warns once. They are
-    published to Knowledge Catalog as one `semantic-action` entry each, under
-    the model entry, and `pull` reads them back from those entries. Prototype
-    scope: an action's `precondition` and `affects` are not modelled, so nothing
-    about them is stored either way. See
+12. **Actions.** An action reaches Knowledge Catalog only, as one
+    `semantic-action` entry under the model entry, and `pull` reads it back from
+    that entry. Every other push target deploys nothing for it and warns once.
+    Prototype scope: an action's `precondition` and `affects` are not modelled,
+    so nothing about them is stored. See
     [Modeling write operations](actions.md).
-13. **Constraints.** A constraint states an invariant rather than a read-side
-    structure, so neither graph has a construct for it either: the push emits
-    nothing and warns once. Each is published to Knowledge Catalog as one
+13. **Constraints.** A constraint reaches Knowledge Catalog only, as one
     `semantic-constraint` entry under the model entry, and `pull` reads it back.
-    Publishing a constraint is all that happens to it; nothing checks one
-    against live data.
+    Every other push target deploys nothing for it and warns once. Publishing is
+    all that happens to a constraint; no component checks one against live
+    data.
 
 ## To Knowledge Catalog
 
 The catalog holds metadata rather than a full copy of your model. Every resource
 type it uses is a built-in system type under `dataplex-types/global`, apart from
 the custom `semantic-action` and `semantic-constraint` pairs that `kcmd init`
-provisions — push references types, it never creates them (see
+provisions. A push references those types and never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
 What is recorded depends on the push. A catalog-only push (`--no-profile`), or a

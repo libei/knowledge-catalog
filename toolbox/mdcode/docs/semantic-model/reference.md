@@ -76,8 +76,8 @@ becomes one part of that graph:
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Metric | `MEASURE` on a node table | must resolve to a single entity (otherwise the push is rejected — see [Validation](#validation)) and reduce to one supported aggregate over one operand (otherwise that metric is skipped with a warning) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
-| Action | *nothing* | actions are write-side and have no graph construct; the push emits nothing and warns once, then publishes them to Knowledge Catalog (see below) |
-| Constraint | *nothing* | a constraint states an invariant rather than a read-side structure; the push emits nothing and warns once, then publishes them to Knowledge Catalog (see below) |
+| Action | *nothing* | an action reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
+| Constraint | *nothing* | a constraint reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
 
 `push` reads the target dataset's location (`bigquery.datasets.get`) so the
 statement runs in the right region; without that permission it falls back to
@@ -293,10 +293,10 @@ ships, the entries move to it and their shape does not change. (This is the
 prototype scope — an action's `precondition` and `affects` are not modeled
 yet.)
 
-A **constraint** entry carries its expression, and the whole of any
-`ai_context` declared on it, in a `semantic-constraint` aspect; the constraint's
-`description` is the entry's own summary, because that sentence is what a caller
-refused by the rule reads. Its type is provisioned alongside the action pair and
+A **constraint** entry carries its expression in a `semantic-constraint`
+aspect, together with the whole of any `ai_context` declared on it. The
+constraint's `description` is the entry's own summary, because that sentence is
+what a caller refused by the rule reads. Its type is provisioned alongside the action pair and
 for the same reason. All three parts of `ai_context` survive, unlike an element
 routed to the built-in `guidelines` aspect, which has a home for `instructions`
 alone: `kcmd` defines the constraint aspect itself, so it has no reason to keep
@@ -357,15 +357,14 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   validates them but has nowhere to put them, and warns that they will not be
   deployed. *(static)*
 * **Every constraint is checkable.** A constraint's `expression` must be
-  non-empty, and when it opens with an `<Entity>.<field>` qualifier naming a
-  **known** entity, that entity must actually declare the field — this catches a
+  non-empty. When the expression opens with an `<Entity>.<field>` qualifier
+  naming a **known** entity, that entity must declare the field; this catches a
   typo that would otherwise surface only when something tries to check the rule.
-  A leading qualifier that is not a known entity (a relationship-qualified name
-  like `OrderedAs.quantity`, a metric reference, or compound logic) is left
-  alone rather than guessed at, so a valid constraint is never falsely
-  rejected. Like actions, constraints deploy **only** through the Knowledge
-  Catalog leg, and a `--no-kc` push warns that they will not be deployed.
-  *(static)*
+  A leading qualifier that is not a known entity — a relationship-qualified name
+  like `OrderedAs.quantity`, a metric reference, or compound logic — is left
+  alone rather than guessed at, so a valid constraint is never falsely rejected.
+  Like an action, a constraint reaches Knowledge Catalog only, and a `--no-kc`
+  push warns that it will not be deployed. *(static)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
   exactly as the deploy will — a three-part `project.dataset.table`, a four-part

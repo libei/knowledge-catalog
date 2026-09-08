@@ -64,10 +64,9 @@ export interface SemanticModel {
   // absent on models authored before actions existed, so consumers read it as
   // `actions ?? []`. See Action.
   actions?: Action[];
-  // Named invariants over the ontology -- a boolean `expression` that must hold
-  // for every instance (e.g. `Customer.accountBalance >= 0`). Model-level like
-  // metrics and actions; checked before an action commits, so a write that would
-  // break one is rejected. Optional and absent on models authored before
+  // Named invariants over the ontology: a boolean `expression` that must hold
+  // for every instance (e.g. `Customer.accountBalance >= 0`). Model-level, like
+  // metrics and actions. Optional, and absent on models authored before
   // constraints existed, so consumers read it as `constraints ?? []`. See
   // Constraint.
   constraints?: Constraint[];
@@ -374,24 +373,31 @@ export interface GrpcExecutor {
 
 /**
  * A constraint: a model-level, named invariant over the ontology -- a boolean
- * `expression` that must hold for every instance. Written in the same
+ * `expression` that must hold for every instance. It is written in the same
  * expression language as a metric (`Customer.accountBalance >= 0`,
- * `OrderedAs.quantity > 0`), and it may reference a metric by name when the
- * check needs an aggregate.
+ * `OrderedAs.quantity > 0`), and may reference a metric by name when the rule
+ * needs an aggregate.
  *
- * Constraints matter because actions change state: an operational agent running
- * an action writes to a live store, and a bad write corrupts data. A constraint
- * is checked before the action commits; if the write would leave any instance
- * violating it, the action is rejected and the state is left untouched.
+ * STATUS: authored, validated and published; not yet enforced. kcmd carries a
+ * constraint to Knowledge Catalog, where an agent can read the rules a model
+ * requires. No component evaluates one, so nothing today rejects a write that
+ * would break it. Enforcement is the point of declaring them: an operational
+ * agent running an action writes to a live store, and a bad write corrupts
+ * data. The rule has to be stated and governed before it can be checked.
  *
- * `description` doubles as the error surfaced on a violation, so it is written
- * to steer an agent's next move ("reduce the order quantity or choose another
- * customer") rather than merely label the rule.
+ * `description` is the error text a violation would surface, so write it to
+ * steer an agent's next move -- "reduce the order quantity or choose another
+ * customer" -- rather than to label the rule.
  */
 export interface Constraint {
   name: string;
   expression: string;     // boolean invariant in the model's expression language
-  description?: string;   // human-readable; doubles as the violation error
+  description?: string;   // human-readable summary; also the violation error
   aiContext?: AiContext;
-  customExtensions?: CustomExtension[];
+  // No `customExtensions`. Every other IR object has one because vanilla Ossie
+  // accepts `custom_extensions` on it. A constraint is unreachable that way:
+  // `constraints` is an extended-profile-only key, and the extended profile
+  // rejects `custom_extensions` outright (ceField in loader.ts), so no document
+  // can carry both. Should vanilla Ossie ever gain constraints, add the field
+  // back with `...ce` on the schema.
 }

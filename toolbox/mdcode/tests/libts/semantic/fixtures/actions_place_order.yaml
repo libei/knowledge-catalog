@@ -4,20 +4,20 @@
 # counterpart to a metric, and the CONSTRAINTS that gate it. PlaceOrder carries
 # an MCP executor (a tool in Agent Registry) and ontology-typed parameters: an
 # entity-typed one (`customer`, an object reference to the customer entity) and
-# scalar ones. Per-action preconditions and affects are intentionally out of
-# scope for this prototype; the gate here is model-level. A GOOGLE BigQuery
-# Graph target keeps the model executable (neither actions nor constraints
-# produce a graph element).
+# scalar ones. Per-action preconditions and affects are out of scope for this
+# prototype; the gate here is model-level. The model also names a BigQuery
+# deployment target, so a push exercises the leg that deploys neither an action
+# nor a constraint.
 #
-# The two constraints deliberately exercise both validation paths:
-# NonNegativeOrderTotal opens with a KNOWN entity, so its field is checked;
-# PositiveQuantity opens with `OrderedAs`, which is not an entity, so it is left
-# to the evaluator rather than falsely rejected.
+# The two constraints cover both validation paths. NonNegativeOrderTotal opens
+# with a KNOWN entity, so its field is checked. PositiveQuantity opens with
+# `OrderedAs`, which is no entity, so it is left to the evaluator rather than
+# falsely rejected.
 #
-# They also cover both annotation shapes, which land in different places:
-# NonNegativeOrderTotal declares a full `ai_context` -- instructions, synonyms
-# and examples -- beside its description, so the catalog golden shows the
-# description on the entry source and the whole `ai_context` on the aspect;
+# They also cover both annotation shapes, which land in different places.
+# NonNegativeOrderTotal declares a full `ai_context` beside its description --
+# instructions, synonyms and examples -- so the catalog golden shows the
+# description on the entry source and the whole `ai_context` on the aspect.
 # PositiveQuantity declares a description alone.
 
 version: "0.2.0.dev0/google"
