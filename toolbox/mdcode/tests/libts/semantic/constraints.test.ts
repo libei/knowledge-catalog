@@ -250,31 +250,50 @@ describe('Knowledge Catalog publish/pull round trip', () => {
 
   test('the aspect carries the expression and the entry source the description',
        () => {
-         const [nonNegative] = constraintEntriesOf(model);
-         expect(nonNegative.aspects![CONSTRAINT_ASPECT].data)
-             .toEqual({expression: 'orders.o_totalprice >= 0'});
+         // PositiveQuantity is the fixture's constraint with no `ai_context`,
+         // so its aspect is the expression alone.
+         const positive = constraintEntriesOf(model).find(
+             e => e.entrySource!.displayName === 'PositiveQuantity')!;
+         expect(positive.aspects![CONSTRAINT_ASPECT].data)
+             .toEqual({expression: 'OrderedAs.quantity > 0'});
          // The description is the message a violation quotes back, so it is the
          // entry's human-readable summary rather than an aspect field.
-         expect(nonNegative.entrySource!.displayName)
-             .toBe('NonNegativeOrderTotal');
-         expect(nonNegative.entrySource!.description)
-             .toContain('cannot be negative');
+         expect(positive.entrySource!.description)
+             .toBe('An order line must be for at least one unit.');
        });
 
-  test('ai_context instructions ride the constraint\'s own aspect', () => {
-    const withAi: SemanticModel = {
-      ...model,
-      constraints: [{
-        name: 'C',
-        expression: 'orders.o_totalprice >= 0',
-        aiContext: {instructions: 'Explain the shortfall in currency terms.'},
-      }],
-    };
-    expect(constraintEntriesOf(withAi)[0].aspects![CONSTRAINT_ASPECT].data)
-        .toEqual({
-          expression: 'orders.o_totalprice >= 0',
-          instructions: 'Explain the shortfall in currency terms.',
-        });
+  test('the whole ai_context rides the constraint\'s own aspect', () => {
+    // Not `instructions` alone: the built-in guidelines aspect has a home for
+    // that part only, and a custom aspect kcmd defines has no reason to lose
+    // the other two. The fixture declares all three so this is browsable.
+    const [nonNegative] = constraintEntriesOf(model);
+    expect(nonNegative.entrySource!.displayName).toBe('NonNegativeOrderTotal');
+    expect(nonNegative.aspects![CONSTRAINT_ASPECT].data).toEqual({
+      expression: 'orders.o_totalprice >= 0',
+      aiContext: {
+        instructions:
+            'Quote the shortfall in the customer\'s own currency when refusing.',
+        synonyms: ['NoNegativeTotals', 'NonNegativeTotal'],
+        examples: ['Why was my order rejected?'],
+      },
+    });
+  });
+
+  test('a pull recovers every part of the ai_context', () => {
+    // The emit side above and this read side are what make the annotation
+    // survive a round trip; dropping either would lose a declared field
+    // silently, since the pull rewrites the document it read.
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const {models} = modelsFromCatalogResources(entries, entryLinks);
+    expect(models[0].constraints![0].aiContext).toEqual({
+      instructions:
+          'Quote the shortfall in the customer\'s own currency when refusing.',
+      synonyms: ['NoNegativeTotals', 'NonNegativeTotal'],
+      examples: ['Why was my order rejected?'],
+    });
+    // The constraint that declares none stays clean rather than gaining an
+    // empty record.
+    expect(models[0].constraints![1].aiContext).toBeUndefined();
   });
 
   test('a model with no constraints publishes no constraint entry', () => {

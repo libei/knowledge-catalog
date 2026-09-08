@@ -164,6 +164,26 @@ function onlyExtendedModelBlocks(errors: typeof validate.errors): boolean {
         /\/semantic_model\/\d+$/.test(e.instancePath));
 }
 
+// A `.pull.golden.yaml` of a fixture that declares actions or constraints trips
+// BOTH tolerated classes at once: the #290 missing-`expression` gap and the
+// extended model blocks. Each predicate above is all-or-nothing, so a document
+// hitting two of them passes neither. Tolerate the union for exactly that
+// combination rather than loosening either predicate for every other fixture.
+function onlyExpressionGapAndExtendedBlocks(
+  errors: typeof validate.errors): boolean {
+  return !!errors && errors.length > 0 &&
+    errors.every(
+      e =>
+        (e.keyword === 'required' &&
+          (e.params as {missingProperty?: string}).missingProperty ===
+            'expression') ||
+        (e.keyword === 'additionalProperties' &&
+          EXTENDED_MODEL_BLOCKS.has(
+            (e.params as {additionalProperty?: string}).additionalProperty ??
+            '') &&
+          /\/semantic_model\/\d+$/.test(e.instancePath)));
+}
+
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {
     expect(fixtures.length).toBeGreaterThan(0);
@@ -203,7 +223,9 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
         // fixtures that legitimately carry them -- so a stray `actions` or
         // `constraints` slipping into any other fixture still fails.
         if (rel.startsWith('actions_') &&
-            onlyExtendedModelBlocks(validate.errors)) {
+            (rel.endsWith('.pull.golden.yaml') ?
+                 onlyExpressionGapAndExtendedBlocks(validate.errors) :
+                 onlyExtendedModelBlocks(validate.errors))) {
           return;
         }
         const details = (validate.errors ?? [])

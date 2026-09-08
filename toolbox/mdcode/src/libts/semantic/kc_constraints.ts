@@ -23,10 +23,9 @@
 // `description` rides the entry source rather than the aspect: a violation
 // quotes it back to the caller as the error, which makes it the entry's
 // human-readable summary, and it is where a pull of an action already looks for
-// the same field. `instructions` rides the constraint's own aspect for the
-// reason kc_actions.ts gives: a pull derives which aspect types to hydrate from
-// the project the ENTRY type lives in, and the built-in `guidelines` type does
-// not exist there.
+// the same field. `ai_context` rides the constraint's own aspect, whole -- see
+// aiContextField in kc_custom_types.ts for why it is carried there, and why
+// every part of it is carried rather than `instructions` alone.
 //
 // The helpers at the bottom duplicate a few lines from the modules above on
 // purpose. This module imports only the IR, the entry shape and the type
@@ -34,8 +33,8 @@
 
 import {Entry} from '../gcp/dataplex';
 
-import {AiContext, Constraint, SemanticModel} from './ir';
-import {CONSTRAINT_TYPE_ID, customAspectKey, customAspectTypeName, customEntryTypeName} from './kc_custom_types';
+import {Constraint, SemanticModel} from './ir';
+import {aiContextAspectValue, aiContextFromAspect, CONSTRAINT_TYPE_ID, customAspectKey, customAspectTypeName, customEntryTypeName} from './kc_custom_types';
 
 // Full resource name of the constraint entry type for a destination.
 export function constraintEntryTypeName(dest: {project: string}): string {
@@ -130,12 +129,12 @@ export function constraintEntries(
   return entries;
 }
 
-// The aspect payload for one constraint: the invariant, and any AI
-// instructions.
+// The aspect payload for one constraint: the invariant, and the whole of any
+// `ai_context` declared on it.
 function constraintAspectData(constraint: Constraint): Record<string, any> {
   return compact({
     expression: constraint.expression,
-    instructions: constraint.aiContext?.instructions || undefined,
+    aiContext: aiContextAspectValue(constraint.aiContext),
   });
 }
 
@@ -185,8 +184,8 @@ export function readConstraint(entry: Entry, warnings: string[]): Constraint|
   const description = entry.entrySource?.description;
   if (description !== undefined && description !== '')
     constraint.description = description;
-  if (typeof data.instructions === 'string' && data.instructions !== '')
-    constraint.aiContext = {instructions: data.instructions} as AiContext;
+  const aiContext = aiContextFromAspect(data.aiContext);
+  if (aiContext) constraint.aiContext = aiContext;
   return constraint;
 }
 

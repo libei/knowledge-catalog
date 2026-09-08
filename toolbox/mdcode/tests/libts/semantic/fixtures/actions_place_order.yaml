@@ -13,6 +13,12 @@
 # NonNegativeOrderTotal opens with a KNOWN entity, so its field is checked;
 # PositiveQuantity opens with `OrderedAs`, which is not an entity, so it is left
 # to the evaluator rather than falsely rejected.
+#
+# They also cover both annotation shapes, which land in different places:
+# NonNegativeOrderTotal declares a full `ai_context` -- instructions, synonyms
+# and examples -- beside its description, so the catalog golden shows the
+# description on the entry source and the whole `ai_context` on the aspect;
+# PositiveQuantity declares a description alone.
 
 version: "0.2.0.dev0/google"
 
@@ -85,6 +91,11 @@ semantic_model:
         description: >-
           An order's total cannot be negative. Reduce the quantity or check the
           unit price before retrying.
+        ai_context:
+          instructions: >-
+            Quote the shortfall in the customer's own currency when refusing.
+          synonyms: [NoNegativeTotals, NonNegativeTotal]
+          examples: ["Why was my order rejected?"]
       - name: PositiveQuantity
         expression: OrderedAs.quantity > 0
         description: An order line must be for at least one unit.

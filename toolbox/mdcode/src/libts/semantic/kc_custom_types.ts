@@ -38,6 +38,8 @@
 
 import {AspectType, CatalogClient, EntryType} from '../gcp/dataplex';
 
+import {AiContext} from './ir';
+
 // A type kcmd provisions because no built-in one exists yet.
 export interface CustomType {
   // Shared by the entry type and the aspect type.
@@ -48,6 +50,111 @@ export interface CustomType {
   // The aspect type, including the metadata template that gives the entry its
   // typed, queryable fields.
   aspectType: Omit<AspectType, 'name'>;
+}
+
+
+// ---------------------------------------------------------------------------
+// `ai_context`, shared by every custom aspect.
+// ---------------------------------------------------------------------------
+
+// The whole of a model element's `ai_context`, as one template field.
+//
+// Every element in the format carries the same three-part annotation --
+// instructions, synonyms, examples -- so a custom aspect carries all three. The
+// built-in `guidelines` aspect has a home for `instructions` alone, and an
+// element routed there loses the other two; kcmd owns this template, so there
+// is no reason to inherit that limit. Carrying a chosen part of one would mean
+// a document that loads cleanly comes back from a pull missing fields it
+// declared.
+//
+// A custom aspect carries `ai_context` itself, rather than the entry being
+// given a `guidelines` aspect beside its own, because a pull hydrates aspect
+// types from the project the ENTRY type lives in, and `guidelines` is published
+// under `dataplex-types` instead.
+//
+// `index` is a parameter because template field indexes are positional and
+// append-only (see the header), so each aspect places this field wherever its
+// own template has room. `semantic-action` still carries a flat `instructions`
+// string at index 9: it was provisioned before this existed, and renaming a
+// field is exactly the backwards-incompatible change Dataplex rejects, so it
+// moves over by APPENDING this field and retiring that one.
+export function aiContextField(index: number): Record<string, any> {
+  return {
+    index,
+    name: 'aiContext',
+    type: 'record',
+    recordFields: [
+      {
+        index: 1,
+        name: 'instructions',
+        type: 'string',
+        annotations: {
+          displayName: 'Instructions',
+          description: 'Free-form guidance for AI consumers.',
+        },
+      },
+      {
+        index: 2,
+        name: 'synonyms',
+        type: 'array',
+        arrayItems: {name: 'synonym', type: 'string'},
+        annotations: {
+          displayName: 'Synonyms',
+          description: 'Alternate names for the annotated object.',
+        },
+      },
+      {
+        index: 3,
+        name: 'examples',
+        type: 'array',
+        arrayItems: {name: 'example', type: 'string'},
+        annotations: {
+          displayName: 'Examples',
+          description:
+              'Example questions or usages illustrating the annotated object.',
+        },
+      },
+    ],
+    annotations: {
+      displayName: 'AI Context',
+      description:
+          'The element\'s `ai_context`: guidance, alternate names and ' +
+          'examples for AI consumers.',
+    },
+  };
+}
+
+// The aspect value for an `ai_context`. Undefined when it carries nothing, so
+// an element without one attaches no empty record and its golden stays quiet.
+export function aiContextAspectValue(ai: AiContext|undefined):
+    Record<string, any>|undefined {
+  if (!ai) return undefined;
+  const out: Record<string, any> = {};
+  if (ai.instructions) out.instructions = ai.instructions;
+  if (ai.synonyms?.length) out.synonyms = [...ai.synonyms];
+  if (ai.examples?.length) out.examples = [...ai.examples];
+  return Object.keys(out).length ? out : undefined;
+}
+
+// The inverse: an `ai_context` from an aspect value, or undefined when there is
+// nothing usable in it. Every part is checked rather than trusted, because an
+// aspect can be hand-edited in the catalog into a shape the emitter never
+// writes.
+export function aiContextFromAspect(value: any): AiContext|undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const strings = (v: any): string[]|undefined => {
+    if (!Array.isArray(v)) return undefined;
+    const out = v.filter((s: any) => typeof s === 'string' && s !== '');
+    return out.length ? out : undefined;
+  };
+  const ai: AiContext = {};
+  if (typeof value.instructions === 'string' && value.instructions !== '')
+    ai.instructions = value.instructions;
+  const synonyms = strings(value.synonyms);
+  if (synonyms) ai.synonyms = synonyms;
+  const examples = strings(value.examples);
+  if (examples) ai.examples = examples;
+  return Object.keys(ai).length ? ai : undefined;
 }
 
 // The id of the action type. An action is a write operation defined on a
@@ -207,16 +314,12 @@ export const CONSTRAINT_TYPE_ID = 'semantic-constraint';
 // The expression is the whole of the machine-readable content, so it is a
 // required field: a constraint entry without one states no invariant.
 //
-// The other two fields an author can write are the ones every model element
+// The other two things an author can write are the ones every model element
 // carries, and they land in different places. `description` rides the entry
 // source, the way an action's and a metric's do, because a violation quotes it
 // back to the caller as the error, which makes it the entry's human-readable
-// summary rather than part of the rule. `instructions` below is
-// `ai_context.instructions` -- the same blessed field an entity or a metric
-// declares, under the same authoring key -- and it is spelled `instructions`
-// here because that is what the built-in `guidelines` aspect calls it. It rides
-// this aspect instead of that one only because a pull hydrates aspect types
-// from the entry type's own project, where `guidelines` does not exist.
+// summary rather than part of the rule. `ai_context` rides this aspect whole
+// (see aiContextField).
 const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   displayName: 'Semantic Constraint',
   description:
@@ -239,18 +342,7 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               'expression language, for example `Customer.balance >= 0`.',
         },
       },
-      {
-        index: 2,
-        name: 'instructions',
-        type: 'string',
-        annotations: {
-          displayName: 'Instructions',
-          description:
-              'The constraint\'s `ai_context.instructions`: guidance for AI ' +
-              'consumers. Its human-readable summary rides the entry\'s own ' +
-              'description rather than this aspect.',
-        },
-      },
+      aiContextField(2),
     ],
   },
 };

@@ -293,11 +293,14 @@ ships, the entries move to it and their shape does not change. (This is the
 prototype scope — an action's `precondition` and `affects` are not modeled
 yet.)
 
-A **constraint** entry carries its expression, and its
-`ai_context.instructions`, in a `semantic-constraint` aspect; the constraint's
+A **constraint** entry carries its expression, and the whole of any
+`ai_context` declared on it, in a `semantic-constraint` aspect; the constraint's
 `description` is the entry's own summary, because that sentence is what a caller
 refused by the rule reads. Its type is provisioned alongside the action pair and
-for the same reason.
+for the same reason. All three parts of `ai_context` survive, unlike an element
+routed to the built-in `guidelines` aspect, which has a home for `instructions`
+alone: `kcmd` defines the constraint aspect itself, so it has no reason to keep
+that limit.
 
 Push to Knowledge Catalog is lossy — the catalog holds metadata, not a full copy
 of your model. For exactly what is stored, what is gated behind

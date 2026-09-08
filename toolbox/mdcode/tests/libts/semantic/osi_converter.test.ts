@@ -350,6 +350,10 @@ describe('golden OSI document: each corpus fixture serializes to its exact YAML'
              'sales_bq_graph_target.yaml',
              'star_orders_customer.yaml',
              'tpcds_date_edge.yaml',
+             // The only corpus fixture with actions and constraints, so it is
+             // the only golden showing the custom `semantic-action` and
+             // `semantic-constraint` types.
+             'actions_place_order.yaml',
            ];
            // Same load defaults as the KC e2e/pull goldens, so the OSI golden
            // and the pull golden are directly comparable.
