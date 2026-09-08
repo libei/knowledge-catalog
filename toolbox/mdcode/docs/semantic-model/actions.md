@@ -18,7 +18,7 @@ data is described. Anything reading the model then knows the operation exists,
 what it takes, and where it lives.
 
 Do not declare an action for a question about the data; that is a
-[metric](README.md#1-author-a-model). Do not expect an action to run: `kcmd`
+[metric](README.md#1-author-the-logical-model). Do not expect an action to run: `kcmd`
 publishes the declaration and never calls the executor. What each caller has to
 supply is covered in [What is not modeled yet](#what-is-not-modeled-yet).
 
@@ -153,7 +153,7 @@ aspects:
       - {name: source, type: Account, isEntityRef: true}
       - {name: target, type: Account, isEntityRef: true}
       - {name: amount, type: Float, isEntityRef: false}
-    instructions: Confirm the source account has cleared funds.
+    instructions: Resolve both accounts before calling. Name the account the money leaves as `source`.
 ```
 
 The `semantic-action` entry type and aspect type are the one pair `kcmd` creates

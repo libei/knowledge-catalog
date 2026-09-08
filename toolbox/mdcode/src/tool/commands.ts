@@ -231,6 +231,7 @@ export async function init(options: InitOptions): Promise<number> {
     // writes references types that already exist under `dataplex-types`.
     // kc_custom_types.ts is the list of what is custom.
     const provisioned = await provisionCustomTypes(catalog, source);
+    for (const w of provisioned.warnings ?? []) console.warn(`Warning: ${w}`);
     if (provisioned.error) {
       console.error(`Error: ${provisioned.error}`);
       return 1;
@@ -634,7 +635,12 @@ export async function push(options: PushOptions): Promise<number> {
           (mergeOnce(kcProfileName, true) ?? []).filter(d => !loadedDocs.has(d.name));
       if (rest.length) {
         const prepared = await prepareOnce(rest, kcProfileName, false);
-        for (const {model} of prepared?.models ?? []) {
+        // prepareModels has already printed why it failed. Ignoring that here
+        // would report a successful push over its own error output, and the
+        // same document fails the default push through the Knowledge Catalog
+        // leg, so --no-kc fails on it too.
+        if (!prepared) return 1;
+        for (const {model} of prepared.models) {
           if (model.actions?.length)
             actionCounts.set(model.name, model.actions.length);
         }

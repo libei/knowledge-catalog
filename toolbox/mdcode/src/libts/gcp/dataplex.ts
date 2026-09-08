@@ -319,10 +319,11 @@ export class CatalogClient extends api.ApiClient {
       delayMs = Math.min(delayMs * 2, 5000);
 
       const polled = await this.getOperation(op.name);
-      // A permanent failure to read the operation will not resolve itself, so
-      // report it rather than spend the whole timeout rediscovering it. A 5xx
-      // or a throttle is worth another attempt.
-      if (polled.status === 403 || polled.status === 404) {
+      // A client error will not resolve itself, so report it rather than spend
+      // the whole timeout rediscovering it and then blame the timeout. A 5xx or
+      // a throttle is worth another attempt.
+      if (polled.status >= 400 && polled.status < 500 &&
+          polled.status !== 429) {
         return `${what}: reading ${op.name}: ${polled.message || polled.status}`;
       }
       if (polled.status !== 200 || !polled.result) continue;

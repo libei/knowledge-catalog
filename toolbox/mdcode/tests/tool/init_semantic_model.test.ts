@@ -171,6 +171,35 @@ describe('init --semantic-model: entry-group provisioning', () => {
     expect(update.mock.calls[0][4]).toContain('metadata_template');
   });
 
+  test('a rejected template patch leaves the existing type and finishes init',
+       async () => {
+    spyOn(CatalogClient.prototype, 'createEntryGroup')
+        .mockImplementation(async () => ok({name: 'sales-group'}));
+    spyOn(CatalogClient.prototype, 'createAspectType')
+        .mockImplementation(async () => err(409, 'already exists'));
+    // What an OLDER kcmd sees against a project a newer one provisioned: its
+    // template lacks the newer fields, so the patch is a field removal and
+    // Dataplex refuses it.
+    spyOn(CatalogClient.prototype, 'updateAspectType')
+        .mockImplementation(
+            async () => err(400, 'backwards-incompatible template change'));
+    const entryType = spyOn(CatalogClient.prototype, 'createEntryType')
+                          .mockImplementation(async () => err(409, 'exists'));
+    const warned: string[] = [];
+    spyOn(console, 'warn').mockImplementation((...args: any[]) => {
+      warned.push(args.join(' '));
+    });
+
+    // The type already there is the one published entries depend on, so init
+    // reports the refusal and carries on rather than abandoning a workspace
+    // whose entry group it has already created.
+    expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
+    expect(entryType).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
+        .toBe(true);
+    expect(warned.some(m => m.includes('unchanged'))).toBe(true);
+  });
+
   test('init survives lacking permission to create the action types',
        async () => {
     spyOn(CatalogClient.prototype, 'createEntryGroup')

@@ -255,6 +255,8 @@ export function customAspectKey(id: string, dest: {project: string}): string {
 export interface ProvisionResult {
   error?: string;
   denied?: string;
+  // Problems that left an existing type as it was without stopping init.
+  warnings?: string[];
 }
 
 /**
@@ -272,11 +274,14 @@ export interface ProvisionResult {
  */
 export async function provisionCustomTypes(
     cat: CatalogClient, dest: {project: string}): Promise<ProvisionResult> {
+  const warnings: string[] = [];
   for (const type of CUSTOM_TYPES) {
     const result = await provisionOne(cat, dest, type);
-    if (result.error || result.denied) return result;
+    if (result.warnings) warnings.push(...result.warnings);
+    if (result.error || result.denied)
+      return {...result, warnings: warnings.length ? warnings : undefined};
   }
-  return {};
+  return warnings.length ? {warnings} : {};
 }
 
 // One custom type: its aspect type, then the entry type that requires it.
@@ -297,6 +302,7 @@ async function provisionOne(
       } :
       undefined;
 
+  const warnings: string[] = [];
   const aspectLabel = `aspect type '${type.id}'`;
   const aspect = await cat.createAspectType(
       home.project, home.location, type.id, type.aspectType);
@@ -306,11 +312,21 @@ async function provisionOne(
         ['description', 'display_name', 'metadata_template']);
     const refused = denial(aspectLabel, upd.status, upd.message);
     if (refused) return refused;
-    if (upd.status !== 200)
-      return {error: `updating ${aspectLabel}: ${upd.message || upd.status}`};
-    const failed =
+    // Patching an existing type forward is best effort. An older kcmd run
+    // against a project a newer one provisioned asks Dataplex to remove
+    // template fields, which it rejects, and the type already there is the one
+    // every published entry depends on. Leaving it alone and saying so beats
+    // aborting an init that has already created the entry group, and a push
+    // that needs a field the older template lacks reports that itself.
+    const reason = upd.status !== 200 ?
+        `${upd.message || upd.status}` :
         await cat.awaitOperation(upd.result, `updating ${aspectLabel}`);
-    if (failed) return {error: failed};
+    if (reason) {
+      warnings.push(
+          `left the existing ${aspectLabel} in project '${home.project}' ` +
+          `unchanged (${reason}); a push that needs a field it does not ` +
+          `carry will fail`);
+    }
   } else if (aspect.status !== 200) {
     const refused = denial(aspectLabel, aspect.status, aspect.message);
     if (refused) return refused;
@@ -336,11 +352,13 @@ async function provisionOne(
         ...type.entryType,
         requiredAspects: [{type: customAspectTypeName(type.id, dest)}],
       });
-  if (entryType.status === 409) return {};
+  const collected = warnings.length ? {warnings} : {};
+  if (entryType.status === 409) return collected;
   const refused = denial(entryLabel, entryType.status, entryType.message);
-  if (refused) return refused;
+  if (refused) return {...refused, ...collected};
   if (entryType.status !== 200) {
     return {
+      ...collected,
       error: `creating ${entryLabel}: ${entryType.message || entryType.status}`
     };
   }
@@ -348,5 +366,5 @@ async function provisionOne(
   // being created is rejected the same way, so wait here too.
   const failed =
       await cat.awaitOperation(entryType.result, `creating ${entryLabel}`);
-  return failed ? {error: failed} : {};
+  return failed ? {...collected, error: failed} : collected;
 }
