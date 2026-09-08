@@ -299,6 +299,19 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               'instructions).',
         },
       },
+      {
+        index: 10,
+        name: 'guards',
+        type: 'array',
+        arrayItems: {name: 'guard', type: 'string'},
+        annotations: {
+          displayName: 'Guards',
+          description:
+              'Names of the constraints that gate this action, each a ' +
+              '`semantic-constraint` entry on the same model. They are ' +
+              'checked before the action runs.',
+        },
+      },
     ],
   },
 };

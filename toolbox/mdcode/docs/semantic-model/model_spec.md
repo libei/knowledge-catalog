@@ -456,15 +456,20 @@ reads the document ([§6](#6-the-extension-mechanism)).
 - **`actions` (extended profile only).** Model-level write operations, the
   write-side counterpart to a metric. An action names an operation, points at the
   executor that performs it, and types each parameter against the ontology, so an
-  entity-typed parameter is an object reference. Accepted only under
-  `0.2.0.dev0/google`. `kcmd` publishes an action and never calls its executor.
-  See [Modeling write operations](actions.md).
+  entity-typed parameter is an object reference. Its optional `guards` lists, by
+  name, the constraints that gate it; each name MUST resolve to a constraint the
+  same model declares, and a repeated name is a **hard load error**. Accepted
+  only under `0.2.0.dev0/google`. `kcmd` publishes an action and never calls its
+  executor. See [Modeling write operations](actions.md).
 
 - **`constraints` (extended profile only).** Model-level named boolean
   invariants over the ontology, written in the same expression language as a
   metric — `Account.balance >= 0`. Accepted only under `0.2.0.dev0/google`.
-  Status: authored, validated and published; no component evaluates a constraint,
-  so nothing today rejects a write that would break one. Rules in
+  A constraint that quantifies over stored data applies to every write without
+  being referenced anywhere. A constraint that reads an action's parameters can
+  be checked only before that call, so it applies only where an action names it
+  in `guards`. Status: authored, validated and published; no component evaluates
+  a constraint, so nothing today rejects a write that would break one. Rules in
   [Reference → Validation](reference.md#validation).
 
 - **Binding profiles.** A separate document that supplies only the physical

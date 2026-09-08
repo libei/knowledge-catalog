@@ -305,9 +305,10 @@ export interface Metric {
  * `parameters`.
  *
  * The model contributes only what the ontology can say that a plain tool schema
- * cannot -- typed parameters (an entity-typed one is an object reference). The
- * mechanics of running it are delegated to an `executor` (e.g. an MCP tool in
- * Agent Registry); `description` is informational and does not affect runtime.
+ * cannot: typed parameters (an entity-typed one is an object reference) and the
+ * constraints that gate the call. The mechanics of running it are delegated to
+ * an `executor` (e.g. an MCP tool in Agent Registry); `description` is
+ * informational and does not affect runtime.
  */
 export interface Action {
   name: string;
@@ -319,6 +320,13 @@ export interface Action {
   // Inputs, each typed by the ontology: an entity type is an object reference,
   // a scalar type an ordinary value. See ActionParameter.
   parameters: ActionParameter[];
+  // The constraints that gate this action, by name. A constraint reaches this
+  // list only when it has to: one that reads an action's parameters describes
+  // the call rather than the data, so the only moment it can be checked is
+  // before that call runs. A constraint over data alone holds for every write
+  // and needs no reference here. Naming a constraint adds an earlier check and
+  // does not switch its enforcement on.
+  guards?: string[];
   aiContext?: AiContext;
   customExtensions?: CustomExtension[];
 }

@@ -92,14 +92,85 @@ Naming two is a parse error: `executor requires exactly one kind, but 2 given
 catalog. Write the instructions for the agent that will call the action, as
 above.
 
-## 2. Check it before pushing
+## 2. Gate it with a constraint
+
+A **constraint** is a named boolean invariant a model states over its ontology.
+One that quantifies over stored data holds for every write, whatever performed
+it, and needs no reference from anywhere:
+
+```yaml
+    constraints:
+      - name: BalanceStaysPositive
+        expression: Account.balance >= Account.minimumBalance
+        description: >-
+          An account cannot be taken below its minimum balance.
+```
+
+A constraint that reads an action's **parameters** is a different thing. It
+describes one call rather than the stored data, so the only moment it can be
+checked is before that call runs. Name it on the action, in `guards`:
+
+```yaml
+    constraints:
+      - name: AmountIsPositive
+        expression: amount > 0
+        description: >-
+          A transfer must move at least one unit. Ask the caller for the
+          amount again before retrying.
+    actions:
+      - name: TransferFunds
+        executor:
+          mcp:
+            server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/payments
+            tool: transfer_funds
+        parameters:
+          - { name: source, type: Account }
+          - { name: target, type: Account }
+          - { name: amount, type: Float }
+        guards: [AmountIsPositive]
+```
+
+`guards` holds constraint names. Each must name a constraint the same model
+declares; one that names nothing fails the push:
+
+```
+Error: action 'TransferFunds' in model 'payments' (payments.yaml) is guarded by
+'AmountIsPostive', but model 'payments' declares no constraint of that name.
+```
+
+Naming a constraint adds a check and does not switch its enforcement on. An
+invariant over stored data is in force whether or not an action names it, so
+`guards` earns its place for the constraints that would otherwise have no moment
+to run. Naming an invariant as a guard is still meaningful. It means refuse to
+act on data that is already broken, and it moves that check to before the call.
+
+The reference lives on the action rather than on the constraint. The same rule
+may gate `TransferFunds` and leave `CloseAccount` alone, so gating is a property
+of the pairing.
+
+A constraint that reads a parameter and that no action guards is text nothing
+will ever check, so `kcmd` reports it when it loads the model:
+
+```
+Warning: model 'payments': constraint 'AmountIsPositive' reads 'amount', a
+parameter of action 'TransferFunds', but 'TransferFunds' does not list
+'AmountIsPositive' in guards. A constraint over an action's parameters is
+checked only as a guard of that action.
+```
+
+**Status: nothing evaluates a guard yet.** `kcmd` parses `guards`, resolves each
+name, publishes the list, and reads it back. No component checks a guard against
+live data, so a guard today tells a reader and an agent what must hold before
+the call, and refuses nothing.
+
+## 3. Check it before pushing
 
 ```bash
 kcmd push --validate-only
 ```
 
-Two things about an action can be statically wrong once the document parses, and
-both are hard errors:
+Three things about an action can be statically wrong once the document parses,
+and all are hard errors:
 
 ```
 action 'TransferFunds' in model 'payments' (payments.yaml) has parameter
@@ -108,18 +179,22 @@ datatype.
 
 action 'TransferFunds' in model 'payments' (payments.yaml) has an mcp executor
 whose 'tool' is missing or blank.
+
+action 'TransferFunds' in model 'payments' (payments.yaml) is guarded by
+'AmountIsPostive', but model 'payments' declares no constraint of that name.
 ```
 
 A parameter type that resolves to neither an entity nor a scalar means the model
 cannot say what that argument denotes, which is the whole contribution an action
 makes. An executor missing a coordinate cannot be dispatched by whatever picks
-the action up. Both checks are static, so they run on every push whatever the
-destination.
+the action up. A guard that names no constraint leaves the author believing the
+write is checked when nothing checks it. All three checks are static, so they
+run on every push whatever the destination.
 
 An executor coordinate that is absent altogether is caught earlier, when the
 document is parsed, so the message above is what a blank one produces.
 
-## 3. Push it
+## 4. Push it
 
 ```bash
 kcmd push
@@ -175,15 +250,15 @@ Publishing an action needs the permission to attach its aspect, in addition to
 the permissions any push needs — see
 [Reference → Permissions](reference.md#permissions).
 
-## 4. Pull it back
+## 5. Pull it back
 
 ```bash
 kcmd pull
 ```
 
 Pull collects the `semantic-action` entries under the model entry and rebuilds
-each action, so a name, a description, an executor, typed parameters, and
-`ai_context.instructions` survive the round trip unchanged. `isEntityRef` is
+each action, so a name, a description, an executor, typed parameters, its
+`guards`, and `ai_context.instructions` survive the round trip unchanged. `isEntityRef` is
 re-derived against the entities the pull recovered rather than read back, so it
 stays consistent with the model you get. What every part of a model does and
 does not survive is in
@@ -194,13 +269,12 @@ does not survive is in
 This is a prototype. Four things a reader reasonably expects are absent, and
 knowing which they are decides how much you can lean on it.
 
-- **An action declares no precondition and no effects.** `precondition` (what
-  has to hold before the call) and `affects` (what the call changes) are out of
-  scope here. Model-level **constraints** state the invariants a model requires,
-  and no constraint is attached to an action.
-- **Nothing checks the write.** No component evaluates a constraint, so an action
-  is a declaration and the correctness of what the executor does belongs to the
-  executor.
+- **An action declares no effects.** `affects` — what the call changes — is out
+  of scope here. What must hold before the call does have a home: a constraint
+  the action names in [`guards`](#2-gate-it-with-a-constraint).
+- **Nothing checks the write.** No component evaluates a constraint or a guard,
+  so an action is a declaration and the correctness of what the executor does
+  belongs to the executor.
 - **`kcmd` does not call the executor.** Push publishes the action. Dispatching
   it is the job of whatever reads the model, which is why the executor names
   coordinates rather than a statement.

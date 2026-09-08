@@ -137,18 +137,22 @@ export function actionEntries(
   // collision that skipped an action does not inflate the number.
   if (entries.length) warnings.push(
       `model '${model.name}': ${entries.length} action(s) published as ` +
-      `${ACTION_TYPE_ID} entries (actions have no BigQuery Graph ` +
-      `representation).`);
+      `${ACTION_TYPE_ID} entries (Knowledge Catalog is the only system an ` +
+      `action reaches).`);
   return entries;
 }
 
 // The aspect payload for one action: the executor flattened to the fields of
-// its kind, the typed parameters, and any AI instructions.
+// its kind, the typed parameters, the constraints that gate it, and any AI
+// instructions. Guards are the constraint NAMES, matching the sibling
+// `semantic-constraint` entries by display name, so a reader holding one action
+// entry can find the rules it is checked against.
 function actionAspectData(action: Action): Record<string, any> {
   return compact({
     ...executorData(action.executor),
     parameters: action.parameters.map(
         p => compact({name: p.name, type: p.type, isEntityRef: p.isEntityRef})),
+    guards: action.guards?.length ? action.guards : undefined,
     instructions: action.aiContext?.instructions || undefined,
   });
 }
@@ -223,6 +227,12 @@ export function readAction(
           .filter((p): p is ActionParameter => p !== undefined);
 
   const action: Action = {name, executor, parameters};
+  // Guard names round-trip verbatim. A name whose constraint is not part of
+  // this pull is kept rather than dropped: push-side validate reports it, and
+  // dropping it here would silently rewrite the author's model.
+  const guards = asArray(data.guards).filter(
+      (g: any): g is string => typeof g === 'string' && g !== '');
+  if (guards.length) action.guards = guards;
   const description = entry.entrySource?.description;
   if (description !== undefined && description !== '')
     action.description = description;

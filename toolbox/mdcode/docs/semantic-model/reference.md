@@ -285,8 +285,11 @@ relationship detail — the paired columns and foreign-key direction — in its
 aspect. Any element with `ai_context.instructions` (the model, an entity, or a
 metric) also gets a built-in `guidelines` aspect holding that text.
 
-An **action** entry carries its executor and its typed parameters in a
-`semantic-action` aspect, along with the action's `ai_context.instructions`.
+An **action** entry carries its executor, its typed parameters, and the names
+of the constraints that gate it (`guards`) in a `semantic-action` aspect, along
+with the action's `ai_context.instructions`. A guard is stored as the constraint
+name, matching a sibling `semantic-constraint` entry on the same model, so a
+reader holding one action entry can find the rules it is checked against.
 That aspect type is provisioned in your project rather than referenced from
 `dataplex-types`, because Dataplex has no built-in action type yet; when one
 ships, the entries move to it and their shape does not change. (This is the
@@ -350,8 +353,11 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **Every action is well-formed.** Each action parameter's `type` must resolve to
   a known entity (an object reference) or a scalar datatype, and each executor
   must carry its coordinates (an `mcp` server + tool, a `rest` endpoint + method,
-  or a `grpc` service + method) with no blank field. (The "exactly one executor
-  kind" rule is enforced when the model is parsed.) These checks are static, so
+  or a `grpc` service + method) with no blank field. Each name in the action's
+  `guards` must resolve to a constraint the same model declares, because a guard
+  that resolves to nothing leaves the author believing the write is checked when
+  nothing checks it. (The "exactly one executor kind" rule, and the rejection of
+  a repeated guard, are both enforced when the model is parsed.) These checks are static, so
   they run on every push, regardless of destination. Note that actions themselves
   deploy **only** through the Knowledge Catalog leg — a graph-only `--no-kc` push
   validates them but has nowhere to put them, and warns that they will not be
@@ -365,6 +371,15 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   alone rather than guessed at, so a valid constraint is never falsely rejected.
   Like an action, a constraint reaches Knowledge Catalog only, and a `--no-kc`
   push warns that it will not be deployed. *(static)*
+* **A constraint over an action's parameters is guarded.** A constraint whose
+  expression reads a bare name that is a parameter of some action describes that
+  call rather than the stored data, so it can be checked only before the call
+  runs — which happens only when the action lists it in `guards`. Loading a model
+  where no action does warns, because such a constraint is text nothing will
+  evaluate. This is a warning rather than an error: the scan matches identifiers,
+  and an expression may use a bare name that merely coincides with a parameter
+  name. A qualified name (`OrderedAs.quantity`) is read whole and never counts as
+  a parameter. *(warning, at load)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
   exactly as the deploy will — a three-part `project.dataset.table`, a four-part

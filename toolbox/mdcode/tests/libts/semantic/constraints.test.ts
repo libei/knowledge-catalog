@@ -261,7 +261,7 @@ describe('validatePushRequirements gates constraints', () => {
 describe('OSI round trip', () => {
   test('constraints survive serialize -> reload', () => {
     const model = loadFixtureModel('actions_place_order.yaml');
-    expect(model.constraints).toHaveLength(2);
+    expect(model.constraints).toHaveLength(3);
     const {yaml} = serializeModel(model);
     expect(yaml).toContain('constraints:');
     const reloaded = loadModels(yaml).models[0];
@@ -294,6 +294,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
          expect(constraints.map(e => e.name.split('/entries/')[1])).toEqual([
            'sales.constraints.NonNegativeOrderTotal',
            'sales.constraints.PositiveQuantity',
+           'sales.constraints.RequestedQuantityIsPositive',
          ]);
          for (const e of constraints) expect(e.parentEntry).toBe(entries[0].name);
          // Author is warned constraints are catalog-only.
@@ -413,7 +414,8 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     broken.aspects![CONSTRAINT_ASPECT].data!.expression = '  ';
     const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].constraints!.map(c => c.name)).toEqual([
-      'NonNegativeOrderTotal'
+      'NonNegativeOrderTotal',
+      'RequestedQuantityIsPositive',
     ]);
     expect(warnings.some(
                w => w.includes("constraint 'PositiveQuantity'") &&
@@ -438,12 +440,12 @@ describe('a graph leg says what it dropped', () => {
   ] as const) {
     test(`the ${backend} leg warns about actions and constraints`, () => {
       const {warnings} = generate(model());
-      // The fixture declares one action and two constraints.
+      // The fixture declares one action and three constraints.
       expect(warnings.some(
                  w => /1 action\(s\) reach Knowledge Catalog only/.test(w)))
           .toBe(true);
       expect(warnings.some(
-                 w => /2 constraint\(s\) reach Knowledge Catalog only/.test(w)))
+                 w => /3 constraint\(s\) reach Knowledge Catalog only/.test(w)))
           .toBe(true);
       // Named the system it does reach, and the one that drops it.
       expect(warnings.some(w => w.includes(`the ${backend} push deploys none`)))

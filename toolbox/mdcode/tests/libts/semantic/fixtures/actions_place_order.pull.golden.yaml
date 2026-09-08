@@ -48,6 +48,8 @@ semantic_model:
             type: customer
           - name: quantity
             type: Integer
+        guards:
+          - RequestedQuantityIsPositive
         ai_context:
           instructions: Resolve the buyer to a customer before calling.
     constraints:
@@ -65,3 +67,7 @@ semantic_model:
       - name: PositiveQuantity
         expression: OrderedAs.quantity > 0
         description: An order line must be for at least one unit.
+      - name: RequestedQuantityIsPositive
+        expression: quantity > 0
+        description: A request must be for at least one unit. Ask the caller for the
+          quantity again before retrying.

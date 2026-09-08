@@ -117,11 +117,12 @@ export function validatePushRequirements(
       }
     }
 
-    // Actions have no BigQuery Graph representation, so their checks are
+    // An action reaches Knowledge Catalog only, so its checks are
     // target-independent: each parameter's type must resolve to something in
-    // the ontology, and the executor must carry the coordinates a runtime needs
-    // to dispatch it. (The "exactly one executor kind" rule is already
-    // guaranteed by the loader schema, so it cannot reach here.)
+    // the ontology, the executor must carry the coordinates a runtime needs to
+    // dispatch it, and each guard must name a constraint the model declares.
+    // (The "exactly one executor kind" rule is already guaranteed by the loader
+    // schema, so it cannot reach here.)
     errors.push(...validateActions(model, document));
 
     // Constraints are logical invariants, target-independent like actions.
@@ -132,15 +133,19 @@ export function validatePushRequirements(
 }
 
 // Static, target-independent checks for a model's actions. Returns one message
-// per violation. Two things can be statically wrong once the model has parsed:
+// per violation. Three things can be statically wrong once the model has
+// parsed:
 //   - a parameter's type resolves to neither a known entity nor a scalar
 //     datatype (the loader left isEntityRef unset and only warned) -- an
 //     unresolvable type is a malformed action, promoted to a hard error here;
 //   - an executor is missing a coordinate a runtime needs to dispatch it (an
 //     empty server/tool, endpoint/method, or service/method) -- the schema
-//     accepts empty strings, so this is caught here rather than at parse.
+//     accepts empty strings, so this is caught here rather than at parse;
+//   - a guard names a constraint the model does not declare.
 function validateActions(model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
+  const constraintNames =
+      new Set((model.constraints ?? []).map(c => c.name));
   for (const action of model.actions ?? []) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
@@ -153,6 +158,16 @@ function validateActions(model: SemanticModel, document: string): string[] {
     for (const missing of missingExecutorFields(action.executor)) {
       errors.push(`${where} has an ${
           action.executor.kind} executor whose '${missing}' is missing or blank.`);
+    }
+    // An unresolved guard leaves the author believing the write is checked when
+    // nothing checks it, so it fails the push rather than warning. Constraint
+    // names are model-scoped and the loader rejects duplicates, so a name
+    // either resolves here or names nothing at all.
+    for (const guard of action.guards ?? []) {
+      if (!constraintNames.has(guard)) {
+        errors.push(`${where} is guarded by '${guard}', but model '${
+            model.name}' declares no constraint of that name.`);
+      }
     }
   }
   return errors;

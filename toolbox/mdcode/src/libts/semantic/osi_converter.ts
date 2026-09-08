@@ -292,6 +292,7 @@ function actionDoc(action: Action, warnings: string[]): Record<string, any> {
     executor: executorDoc(action.executor),
     parameters: nonEmpty(
         (action.parameters ?? []).map(p => ({name: p.name, type: p.type}))),
+    guards: nonEmpty(action.guards),
     ai_context: aiContextDoc(action.aiContext),
   });
 }

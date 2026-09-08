@@ -122,8 +122,8 @@ export function constraintEntries(
   if (entries.length)
     warnings.push(
         `model '${model.name}': ${entries.length} constraint(s) published as ` +
-        `${CONSTRAINT_TYPE_ID} entries (constraints have no BigQuery Graph ` +
-        `representation).`);
+        `${CONSTRAINT_TYPE_ID} entries (Knowledge Catalog is the only ` +
+        `system a constraint reaches).`);
   return entries;
 }
 

@@ -4,15 +4,19 @@
 # counterpart to a metric, and the CONSTRAINTS that gate it. PlaceOrder carries
 # an MCP executor (a tool in Agent Registry) and ontology-typed parameters: an
 # entity-typed one (`customer`, an object reference to the customer entity) and
-# scalar ones. Per-action preconditions and affects are out of scope for this
-# prototype; the gate here is model-level. The model also names a BigQuery
-# deployment target, so a push exercises the leg that deploys neither an action
-# nor a constraint.
+# scalar ones. The model also names a BigQuery deployment target, so a push
+# exercises the leg that deploys neither an action nor a constraint.
 #
-# The two constraints cover both validation paths. NonNegativeOrderTotal opens
+# The three constraints cover every validation path. NonNegativeOrderTotal opens
 # with a KNOWN entity, so its field is checked. PositiveQuantity opens with
 # `OrderedAs`, which is no entity, so it is left to the evaluator rather than
-# falsely rejected.
+# falsely rejected. RequestedQuantityIsPositive reads the action's `quantity`
+# parameter, so PlaceOrder names it in `guards`.
+#
+# Those last two are one business rule in its two bindings. The invariant holds
+# over stored order lines, whatever wrote them. The guard holds over the
+# argument a caller passed, and can be checked only before the call runs, which
+# is why a guard has to be named by the action and an invariant does not.
 #
 # They also cover both annotation shapes, which land in different places.
 # NonNegativeOrderTotal declares a full `ai_context` beside its description --
@@ -83,6 +87,7 @@ semantic_model:
         parameters:
           - {name: customer, type: customer}
           - {name: quantity, type: Integer}
+        guards: [RequestedQuantityIsPositive]
         ai_context:
           instructions: "Resolve the buyer to a customer before calling."
     constraints:
@@ -99,3 +104,8 @@ semantic_model:
       - name: PositiveQuantity
         expression: OrderedAs.quantity > 0
         description: An order line must be for at least one unit.
+      - name: RequestedQuantityIsPositive
+        expression: quantity > 0
+        description: >-
+          A request must be for at least one unit. Ask the caller for the
+          quantity again before retrying.

@@ -152,6 +152,9 @@
                 "isEntityRef": false
               }
             ],
+            "guards": [
+              "RequestedQuantityIsPositive"
+            ],
             "instructions": "Resolve the buyer to a customer before calling."
           }
         }
@@ -200,6 +203,23 @@
           }
         }
       }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.RequestedQuantityIsPositive",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "RequestedQuantityIsPositive",
+        "description": "A request must be for at least one unit. Ask the caller for the quantity again before retrying."
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-constraint": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
+          "data": {
+            "expression": "quantity > 0"
+          }
+        }
+      }
     }
   ],
   "entryLinks": [
@@ -245,8 +265,8 @@
     }
   ],
   "warnings": [
-    "model 'sales': 1 action(s) published as semantic-action entries (actions have no BigQuery Graph representation).",
-    "model 'sales': 2 constraint(s) published as semantic-constraint entries (constraints have no BigQuery Graph representation).",
+    "model 'sales': 1 action(s) published as semantic-action entries (Knowledge Catalog is the only system an action reaches).",
+    "model 'sales': 3 constraint(s) published as semantic-constraint entries (Knowledge Catalog is the only system a constraint reaches).",
     "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
   ]
 }
