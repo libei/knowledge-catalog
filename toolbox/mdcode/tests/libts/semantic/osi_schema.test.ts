@@ -159,6 +159,31 @@ function onlyActionsExtension(errors: typeof validate.errors): boolean {
         /\/semantic_model\/\d+$/.test(e.instancePath));
 }
 
+// A many-to-many `association` block is the other deliberate SUPERSET of
+// released Apache OSI. The released schema knows only the direct foreign-key
+// edge, so a junction-backed relationship trips it twice: `association` is an
+// additional property, and the `from_columns`/`to_columns` it required are
+// absent -- correctly, because a many-to-many edge has none of its own. We
+// tolerate EXACTLY those three errors on a /relationships/<n> path and nothing
+// else. When upstream OSI adopts a junction-table syntax, re-vendoring the
+// schema makes this pass with no special-casing.
+function onlyAssociationExtension(errors: typeof validate.errors): boolean {
+  const missingOk = new Set(['from_columns', 'to_columns']);
+  return !!errors && errors.length > 0 &&
+    errors.every(e => {
+      if (!/\/relationships\/\d+$/.test(e.instancePath)) return false;
+      if (e.keyword === 'required') {
+        return missingOk.has(
+          (e.params as {missingProperty?: string}).missingProperty ?? '');
+      }
+      if (e.keyword === 'additionalProperties') {
+        return (e.params as {additionalProperty?: string})
+          .additionalProperty === 'association';
+      }
+      return false;
+    });
+}
+
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {
     expect(fixtures.length).toBeGreaterThan(0);
@@ -199,6 +224,12 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
         // fails.
         if (rel.startsWith('actions_') &&
             onlyActionsExtension(validate.errors)) {
+          return;
+        }
+        // A junction-backed relationship is a deliberate superset too; tolerate
+        // exactly its three errors, and only on the fixture that carries one.
+        if (rel === 'school_manytomany.yaml' &&
+            onlyAssociationExtension(validate.errors)) {
           return;
         }
         const details = (validate.errors ?? [])

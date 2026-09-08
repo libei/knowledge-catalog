@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AiContext, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, ActionParameter, AiContext, Association, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface LoadOptions {
@@ -150,10 +150,71 @@ const datasetBase = z.object({
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
 
+// The shape rules a relationship must satisfy under either version, shared by
+// the base shape above and the strict per-load schemas in buildDocumentSchema
+// so the two cannot drift.
+//
+// A direct foreign key binds the edge with the endpoints' own columns; a
+// junction table binds it with the junction's. They are alternatives, so a
+// relationship carries one set or the other, never both and never half of one.
+function refineRelationship(
+    r: {name: string; from_columns?: string[]; to_columns?: string[];
+        association?: unknown},
+    ctx: z.RefinementCtx) {
+  if (r.association !== undefined &&
+      (r.from_columns !== undefined || r.to_columns !== undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `relationship '${r.name}': a many-to-many edge is bound by its ` +
+          `association's from_columns/to_columns (columns on the junction ` +
+          `table), so the relationship's own from_columns/to_columns must be ` +
+          `removed -- neither endpoint holds a foreign key.`,
+    });
+    return;
+  }
+  if ((r.from_columns === undefined) !== (r.to_columns === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `relationship '${
+                   r.name}': from_columns and to_columns must be given ` +
+          `together (both bind the edge) or both omitted (a logical edge); one ` +
+          `without the other is a half-bound join.`,
+    });
+  }
+}
+
+// The junction table backing a MANY-TO-MANY relationship (GOOGLE_VERSION
+// only; see Association in ./ir).
+//
+// A many-to-many link cannot be a foreign key: an FK column holds one value and
+// so references at most one row. The pairs live in a table of their own
+// instead, one row per (from, to) -- an `enrollment` row per (student, course).
+// That table is what `source` names.
+//
+// The `from_columns`/`to_columns` HERE are columns on the JUNCTION table, each
+// referencing the corresponding endpoint entity's declared key. That is why the
+// relationship's own `from_columns`/`to_columns` must be absent when this block
+// is present: neither endpoint holds a foreign key.
+const associationSchema = z.object({
+  source: z.string(),
+  // The edge's own key on the junction table. Optional: when omitted the
+  // generators key the edge by its two endpoint column lists, deduplicated.
+  keys: z.array(z.string()).min(1).optional(),
+  from_columns: z.array(z.string()).min(1),
+  to_columns: z.array(z.string()).min(1),
+  // Properties of the pairing itself -- an enrollment's grade. Same shape as an
+  // entity's fields.
+  fields: z.array(fieldBase).optional(),
+});
+
 const relationshipSchema = z.object({
                               name: z.string(),
                               from: z.string(),
                               to: z.string(),
+                              // Present only on a many-to-many edge, which is
+                              // backed by a junction table rather than by a
+                              // foreign key (GOOGLE_VERSION only).
+                              association: associationSchema.optional(),
                               // Join columns are the physical binding of the
                               // edge and are OPTIONAL, so a purely logical
                               // relationship (an ontology edge, direction only)
@@ -170,15 +231,7 @@ const relationshipSchema = z.object({
                               custom_extensions:
                                   z.array(customExtensionSchema).optional(),
                             }).superRefine((r, ctx) => {
-  if ((r.from_columns === undefined) !== (r.to_columns === undefined)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `relationship '${
-                   r.name}': from_columns and to_columns must be given ` +
-          `together (both bind the edge) or both omitted (a logical edge); one ` +
-          `without the other is a half-bound join.`,
-    });
-  }
+  refineRelationship(r, ctx);
 });
 
 const metricSchema = z.object({
@@ -348,6 +401,27 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
             // either `bindingOptional`.
           });
 
+  // A field inside an association is the same shape as an entity's, minus the
+  // extension carrier the version does not allow.
+  const associationField = z.object({
+                              name: z.string(),
+                              expression: expressionSchema.optional(),
+                              datatype: z.enum(DATA_TYPES).optional(),
+                              description: z.string().optional(),
+                              label: z.string().optional(),
+                              dimension: dimensionSchema.optional(),
+                              ai_context: aiContextSchema.optional(),
+                              ...ce,
+                            }).strict();
+
+  const association = z.object({
+                         source: z.string(),
+                         keys: z.array(z.string()).min(1).optional(),
+                         from_columns: z.array(z.string()).min(1),
+                         to_columns: z.array(z.string()).min(1),
+                         fields: z.array(associationField).optional(),
+                       }).strict();
+
   const relationship =
       z.object({
          name: z.string(),
@@ -358,20 +432,15 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          description: z.string().optional(),
          ai_context: aiContextSchema.optional(),
          ...ce,
+         // Many-to-many is a native extension: vanilla Ossie has no
+         // junction-table syntax and no `custom_extensions` encoding for one,
+         // so under OSSIE_VERSION the key is rejected as unknown rather than
+         // silently dropped.
+         ...(extended ? {association: association.optional()} : {}),
        })
           .strict()
           .superRefine((r, ctx) => {
-            if ((r.from_columns === undefined) !==
-                (r.to_columns === undefined)) {
-              ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                message:
-                    `relationship '${
-                        r.name}': from_columns and to_columns must be given ` +
-                    `together (both bind the edge) or both omitted (a logical edge); one ` +
-                    `without the other is a half-bound join.`,
-              });
-            }
+            refineRelationship(r, ctx);
           });
 
   const metric =
@@ -449,6 +518,7 @@ type ExpressionDoc = z.infer<typeof expressionSchema>;
 type DatasetDoc = z.infer<typeof datasetBase>;
 type FieldDoc = z.infer<typeof fieldBase>;
 type RelationshipDoc = z.infer<typeof relationshipSchema>;
+type AssociationDoc = z.infer<typeof associationSchema>;
 type MetricDoc = z.infer<typeof metricSchema>;
 type ModelDoc = z.infer<typeof modelBase>;
 type ActionDoc = z.infer<typeof actionSchema>;
@@ -662,7 +732,10 @@ function convertModel(
   const entityNameSet = new Set(entityNames);
 
   const relationships =
-      (m.relationships ?? []).map(r => convertRelationship(r, entityNameSet));
+      (m.relationships ?? [])
+          .map(
+              r => convertRelationship(
+                  r, entityNameSet, opts, warnings, dialect));
   rejectDuplicateNames(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`);
 
@@ -785,7 +858,8 @@ function convertField(
 // column arity) is a hard error, not a warning: the resulting edge would be
 // structurally invalid.
 function convertRelationship(
-    r: RelationshipDoc, entityNames: Set<string>): Relationship {
+    r: RelationshipDoc, entityNames: Set<string>, opts: LoadOptions,
+    warnings: string[], dialect: string): Relationship {
   const ctx = `relationship '${r.name}'`;
   if (!entityNames.has(r.from)) {
     throw new Error(
@@ -810,6 +884,10 @@ function convertRelationship(
     source: {entity: r.from, columns: fromColumns},
     destination: {entity: r.to, columns: toColumns},
   };
+  if (r.association) {
+    relationship.association =
+        convertAssociation(r.association, r.name, opts, warnings, dialect);
+  }
   const description = composeDescription(r.description);
   if (description) relationship.description = description;
   const ai = aiContextOrUndefined(r.ai_context);
@@ -817,6 +895,34 @@ function convertRelationship(
   const ce = toCustomExtensions(r.custom_extensions);
   if (ce) relationship.customExtensions = ce;
   return relationship;
+}
+
+// Maps the junction-table block of a many-to-many relationship onto the IR's
+// Association.
+//
+// `keys` is the edge's own key. The format leaves it optional because the pair
+// of endpoint column lists is already unique in the common case, so when it is
+// omitted the key is those two lists concatenated and deduplicated -- the same
+// default the BigQuery and Spanner generators would otherwise have to invent
+// separately. Give it explicitly when the junction has a surrogate key, or when
+// a pair may legitimately repeat (an enrollment per term).
+function convertAssociation(
+    a: AssociationDoc, relName: string, opts: LoadOptions, warnings: string[],
+    dialect: string): Association {
+  const ctxLabel = `relationship '${relName}' association`;
+  const fields =
+      (a.fields ?? []).map(f => convertField(f, relName, warnings, dialect));
+  rejectDuplicateNames(fields.map(f => f.name), 'field name', ctxLabel);
+
+  const keys = a.keys ?? [...new Set([...a.from_columns, ...a.to_columns])];
+  const association: Association = {
+    dataSource: parseSource(a.source, opts, warnings, ctxLabel),
+    keys,
+    sourceColumns: a.from_columns,
+    destinationColumns: a.to_columns,
+  };
+  if (fields.length) association.fields = fields;
+  return association;
 }
 
 function convertMetric(

@@ -250,8 +250,9 @@ export interface RelationshipEnd {
  * OWN key (`keys`) and may carry edge `fields` (properties of the association
  * itself, e.g. an enrollment's grade). Each side names the columns ON THE
  * JUNCTION TABLE that reference the corresponding endpoint entity's declared
- * `keys`. The open format has no association-table syntax yet, so this is
- * produced by hand-built IR (or a future format extension), not the loader.
+ * `keys`. Authored as the `association` block on a relationship, which is a
+ * native key of the extended profile ('0.2.0.dev0/google') only -- vanilla
+ * Ossie has no junction-table syntax. See loader.associationSchema.
  */
 export interface Association {
   dataSource: string;            // the junction table backing the edge

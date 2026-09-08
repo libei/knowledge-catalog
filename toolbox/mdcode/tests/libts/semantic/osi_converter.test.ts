@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 import {Field, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
-import {loadModels} from '../../../src/libts/semantic/loader';
+import {fromDocument, loadModels} from '../../../src/libts/semantic/loader';
 import {modelDocument, serializeModel} from '../../../src/libts/semantic/osi_converter';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -187,49 +187,54 @@ describe('expression + datatype + dimension mapping', () => {
 });
 
 
-describe('lossy edges are flagged', () => {
-  test(
-      'an association relationship warns and drops the junction detail', () => {
-        const rel: Relationship = {
-          name: 'enrollment',
-          source: {entity: 'student', columns: ['id']},
-          destination: {entity: 'course', columns: ['id']},
-          association: {
-            dataSource: 'p.d.enrollment',
-            keys: ['student_id', 'course_id'],
-            sourceColumns: ['student_id'],
-            destinationColumns: ['course_id'],
-          },
-        };
-        const model: SemanticModel = {
-          name: 'school',
-          entities: [
-            {
-              name: 'student',
-              dataSource: 'p.d.student',
-              keys: ['id'],
-              fields: []
-            },
-            {
-              name: 'course',
-              dataSource: 'p.d.course',
-              keys: ['id'],
-              fields: []
-            },
-          ],
-          relationships: [rel],
-          metrics: [],
-        };
-        const {yaml: text, warnings} = serializeModel(model);
-        expect(warnings.some(w => /association/i.test(w))).toBe(true);
-        // The direct-FK view is still emitted (from/to + columns), so it
-        // reloads.
-        const relDoc = yaml.parse(text).semantic_model[0].relationships[0];
-        expect(relDoc.from).toBe('student');
-        expect(relDoc.to).toBe('course');
-        expect(relDoc.from_columns).toEqual(['id']);
-      });
+describe('many-to-many relationships', () => {
+  test('an association round-trips whole', () => {
+    const rel: Relationship = {
+      name: 'enrollment',
+      source: {entity: 'student', columns: []},
+      destination: {entity: 'course', columns: []},
+      association: {
+        dataSource: 'p.d.enrollment',
+        keys: ['student_id', 'course_id'],
+        sourceColumns: ['student_id'],
+        destinationColumns: ['course_id'],
+        fields: [{name: 'grade', expression: 'grade', type: 'String'}],
+      },
+    };
+    const model: SemanticModel = {
+      name: 'school',
+      entities: [
+        {name: 'student', dataSource: 'p.d.student', keys: ['id'], fields: []},
+        {name: 'course', dataSource: 'p.d.course', keys: ['id'], fields: []},
+      ],
+      relationships: [rel],
+      metrics: [],
+    };
+    const {yaml: text, warnings} = serializeModel(model);
+    expect(warnings.some(w => /association/i.test(w))).toBe(false);
 
+    // The junction detail is a native key now, so it survives serialization
+    // instead of collapsing to a direct-FK view.
+    const relDoc = yaml.parse(text).semantic_model[0].relationships[0];
+    expect(relDoc.from).toBe('student');
+    expect(relDoc.to).toBe('course');
+    // A many-to-many edge carries no join columns of its own; the columns that
+    // bind it are on the junction table.
+    expect(relDoc.from_columns).toBeUndefined();
+    expect(relDoc.to_columns).toBeUndefined();
+    expect(relDoc.association.source).toBe('p.d.enrollment');
+    expect(relDoc.association.keys).toEqual(['student_id', 'course_id']);
+    expect(relDoc.association.from_columns).toEqual(['student_id']);
+    expect(relDoc.association.to_columns).toEqual(['course_id']);
+    expect(relDoc.association.fields[0].name).toBe('grade');
+
+    // And it reloads into the same IR.
+    const reloaded = fromDocument(yaml.parse(text)).models[0];
+    expect(reloaded.relationships[0].association).toEqual(rel.association!);
+  });
+});
+
+describe('lossy edges are flagged', () => {
   test('a non-GOOGLE vendor extension is dropped with a warning', () => {
     // The extended ('/google') profile has no custom_extensions carrier, so a
     // non-deployment-target vendor extension has no representation and is

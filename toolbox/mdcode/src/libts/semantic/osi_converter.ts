@@ -36,13 +36,13 @@
 // any other vendor extension on the IR is dropped with a warning (its carrier's
 // fate under '/google' is still open). See serialize.test.ts.
 //
-// An `association` (junction-table) relationship has no open-format syntax (the
-// loader cannot produce one), so only its direct foreign-key view (from/to +
-// columns) is serialized; the junction detail is dropped with a note.
+// A many-to-many relationship round-trips whole: its `association` block is a
+// native key of the extended profile, so the junction table, the edge's key,
+// the junction-side columns and the edge properties are all written back.
 
 import * as yaml from 'yaml';
 
-import {Action, AiContext, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, AiContext, Association, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -194,7 +194,8 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     deployment_target: deploymentTarget,
     entities: datasets,
     relationships: nonEmpty(
-        (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
+        (model.relationships ?? [])
+            .map(r => relationshipDoc(r, warnings, logical))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
     actions:
         nonEmpty((model.actions ?? []).map(a => actionDoc(a, warnings))),
@@ -308,27 +309,43 @@ function executorDoc(ex: Executor): Record<string, any> {
 }
 
 // Inverts loader.convertRelationship: `from`/`to` are the endpoint entities and
-// `from_columns`/`to_columns` are their positional join columns. An association
-// (junction-table) edge has no open-format syntax, so only this direct-FK view
-// is emitted and the junction detail is flagged.
+// `from_columns`/`to_columns` are their positional join columns. A many-to-many
+// edge instead carries an `association` block and, per the format, no join
+// columns of its own -- the columns that bind it are on the junction table.
 function relationshipDoc(
-    rel: Relationship, warnings: string[]): Record<string, any> {
-  if (rel.association) {
-    warnings.push(
-        `relationship '${
-            rel.name}': association (junction-table) detail has no ` +
-        `open-format representation and is not serialized; only its foreign-key ` +
-        `endpoints are written.`);
-  }
+    rel: Relationship, warnings: string[],
+    logical: boolean): Record<string, any> {
   dropExtensions(rel.customExtensions, `relationship '${rel.name}'`, warnings);
+  const association = rel.association ?
+      associationDoc(rel.association, rel.name, warnings, logical) :
+      undefined;
   return compact({
     name: rel.name,
     from: rel.source.entity,
     to: rel.destination.entity,
-    from_columns: nonEmpty(rel.source.columns),
-    to_columns: nonEmpty(rel.destination.columns),
+    from_columns: association ? undefined : nonEmpty(rel.source.columns),
+    to_columns: association ? undefined : nonEmpty(rel.destination.columns),
+    association,
     description: rel.description,
     ai_context: aiContextDoc(rel.aiContext),
+  });
+}
+
+// Inverts loader.convertAssociation. `keys` is always written even though the
+// format lets it be omitted: the loader's default is derived from the two
+// column lists, and re-deriving it on the way out would silently rewrite an
+// edge whose authored key differed from that default.
+function associationDoc(
+    assoc: Association, relName: string, warnings: string[],
+    logical: boolean): Record<string, any> {
+  return compact({
+    source: assoc.dataSource,
+    keys: nonEmpty(assoc.keys),
+    from_columns: nonEmpty(assoc.sourceColumns),
+    to_columns: nonEmpty(assoc.destinationColumns),
+    fields: nonEmpty(
+        (assoc.fields ?? [])
+            .map(f => fieldDoc(f, warnings, logical))),
   });
 }
 

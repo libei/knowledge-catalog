@@ -290,6 +290,101 @@ describe('relationships map onto the direct-FK IR convention', () => {
   });
 });
 
+describe('a many-to-many relationship is bound by its association', () => {
+  // Two datasets plus one relationship, so each case below only has to supply
+  // the relationship body under test.
+  const school = (relationship: object, version = '0.2.0.dev0/google') =>
+    fromDocument({ version,
+      semantic_model: [{
+        name: 'school',
+        datasets: [
+          { name: 'students', source: 'students', primary_key: ['id'], fields: [] },
+          { name: 'courses', source: 'courses', primary_key: ['id'], fields: [] },
+        ],
+        relationships: [{ name: 'enrollment', from: 'students', to: 'courses', ...relationship }],
+      }],
+    });
+
+  const full = {
+    association: {
+      source: 'enrollment',
+      keys: ['enrollment_id'],
+      from_columns: ['student_id'],
+      to_columns: ['course_id'],
+      fields: [{ name: 'grade', expression: 'enrollment.grade' }],
+    },
+  };
+
+  test('the junction table, its key, and the endpoint columns land on the IR', () => {
+    const rel = school(full).models[0].relationships[0];
+    expect(rel.association).toEqual({
+      // `source` is qualified like any other table binding.
+      dataSource: 'enrollment',
+      keys: ['enrollment_id'],
+      // from/to on the association are columns ON THE JUNCTION, so they map to
+      // the IR's sourceColumns/destinationColumns rather than to the endpoints.
+      sourceColumns: ['student_id'],
+      destinationColumns: ['course_id'],
+      fields: [{ name: 'grade', expression: 'enrollment.grade' }],
+    });
+  });
+
+  test('neither endpoint carries join columns: no foreign key exists', () => {
+    const rel = school(full).models[0].relationships[0];
+    expect(rel.source).toEqual({ entity: 'students', columns: [] });
+    expect(rel.destination).toEqual({ entity: 'courses', columns: [] });
+  });
+
+  test('an omitted key defaults to the two column lists, deduplicated', () => {
+    const rel = school({
+      association: {
+        source: 'enrollment',
+        from_columns: ['student_id'],
+        to_columns: ['course_id'],
+      },
+    }).models[0].relationships[0];
+    expect(rel.association!.keys).toEqual(['student_id', 'course_id']);
+  });
+
+  test('a column shared by both endpoints appears once in the default key', () => {
+    const rel = school({
+      association: { source: 'j', from_columns: ['a', 'b'], to_columns: ['b', 'c'] },
+    }).models[0].relationships[0];
+    expect(rel.association!.keys).toEqual(['a', 'b', 'c']);
+  });
+
+  test('the endpoint column lists need not be the same length', () => {
+    // They reference two different entities' keys, so a composite key on one
+    // side and a single column on the other is a valid junction -- unlike a
+    // direct foreign key, whose two lists pair up positionally.
+    const rel = school({
+      association: { source: 'j', from_columns: ['a', 'b'], to_columns: ['c'] },
+    }).models[0].relationships[0];
+    expect(rel.association!.sourceColumns).toEqual(['a', 'b']);
+    expect(rel.association!.destinationColumns).toEqual(['c']);
+  });
+
+  test('an association alongside the relationship\'s own join columns is a hard error', () => {
+    // The two are alternative bindings. Accepting both would leave it undefined
+    // which one the graph is built from.
+    expect(() => school({ ...full, from_columns: ['id'], to_columns: ['id'] }))
+      .toThrow(/must be removed/);
+  });
+
+  test('an association with only one endpoint column list is a hard error', () => {
+    expect(() => school({
+      association: { source: 'enrollment', from_columns: ['student_id'] },
+    })).toThrow();
+  });
+
+  test('vanilla Ossie rejects the association key', () => {
+    // Many-to-many is a native extension of the extended profile; vanilla
+    // Ossie has no junction-table syntax and no carrier for one, so the key is
+    // unknown rather than silently dropped.
+    expect(() => school(full, '0.2.0.dev0')).toThrow(/association/);
+  });
+});
+
 describe('abstract datasets and their source constraint', () => {
   test('a non-abstract dataset with no source is a hard error', () => {
     expect(() => fromDocument({ version: '0.2.0.dev0',

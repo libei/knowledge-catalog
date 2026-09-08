@@ -409,6 +409,12 @@ function firstUnboundReferenced(
 
 // The first join field of a relationship that is unbound on its own end, or
 // null when both ends' join columns are bound.
+//
+// A many-to-many edge has no columns on either end -- the columns that bind it
+// are on its junction table, which a profile does not reach -- so it is never
+// dropped here. It still falls with an endpoint: unbinding an entity's key
+// makes that entity unavailable, and the loop above drops every edge touching
+// it.
 function unboundJoinField(r: Relationship, unbound: Set<string>): string|null {
   for (const c of r.source?.columns ?? []) {
     const key = `${r.source.entity}.${c}`;

@@ -48,71 +48,26 @@ const GEN_OPTS: GenerateOptions = {
 };
 
 
-describe(
-    'M:N association edge (no association-table syntax in the open format yet)',
-    () => {
-      // Hand-built because the loader's relationship schema is direct-FK only
-      // (from/to/columns) — it cannot express an edge backed by its own
-      // association table with its own KEY and edge properties. The expected
-      // DDL is a committed golden file
-      // (`school_manytomany.bigquery.golden.sql`) so the output stays
-      // reviewable as text; these exact strings were run against a live
-      // BigQuery instance and traversed with a GQL MATCH.
-      const SCHOOL: SemanticModel = {
-        name: 'school_graph',
-        entities: [
-          {
-            name: 'students',
-            dataSource: 'sqlgen-testing.bei_semantic_ir_verify.students',
-            keys: ['student_id'],
-            fields: [
-              {name: 'student_id', expression: 'students.student_id'},
-              {name: 'name', expression: 'students.name'}
-            ]
-          },
-          {
-            name: 'courses',
-            dataSource: 'sqlgen-testing.bei_semantic_ir_verify.courses',
-            keys: ['course_id'],
-            fields: [
-              {name: 'course_id', expression: 'courses.course_id'},
-              {name: 'title', expression: 'courses.title'}
-            ]
-          },
-        ],
-        relationships: [
-          {
-            name: 'enrollment',
-            source: {entity: 'students', columns: ['student_id']},
-            destination: {entity: 'courses', columns: ['course_id']},
-            association: {
-              dataSource: 'sqlgen-testing.bei_semantic_ir_verify.enrollment',
-              keys: ['enrollment_id'],
-              sourceColumns: ['student_id'],
-              destinationColumns: ['course_id'],
-              fields: [{
-                name: 'grade',
-                expression: 'enrollment.grade',
-                description: 'Letter grade'
-              }]
-            }
-          },
-        ],
-        metrics: [],
-      };
-      const SCHOOL_OPTS: GenerateOptions = {
-        project: 'sqlgen-testing',
-        dataset: 'bei_semantic_ir_verify'
-      };
+describe('M:N association edge', () => {
+  // Loaded from `school_manytomany.yaml`, which authors the junction table with
+  // the extended profile's `association` block, so this covers the whole path
+  // from the format to the DDL. The expected DDL is a committed golden file
+  // (`school_manytomany.bigquery.golden.sql`) so the output stays reviewable as
+  // text; these exact strings were run against a live BigQuery instance and
+  // traversed with a GQL MATCH.
+  const SCHOOL = loadFixture('school_manytomany.yaml');
+  const SCHOOL_OPTS: GenerateOptions = {
+    project: 'sqlgen-testing',
+    dataset: 'bei_semantic_ir_verify'
+  };
 
-      test('the association graph matches its committed golden DDL', () => {
-        const {ddl} = generatePropertyGraph(SCHOOL, SCHOOL_OPTS);
-        const golden = fs.readFileSync(
-            path.join(FIXTURES, 'school_manytomany.bigquery.golden.sql'),
-            'utf8');
-        expect(ddl).toBe(golden);
-      });
-    });
+  test('the association graph matches its committed golden DDL', () => {
+    const {ddl} = generatePropertyGraph(SCHOOL, SCHOOL_OPTS);
+    const golden = fs.readFileSync(
+        path.join(FIXTURES, 'school_manytomany.bigquery.golden.sql'), 'utf8');
+    expect(ddl).toBe(golden);
+  });
+});
 
 
 describe('IR-contract metric cases the loader cannot produce', () => {
