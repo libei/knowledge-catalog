@@ -6,7 +6,8 @@ changes state, declared over the same concepts as everything else in the model.
 
 An action does not contain the write. It names the operation, points at the
 **executor** that performs it — an MCP tool, a REST endpoint, a gRPC method —
-and types the operation's inputs against the ontology. Publishing it puts the
+types the operation's inputs against the ontology, and says which concepts the
+call changes. Publishing it puts the
 operation in the same place as the data it acts on, so an agent that discovers
 the model discovers what it can do as well as what it can ask.
 
@@ -45,6 +46,13 @@ semantic_model:
         fields:
           - { name: transferId, datatype: Integer, expression: transfer_id }
           - { name: amount,     datatype: Float,   expression: amount }
+          - { name: debitedId,  datatype: Integer, expression: debited_account_id }
+    relationships:
+      - name: TransferDebits
+        from: Transfer
+        to: Account
+        from_columns: [debitedId]
+        to_columns: [accountId]
     actions:
       - name: TransferFunds
         description: Move money from one account to another.
@@ -146,13 +154,75 @@ warning, because nothing will ever evaluate it.
 name, publishes the list, and reads it back. No component checks a guard against
 live data, so a guard states what must hold before the call and blocks no call.
 
-## 3. Check it before pushing
+## 3. Say what it changes
+
+An executor is opaque. `mcp: {server, tool}` says where the operation lives and
+nothing more — no reader of the model can see what that tool writes. So the blast
+radius of a call is declared or it is unknown, and `affects` is where the author
+declares it:
+
+```yaml
+        affects: [Account, Transfer]
+```
+
+That is the coarse form: these concepts are touched, in a way the model does not
+spell out. It is enough to answer *which actions can change an account at all*,
+which is already more than an executor name answers.
+
+A record says more — which operation, and which fields the call writes:
+
+```yaml
+        affects:
+          - concept: Account
+            operation: modify
+            fields: [balance]
+          - concept: Transfer
+            operation: create
+          - concept: TransferDebits
+            operation: create
+```
+
+The two shapes mix freely in one list, so an author can be precise about the
+concepts they know and coarse about the rest. Every `concept` — bare or named
+under the key — must be something the same model declares.
+
+### One key for both kinds
+
+`concept` names an entity or a relationship, and the model already knows which.
+Asking the author to repeat it would add a second place to get it wrong and
+change nothing about what the action affects. `TransferDebits` above is the edge
+from the example model; it is written exactly like the two entities beside it.
+
+### The operations
+
+`create`, `modify`, `delete` — the same three whatever the concept is.
+
+An edge is not only attached and detached. A many-to-many relationship is backed
+by a junction table with fields of its own, so *modify the grade on an
+Enrollment* is as ordinary a change as *modify an order's total*, and a
+vocabulary that gave edges only `add` and `remove` could not express it.
+
+`fields` narrows a `create` or a `modify` to the fields the call writes, which is
+what makes *which actions can change `Account.balance`* answerable. A `delete`
+takes the whole instance, so naming fields beside one is rejected rather than
+ignored.
+
+Both the operation and the fields are optional. `- concept: Account` on its own
+says the same thing the bare `Account` does, and is written back as the bare
+form.
+
+**Status: nothing consumes `affects` yet.** `kcmd` parses it, checks every
+concept against the model, publishes it and reads it back. No component computes
+an impact from it, routes on it, or checks it against what the executor actually
+does.
+
+## 4. Check it before pushing
 
 ```bash
 kcmd push --validate-only
 ```
 
-Three things about an action can be statically wrong once the document parses,
+Four things about an action can be statically wrong once the document parses,
 and each one is a hard error:
 
 ```
@@ -165,6 +235,9 @@ whose 'tool' is missing or blank.
 
 action 'TransferFunds' in model 'payments' (payments.yaml) is guarded by
 'AmountIsPostive', but model 'payments' declares no constraint of that name.
+
+action 'TransferFunds' in model 'payments' (payments.yaml) affects 'Acount',
+which is neither an entity nor a relationship this model declares.
 ```
 
 A parameter type that resolves to neither an entity nor a scalar means the model
@@ -172,10 +245,17 @@ cannot say what that argument denotes, which is the whole contribution an action
 makes. An executor missing a coordinate cannot be dispatched by whatever picks
 the action up. A guard that names no constraint — `AmountIsPostive` here, a
 misspelling of the `AmountIsPositive` declared above — leaves the author
-believing the write is checked when nothing checks it. All three checks are
-static, so they run on every push whatever the destination.
+believing the write is checked when nothing checks it. An `affects` entry naming
+`Acount` describes a blast radius over a concept that does not exist, so
+anything reading it reads about nothing.
 
-## 4. Push it
+The rest of an entry is checked the same way and for the same reason: fields
+beside a `delete`, and a field the concept does not declare, are each a hard
+error too. An operation outside `create` / `modify` / `delete` never gets this
+far — the vocabulary is closed, so the document does not parse at all. All of
+these checks are static, so they run on every push whatever the destination.
+
+## 5. Push it
 
 ```bash
 kcmd push
@@ -212,8 +292,17 @@ aspects:
       - {name: source, type: Account, isEntityRef: true}
       - {name: target, type: Account, isEntityRef: true}
       - {name: amount, type: Float, isEntityRef: false}
+    affects:
+      - {concept: Account, operation: modify, fields: [balance]}
+      - {concept: Transfer, operation: create}
+      - {concept: TransferDebits, operation: create}
     instructions: Resolve both accounts before calling. Name the account the money leaves as `source`.
 ```
+
+`affects` is published as the author wrote it and nothing more. Whether
+`TransferDebits` is an entity or an edge is not stored: a consumer that needs to
+know reads it off the model, which is the only thing that can say so correctly
+after a rename.
 
 Removing an action from the document deletes its entry on the next push, because
 the model owns the `<model>.actions.` id prefix. A catalog search can list the
@@ -228,7 +317,7 @@ Publishing an action needs the permission to attach its aspect, in addition to
 the permissions any push needs — see
 [Reference → Permissions](reference.md#permissions).
 
-## 5. Pull it back
+## 6. Pull it back
 
 ```bash
 kcmd pull
@@ -236,17 +325,14 @@ kcmd pull
 
 Pull collects the `semantic-action` entries under the model entry and rebuilds
 each action, so a name, a description, an executor, typed parameters, its
-`guards`, and `ai_context.instructions` survive the round trip unchanged. What
-every part of a model does and does not survive is in
+`guards`, its `affects`, and `ai_context.instructions` survive the round trip
+unchanged. What every part of a model does and does not survive is in
 [What push and pull preserve](fidelity.md).
 
 ## What is not modeled yet
 
-This is a prototype. Four things a reader reasonably expects are absent.
+This is a prototype. Three things a reader reasonably expects are absent.
 
-- **An action declares no effects.** `affects` — what the call changes — is out
-  of scope here. What must hold *before* the call is modeled: a constraint the
-  action names in [`guards`](#2-gate-it-with-a-constraint).
 - **Nothing checks the write.** No component evaluates a constraint or a guard,
   so an action is a declaration and the correctness of what the executor does
   belongs to the executor.

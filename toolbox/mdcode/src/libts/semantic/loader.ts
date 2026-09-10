@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AiContext, Constraint, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface LoadOptions {
@@ -227,6 +227,25 @@ const parameterSchema = z.object({
   type: z.string(),
 });
 
+// One thing an action changes. Two authored shapes: a bare name, which is the
+// coarse blast radius (`affects: [Order, OrderedAs]`), or a record naming the
+// `concept` plus how it is changed. One key covers an entity and a
+// relationship alike, because the same three operations apply to either. The
+// bare name is not a lesser form -- it is the same entry with the operation
+// left unspecified -- so the two mix freely in one list.
+//
+// The name is resolved against the model in toAffectedConcept, not here, for
+// the same reason a parameter type is: the schema sees one action, and only
+// the model knows what `Order` is.
+const affectedConceptSchema = z.union([
+  z.string(),
+  z.object({
+     concept: z.string(),
+     operation: z.enum(CONCEPT_OPERATIONS).optional(),
+     fields: z.array(z.string()).optional(),
+   }).strict(),
+]);
+
 const actionSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -236,6 +255,8 @@ const actionSchema = z.object({
   // are resolved against the model's own constraints in validate.ts, which sees
   // the whole model, whereas the schema sees one action.
   guards: z.array(z.string()).optional(),
+  // What the call changes. See affectedConceptSchema.
+  affects: z.array(affectedConceptSchema).optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
@@ -415,6 +436,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                     executor: executorSchema,
                     parameters: z.array(parameter).optional(),
                     guards: z.array(z.string()).optional(),
+                    affects: z.array(affectedConceptSchema).optional(),
                     ai_context: aiContextSchema.optional(),
                     ...ce,
                   }).strict();
@@ -484,6 +506,7 @@ type ModelDoc = z.infer<typeof modelBase>;
 type ActionDoc = z.infer<typeof actionSchema>;
 type ConstraintDoc = z.infer<typeof constraintSchema>;
 type ParameterDoc = z.infer<typeof parameterSchema>;
+type AffectedConceptDoc = z.infer<typeof affectedConceptSchema>;
 type ExecutorDoc = z.infer<typeof executorSchema>;
 type CustomExtensionDoc = z.infer<typeof customExtensionSchema>;
 // The whole document, as the convert functions see it: `version` plus the
@@ -703,10 +726,13 @@ function convertModel(
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`);
 
-  // Actions reference entities as parameter types, so they are converted after
-  // entities are known.
-  const actions =
-      (m.actions ?? []).map(a => convertAction(a, entityNameSet, warnings));
+  // Actions reference entities as parameter types and both entities and
+  // relationships as affected concepts, so they are converted after each is
+  // known.
+  const relationshipNameSet = new Set(relationships.map(r => r.name));
+  const actions = (m.actions ?? [])
+                      .map(a => convertAction(
+                               a, entityNameSet, relationshipNameSet, warnings));
   rejectDuplicateNames(
       actions.map(a => a.name), 'action name', `model '${m.name}'`);
 
@@ -906,7 +932,8 @@ function convertConstraint(c: ConstraintDoc): Constraint {
 // is kept verbatim and warned, so the loader stays lenient (a strict `validate`
 // gate can promote these later).
 function convertAction(
-    a: ActionDoc, entityNames: Set<string>, warnings: string[]): Action {
+    a: ActionDoc, entityNames: Set<string>, relationshipNames: Set<string>,
+    warnings: string[]): Action {
   const parameters = (a.parameters ?? [])
                          .map(p => convertParameter(
                                   p, a.name, entityNames, warnings));
@@ -926,6 +953,14 @@ function convertAction(
     rejectDuplicateNames(a.guards, 'guard', `action '${a.name}'`);
     action.guards = [...a.guards];
   }
+  if (a.affects?.length) {
+    const affects = a.affects.map(
+        e => toAffectedConcept(
+            e, a.name, entityNames, relationshipNames, warnings));
+    rejectDuplicateAffectedConcepts(affects, a.name);
+    warnMixedAffectsPrecision(affects, a.name, warnings);
+    action.affects = affects;
+  }
 
   const description = composeDescription(a.description);
   if (description) action.description = description;
@@ -934,6 +969,69 @@ function convertAction(
   const ce = toCustomExtensions(a.custom_extensions);
   if (ce) action.customExtensions = ce;
   return action;
+}
+
+// Maps one authored entry onto the IR, normalizing the two shapes to one.
+//
+// A bare name and a record with no `operation` mean the same thing, so both
+// land as an entry whose operation is unset. Whether `Order` is an entity or
+// an edge is neither authored nor stored -- it is a fact about the model, and
+// nothing about the entry depends on it -- so the names are consulted only to
+// warn about one that matches nothing, the way an unresolvable parameter type
+// does. validate is where it becomes an error.
+function toAffectedConcept(
+    e: AffectedConceptDoc, actionName: string, entityNames: Set<string>,
+    relationshipNames: Set<string>, warnings: string[]): AffectedConcept {
+  const concept = typeof e === 'string' ? e : e.concept;
+
+  const affected: AffectedConcept = {concept};
+  if (!entityNames.has(concept) && !relationshipNames.has(concept)) {
+    warnings.push(
+        `action '${actionName}': affects names '${concept}', which is ` +
+        `neither an entity nor a relationship in this model.`);
+  }
+
+  if (typeof e !== 'string') {
+    if (e.operation !== undefined) affected.operation = e.operation;
+    if (e.fields?.length) {
+      // Naming one field twice says nothing the single mention does not.
+      rejectDuplicateNames(
+          e.fields, 'affected field',
+          `action '${actionName}' affects '${concept}'`);
+      affected.fields = [...e.fields];
+    }
+  }
+  return affected;
+}
+
+// Two entries on the same concept with the same operation are one entry
+// written twice. Rejected rather than warned, like a repeated guard: it states
+// no second fact, and leaving it in would put a duplicate record in the catalog.
+function rejectDuplicateAffectedConcepts(
+    affects: AffectedConcept[], actionName: string): void {
+  rejectDuplicateNames(
+      affects.map(e => `${e.concept}/${e.operation ?? '(unspecified)'}`),
+      'affected concept', `action '${actionName}'`);
+}
+
+// An entry with no operation covers the whole concept, so pairing it with a
+// specific operation on that same concept says both "in some unstated way" and
+// "in this exact way". That is almost always a half-finished edit -- the author
+// added precision to one line and left the coarse one behind -- but it is not
+// contradictory, so it warns rather than fails.
+function warnMixedAffectsPrecision(
+    affects: AffectedConcept[], actionName: string, warnings: string[]): void {
+  const unspecified =
+      new Set(affects.filter(e => !e.operation).map(e => e.concept));
+  if (!unspecified.size) return;
+  for (const concept of new Set(
+           affects.filter(e => e.operation && unspecified.has(e.concept))
+               .map(e => e.concept))) {
+    warnings.push(
+        `action '${actionName}': affects lists '${concept}' both with an ` +
+        `operation and without one. The bare entry already covers every ` +
+        `operation on '${concept}'; drop it, or give it an operation too.`);
+  }
 }
 
 // A constraint that reads an action's parameter describes that call, so the

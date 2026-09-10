@@ -42,7 +42,7 @@
 
 import * as yaml from 'yaml';
 
-import {Action, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -293,7 +293,28 @@ function actionDoc(action: Action, warnings: string[]): Record<string, any> {
     parameters: nonEmpty(
         (action.parameters ?? []).map(p => ({name: p.name, type: p.type}))),
     guards: nonEmpty(action.guards),
+    affects: nonEmpty((action.affects ?? []).map(affectedConceptDoc)),
     ai_context: aiContextDoc(action.aiContext),
+  });
+}
+
+// One affected concept back to the open format. An entry that says nothing
+// beyond which
+// concept it touches emits as the bare name, which is the shorthand the author
+// most likely wrote and the form the proposal uses; anything with an operation
+// or fields needs the record.
+//
+// This NORMALIZES rather than reproducing the document byte for byte: an
+// authored `{concept: Order}` with no operation comes back as `Order`. The two
+// mean the same thing, so the emit is a fixed point after one pass, which is
+// what the round-trip tests assert.
+function affectedConceptDoc(affected: AffectedConcept):
+    string|Record<string, any> {
+  if (!affected.operation && !affected.fields?.length) return affected.concept;
+  return compact({
+    concept: affected.concept,
+    operation: affected.operation,
+    fields: nonEmpty(affected.fields),
   });
 }
 

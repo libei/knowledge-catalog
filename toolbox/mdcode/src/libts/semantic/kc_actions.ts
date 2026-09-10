@@ -33,7 +33,7 @@
 
 import {Entry} from '../gcp/dataplex';
 
-import {Action, ActionParameter, AiContext, DATA_TYPES, Executor, SemanticModel} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, ConceptOperation, DATA_TYPES, Executor, SemanticModel} from './ir';
 import {ACTION_TYPE_ID, customAspectKey, customAspectTypeName, customEntryTypeName} from './kc_custom_types';
 
 // Full resource name of the action entry type for a destination.
@@ -101,6 +101,14 @@ export function actionEntries(
   const actions = model.actions ?? [];
   if (!actions.length) return [];
 
+  // A relationship is a perfectly good `affects` concept but is never in
+  // publishedEntities, so the check below reads the model's own edges for it.
+  // Pruning drops a whole relationship from the model, so a dropped one is
+  // absent from this set for the same reason a dropped entity is absent from
+  // publishedEntities.
+  const relationshipNames =
+      new Set((model.relationships ?? []).map(r => r.name));
+
   const entries: Entry[] = [];
   for (const action of actions) {
     const id = actionEntryId(modelId, action.name);
@@ -116,6 +124,21 @@ export function actionEntries(
             `not publish (abstract or unavailable), so a pull will not ` +
             `recover it as an entity reference.`);
       }
+    }
+    // The same hazard for the concepts the action declares it changes. The
+    // entry is still published -- the action does change that concept, and
+    // dropping the claim would understate the blast radius -- but the catalog
+    // then names a concept it has no entry for, and pulling that model and
+    // pushing it unpruned fails hard on the same name. Say it where the
+    // divergence is created rather than two commands later.
+    for (const affected of action.affects ?? []) {
+      if (ctx.publishedEntities.has(affected.concept)) continue;
+      if (relationshipNames.has(affected.concept)) continue;
+      warnings.push(
+          `model '${model.name}': action '${action.name}' affects ` +
+          `'${affected.concept}', which this push does not publish ` +
+          `(abstract or unavailable), so the catalog records a blast radius ` +
+          `naming a concept it has no entry for.`);
     }
     entries.push({
       name: ctx.entry(id),
@@ -143,17 +166,31 @@ export function actionEntries(
 }
 
 // The aspect payload for one action: the executor flattened to the fields of
-// its kind, the typed parameters, the constraints that gate it, and any AI
-// instructions. Guards are the constraint NAMES, matching the sibling
-// `semantic-constraint` entries by display name, so a reader holding one action
-// entry can find the rules it is checked against.
+// its kind, the typed parameters, the constraints that gate it, what it
+// changes, and any AI instructions. Guards are the constraint NAMES, matching
+// the sibling `semantic-constraint` entries by display name, so a reader
+// holding one action entry can find the rules it is checked against; an
+// an affected concept names an entity or relationship entry the same way.
 function actionAspectData(action: Action): Record<string, any> {
   return compact({
     ...executorData(action.executor),
     parameters: action.parameters.map(
         p => compact({name: p.name, type: p.type, isEntityRef: p.isEntityRef})),
     guards: action.guards?.length ? action.guards : undefined,
+    affects: action.affects?.length ? action.affects.map(affectedConceptData) :
+                                      undefined,
     instructions: action.aiContext?.instructions || undefined,
+  });
+}
+
+// One affected concept as its aspect record: exactly the three fields the IR
+// carries, so
+// the round-trip is a rename away from an identity.
+function affectedConceptData(affected: AffectedConcept): Record<string, any> {
+  return compact({
+    concept: affected.concept,
+    operation: affected.operation,
+    fields: affected.fields?.length ? [...affected.fields] : undefined,
   });
 }
 
@@ -203,11 +240,14 @@ export function actionAspectTypes(entryTypeBase: string): string[] {
 /**
  * Recovers one action from its entry, the inverse of actionEntries.
  *
- * `isEntityRef` is re-derived against `entityNames` (as the loader does) rather
- * than trusted from the stored aspect, so it stays consistent with the model
- * actually pulled. Returns undefined, with a warning, for an entry whose
- * executor is missing or malformed: one bad entry degrades itself rather than
- * the pull.
+ * `isEntityRef` is re-derived against the entity names this pull actually
+ * recovered (as the loader does) rather than trusted from the stored aspect,
+ * so it stays consistent with the model actually pulled. An affected concept
+ * needs no
+ * such treatment: it stores only what the author wrote.
+ *
+ * Returns undefined, with a warning, for an entry whose executor is missing or
+ * malformed: one bad entry degrades itself rather than the pull.
  */
 export function readAction(
     entry: Entry, entityNames: string[], warnings: string[]): Action|undefined {
@@ -248,6 +288,29 @@ export function readAction(
     guards.push(g);
   }
   if (guards.length) action.guards = guards;
+
+  // Affected concepts, deduplicated on the pair the loader rejects a repeat
+  // of, for the
+  // same reason a repeated guard is dropped here: keeping it would hand back a
+  // document that cannot be reloaded.
+  const affects: AffectedConcept[] = [];
+  const seen = new Set<string>();
+  for (const raw of asArray(data.affects)) {
+    const affected = readAffectedConcept(raw, name, warnings);
+    if (!affected) continue;
+    const key = `${affected.concept}/${affected.operation ?? ''}`;
+    if (seen.has(key)) {
+      warnings.push(
+          `action '${name}': the ${ACTION_TYPE_ID} aspect repeats the entry ` +
+          `on '${affected.concept}'; the duplicate is dropped so the ` +
+          `document still loads`);
+      continue;
+    }
+    seen.add(key);
+    affects.push(affected);
+  }
+  if (affects.length) action.affects = affects;
+
   const description = entry.entrySource?.description;
   if (description !== undefined && description !== '')
     action.description = description;
@@ -281,6 +344,41 @@ function readParameter(
         `resolved type`);
   }
   return param;
+}
+
+// One affected concept from its aspect record, the inverse of
+// affectedConceptData. A record with no concept is dropped: it names nothing,
+// so there is nothing to recover.
+//
+// Unlike readParameter, this resolves nothing against the pulled model. It
+// could not do so honestly if it tried: a pull recovers relationships from the
+// schema-join entry links, so a many-to-many edge is never among them, and
+// every entry naming one would look unresolvable on a model that is perfectly
+// well-formed. Nothing here needs the answer, so nothing asks.
+function readAffectedConcept(
+    raw: any, actionName: string,
+    warnings: string[]): AffectedConcept|undefined {
+  const concept = typeof raw?.concept === 'string' ? raw.concept : '';
+  if (!concept) return undefined;
+  const affected: AffectedConcept = {concept};
+
+  if ((CONCEPT_OPERATIONS as readonly string[]).includes(raw.operation)) {
+    affected.operation = raw.operation as ConceptOperation;
+  } else if (raw.operation !== undefined && raw.operation !== '') {
+    // An aspect edited by hand can carry anything. Dropping the operation
+    // keeps the entry (the blast radius is still true) and says why.
+    warnings.push(
+        `action '${actionName}': affects '${concept}' with an unknown ` +
+        `operation '${raw.operation}'; recovered with the operation dropped`);
+  }
+
+  const fields: string[] = [];
+  for (const f of asArray(raw.fields)) {
+    if (typeof f !== 'string' || f === '' || fields.includes(f)) continue;
+    fields.push(f);
+  }
+  if (fields.length) affected.fields = fields;
+  return affected;
 }
 
 // The IR executor from the aspect's flat fields, the inverse of executorData.

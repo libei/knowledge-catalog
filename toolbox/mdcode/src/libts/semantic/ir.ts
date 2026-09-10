@@ -327,9 +327,52 @@ export interface Action {
   // and needs no reference here. Naming a constraint adds an earlier check and
   // does not switch its enforcement on.
   guards?: string[];
+  // What the call changes: its blast radius, one entry per concept touched.
+  // Declared rather than derived, because the executor is opaque -- nothing
+  // reading the model can see what an MCP tool writes. See AffectedConcept.
+  affects?: AffectedConcept[];
   aiContext?: AiContext;
   customExtensions?: CustomExtension[];
 }
+
+/**
+ * One concept an action changes, and how.
+ *
+ * `concept` is the authored name of an entity or a relationship, kept verbatim
+ * for a lossless round-trip. Which of the two it is, is deliberately NOT
+ * recorded: it is a fact about the model, it changes nothing about what the
+ * entry means, and the same three operations apply either way. Whoever needs
+ * the distinction -- validate does, to know which fields the concept has --
+ * resolves it against the model, so there is one place it can be wrong instead
+ * of two. The loader warns about a name that resolves to neither.
+ *
+ * `operation` and `fields` are optional, and their absence means "unspecified"
+ * rather than "nothing". The open format accepts a bare name as shorthand for
+ * an entry with neither -- `affects: [Order]` is the coarse blast radius the
+ * proposal describes -- so a model can start there and add precision only
+ * where a rule needs it.
+ */
+export interface AffectedConcept {
+  concept: string;  // entity or relationship name, as authored
+  operation?: ConceptOperation;
+  // The fields the operation touches, when it touches only some of them. Each
+  // must be a field of `concept`. Meaningless for a `delete`, which takes the
+  // whole instance, which is why validate rejects that pairing.
+  fields?: string[];
+}
+
+/**
+ * What an action does to a concept it affects.
+ *
+ * One vocabulary covers entities and relationships alike, because both admit
+ * the same three acts. An edge is not only added and removed: a many-to-many
+ * relationship is backed by a junction table with fields of its own (see
+ * Association), so modifying an enrollment's grade is as ordinary as modifying
+ * an order's total. Splitting the vocabulary by kind would make that change
+ * inexpressible and would buy a policy predicate nothing.
+ */
+export const CONCEPT_OPERATIONS = ['create', 'modify', 'delete'] as const;
+export type ConceptOperation = typeof CONCEPT_OPERATIONS[number];
 
 /**
  * One input to an action, typed by the ontology.

@@ -458,9 +458,21 @@ reads the document ([§6](#6-the-extension-mechanism)).
   executor that performs it, and types each parameter against the ontology, so an
   entity-typed parameter is an object reference. Its optional `guards` lists, by
   name, the constraints that gate it; each name MUST resolve to a constraint the
-  same model declares, and a repeated name is a **hard load error**. Accepted
-  only under `0.2.0.dev0/google`. `kcmd` publishes an action and never calls its
-  executor. See [Modeling write operations](actions.md).
+  same model declares, and a repeated name is a **hard load error**. Its
+  optional `affects` lists what the call changes. Each entry is either a bare
+  concept name or a record — `{concept, operation?, fields?}` — and both forms
+  normalize to the same thing. Every `concept` MUST resolve to an entity or a
+  relationship the same model declares; the two are named the same way, because
+  the model already records which one a name is. `operation` is drawn from one
+  closed vocabulary, `create` / `modify` / `delete`, whatever the concept is: a
+  many-to-many relationship is backed by a junction table with fields of its
+  own, so an edge is modified exactly as an entity is. `fields` MUST name fields
+  of the concept and MUST NOT accompany a `delete`, which takes the whole
+  instance. A repeated concept-and-operation pair is a **hard load error**.
+  Accepted only under
+  `0.2.0.dev0/google`. `kcmd` publishes an action and never calls its executor,
+  so `affects` is the author's declaration and nothing verifies it against what
+  the executor does. See [Modeling write operations](actions.md).
 
 - **`constraints` (extended profile only).** Model-level named boolean
   invariants over the ontology, written in the same expression language as a

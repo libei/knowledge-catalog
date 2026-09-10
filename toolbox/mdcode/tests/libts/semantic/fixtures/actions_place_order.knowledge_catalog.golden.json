@@ -155,6 +155,23 @@
             "guards": [
               "RequestedQuantityIsPositive"
             ],
+            "affects": [
+              {
+                "concept": "orders",
+                "operation": "create",
+                "fields": [
+                  "o_orderkey",
+                  "o_totalprice"
+                ]
+              },
+              {
+                "concept": "orders_to_customer",
+                "operation": "create"
+              },
+              {
+                "concept": "customer"
+              }
+            ],
             "instructions": "Resolve the buyer to a customer before calling."
           }
         }

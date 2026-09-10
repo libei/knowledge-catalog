@@ -126,8 +126,10 @@ write-side counterpart to a metric. An action names a business operation, points
 at the executor that carries it out (an MCP tool, a REST endpoint, or a gRPC
 method), and types each parameter against the ontology, so an entity-typed
 parameter is an object reference rather than a bare string. An action also
-names, in `guards`, the constraints that gate it. Knowledge Catalog is the only
-system an action reaches, and the only place it is governed. See
+names, in `guards`, the constraints that gate it, and in `affects`, the concepts
+the call changes — the executor is an opaque handle, so its blast radius is
+declared or it is unknown. Knowledge Catalog is the only system an action
+reaches, and the only place it is governed. See
 [Modeling write operations](actions.md).
 
 A model can also state **constraints**: named boolean invariants over the

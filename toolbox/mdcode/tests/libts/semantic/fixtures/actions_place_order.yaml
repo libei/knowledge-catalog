@@ -13,6 +13,14 @@
 # falsely rejected. RequestedQuantityIsPositive reads the action's `quantity`
 # parameter, so PlaceOrder names it in `guards`.
 #
+# PlaceOrder's `affects` covers every authored shape at once: an entry on an
+# entity narrowed to the fields it writes, an entry on a relationship, and the
+# bare-name shorthand -- `customer` is touched in a way the model does not spell
+# out. The first two show that one vocabulary covers both kinds: creating the
+# edge to the customer is a `create`, the same verb as creating the order. The
+# OSI golden shows the normalization: the first two keep their record, the
+# third stays a bare name.
+#
 # Those last two are one business rule in its two bindings. The invariant holds
 # over stored order lines, whatever wrote them. The guard holds over the
 # argument a caller passed, and can be checked only before the call runs, which
@@ -88,6 +96,13 @@ semantic_model:
           - {name: customer, type: customer}
           - {name: quantity, type: Integer}
         guards: [RequestedQuantityIsPositive]
+        affects:
+          - concept: orders
+            operation: create
+            fields: [o_orderkey, o_totalprice]
+          - concept: orders_to_customer
+            operation: create
+          - customer
         ai_context:
           instructions: "Resolve the buyer to a customer before calling."
     constraints:

@@ -11,8 +11,8 @@ Which backend a push deploys to — BigQuery or Spanner — is set by the model'
 deployment target, or by the binding profile you select; it is not a
 command-line flag. What reaches Knowledge Catalog depends on the push as well: a
 catalog-only or purely logical push records the whole model, while a push that
-also deploys a graph records only the part the graph binds. Both effects are
-detailed under [To Knowledge Catalog](#to-knowledge-catalog).
+also deploys a graph records only the part the graph binds. Both are detailed
+under [To Knowledge Catalog](#to-knowledge-catalog).
 
 ## The round-trip matrix
 
@@ -106,8 +106,8 @@ agree on every structural row and differ only where a Spanner target has no
     about the name it kept, and a push rejects the model until the constraint
     is back. A name the aspect repeats is the one exception, dropped to its
     single occurrence because the loader rejects a repeat and the document has
-    to stay loadable. Prototype scope: an action's `affects` is not modelled,
-    so nothing about it is stored. See
+    to stay loadable. Its `affects` round-trips the same way, with the same
+    exception for a repeated concept-and-operation pair. See
     [Modeling write operations](actions.md).
 13. **Constraints.** A constraint reaches Knowledge Catalog only, as one
     `semantic-constraint` entry under the model entry, and `pull` reads it back.
@@ -148,13 +148,27 @@ expressions are still used when generating graph SQL.
 
 **Actions** follow the same one-entry-per-element rule as everything else: each
 becomes a `semantic-action` entry under the model entry, carrying its executor,
-typed parameters, and `guards` in a `semantic-action` aspect. They round-trip
-losslessly through `pull` (name, description, executor, typed parameters,
-`guards`, and `instructions`). A parameter's `isEntityRef` is re-derived against
-the entities the pull recovered rather than read back from the aspect, so it
-stays consistent with the model the pull hands you. Their `affects` is out of
-scope for this prototype and is not stored. The entry type is custom, so `kcmd
-init` creates it; a model that declares no action never needs it.
+typed parameters, `guards`, and `affects` in a `semantic-action` aspect. They
+round-trip losslessly through `pull` (name, description, executor, typed
+parameters, `guards`, `affects`, and `instructions`). A parameter's
+`isEntityRef` is re-derived against the entities the pull recovered rather than
+read back from the aspect, so it stays consistent with the model the pull hands
+you. The entry type is custom, so `kcmd init` creates it; a model that declares
+no action never needs it.
+
+What an action affects round-trips as a fact, not as the text it was authored
+in. The two authored shapes — the bare name and the record — are one shape in
+the model, so a record carrying nothing but a concept (`- concept: Account`)
+comes back as the bare `Account`, which says the same thing. Everything after
+that first pass is byte-for-byte stable.
+
+`affects` stores only what the author wrote, which is why it survives a partial
+pull intact. Whether a `concept` is an entity or an edge is not recorded, so
+nothing about it has to be re-resolved — and nothing can go stale. That matters
+most for a many-to-many relationship, which never reaches the catalog at all: a
+pull recovers relationships from the schema-join entry links, which carry the
+foreign-key edges only, so a concept naming an M:N edge would look unresolvable
+on a model that is perfectly well-formed. It comes back untouched instead.
 
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry
 under the model entry, with the expression and any `instructions` in a

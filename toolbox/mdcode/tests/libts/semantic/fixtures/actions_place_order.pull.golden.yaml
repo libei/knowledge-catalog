@@ -50,6 +50,15 @@ semantic_model:
             type: Integer
         guards:
           - RequestedQuantityIsPositive
+        affects:
+          - concept: orders
+            operation: create
+            fields:
+              - o_orderkey
+              - o_totalprice
+          - concept: orders_to_customer
+            operation: create
+          - customer
         ai_context:
           instructions: Resolve the buyer to a customer before calling.
     constraints:

@@ -312,6 +312,61 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               'checked before the action runs.',
         },
       },
+      {
+        index: 11,
+        name: 'affects',
+        type: 'array',
+        arrayItems: {
+          name: 'affectedConcept',
+          type: 'record',
+          recordFields: [
+            {
+              index: 1,
+              name: 'concept',
+              type: 'string',
+              constraints: {required: true},
+              annotations: {
+                displayName: 'Concept',
+                description:
+                    'The entity or relationship this action changes, by name.',
+              },
+            },
+            {
+              index: 2,
+              name: 'operation',
+              type: 'string',
+              annotations: {
+                displayName: 'Operation',
+                description:
+                    'How the concept is changed: `create`, `modify` or ' +
+                    '`delete`. The same three apply to an entity and to a ' +
+                    'relationship. Absent means unspecified.',
+              },
+            },
+            {
+              index: 3,
+              name: 'fields',
+              type: 'array',
+              arrayItems: {name: 'field', type: 'string'},
+              annotations: {
+                displayName: 'Fields',
+                description:
+                    'The fields the operation touches, when it touches only ' +
+                    'some of them. Absent means the whole instance.',
+              },
+            },
+          ],
+        },
+        annotations: {
+          displayName: 'Affects',
+          description:
+              'What a call changes: one record per concept -- an entity or ' +
+              'a relationship -- the action touches, with the operation and ' +
+              'the fields where the model states them. Declared, because an ' +
+              'executor is opaque and nothing reading the model can see ' +
+              'what it writes.',
+        },
+      },
     ],
   },
 };

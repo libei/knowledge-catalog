@@ -11,7 +11,7 @@
 import {BigQueryClient} from '../gcp/bigquery';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {Executor, SemanticModel} from './ir';
+import {Action, Executor, SemanticModel} from './ir';
 import {LoadedModel} from './loader';
 import {resolveInheritance} from './resolve_inheritance';
 
@@ -123,7 +123,7 @@ export function validatePushRequirements(
     // dispatch it, and each guard must name a constraint the model declares.
     // (The "exactly one executor kind" rule is already guaranteed by the loader
     // schema, so it cannot reach here.)
-    errors.push(...validateActions(model, document));
+    errors.push(...validateActions(model, document, !!opts.fieldsPruned));
 
     // Constraints are logical invariants, target-independent like actions.
     errors.push(
@@ -133,20 +133,40 @@ export function validatePushRequirements(
 }
 
 // Static, target-independent checks for a model's actions. Returns one message
-// per violation. Three things can be statically wrong once the model has
-// parsed:
+// per violation. What can be statically wrong once the model has parsed:
 //   - a parameter's type resolves to neither a known entity nor a scalar
 //     datatype (the loader left isEntityRef unset and only warned) -- an
 //     unresolvable type is a malformed action, promoted to a hard error here;
 //   - an executor is missing a coordinate a runtime needs to dispatch it (an
 //     empty server/tool, endpoint/method, or service/method) -- the schema
 //     accepts empty strings, so this is caught here rather than at parse;
-//   - a guard names a constraint the model does not declare.
-function validateActions(model: SemanticModel, document: string): string[] {
+//   - a guard names a constraint the model does not declare;
+//   - an `affects` entry names a concept the model does not declare, names
+//     fields on a 'delete' (which takes the whole instance), or names a field
+//     the concept does not have.
+//
+// Every `affects` check is a hard error for the reason the guard check is: an
+// entry that names nothing real leaves a reader believing the blast radius is
+// described when it is not, and a consumer routing on it would route on a
+// concept that does not exist.
+function validateActions(
+    model: SemanticModel, document: string, fieldsPruned: boolean): string[] {
   const errors: string[] = [];
+  const actions = model.actions ?? [];
+  if (!actions.length) return errors;
   const constraintNames =
       new Set((model.constraints ?? []).map(c => c.name));
-  for (const action of model.actions ?? []) {
+  // Built only when an `affects` entry will actually read it, which is not a
+  // cost argument: declaredFields resolves inheritance, and that THROWS on an
+  // `extends` naming an entity the model does not declare. The loader accepts
+  // such a model, a KC-only push reaches no graph leg to catch it, and a
+  // profile push can create one by pruning a supertype whole. Building this
+  // eagerly would turn any of those into a stack trace out of the validation
+  // gate, for a model this check has nothing to say about.
+  const concepts = !fieldsPruned && actions.some(a => a.affects?.length) ?
+      declaredConcepts(model) :
+      undefined;
+  for (const action of actions) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
     for (const param of action.parameters) {
@@ -169,8 +189,89 @@ function validateActions(model: SemanticModel, document: string): string[] {
             model.name}' declares no constraint of that name.`);
       }
     }
+    errors.push(...affectedConceptErrors(action, where, concepts));
   }
   return errors;
+}
+
+// The errors in one action's `affects`. Split out because the checks chain: a
+// concept that does not resolve makes every later check about it meaningless,
+// so an entry that fails one of those says nothing more. Undeclared fields do
+// not chain -- each is an independent fact about a concept that did resolve --
+// so an entry reports all of them.
+//
+// An absent `concepts` says the model reaching this point is a profile's view
+// of the author's model, not the author's model. Everything that reads the
+// ontology stands down there, because pruneUnavailable drops whole entities
+// and whole relationships -- not only unbound fields -- when a profile does
+// not bind their keys or join columns. An action survives that pruning
+// untouched, so an entry on a dropped concept is the profile's doing rather
+// than the author's, and failing the deploy over it would fail it for no
+// reason. An action reaches no graph in any case. What is left is the one
+// check that reads only the entry itself.
+function affectedConceptErrors(
+    action: Action, where: string,
+    concepts: Map<string, DeclaredConcept>|undefined): string[] {
+  const errors: string[] = [];
+  for (const affected of action.affects ?? []) {
+    // A `delete` takes the whole instance, so naming fields alongside one is
+    // self-contradictory whatever the ontology says.
+    if (affected.fields?.length && affected.operation === 'delete') {
+      errors.push(
+          `${where} affects '${affected.concept}' with operation 'delete' ` +
+          `and also names fields. A 'delete' takes the whole instance; drop ` +
+          `the fields.`);
+      continue;
+    }
+    if (!concepts) continue;
+
+    const concept = concepts.get(affected.concept);
+    if (!concept) {
+      errors.push(
+          `${where} affects '${affected.concept}', which is neither an ` +
+          `entity nor a relationship this model declares.`);
+      continue;
+    }
+    for (const field of affected.fields ?? []) {
+      if (!concept.fields.has(field)) {
+        errors.push(`${where} affects '${affected.concept}.${field}', but ${
+            concept.kind} '${affected.concept}' declares no field '${field}'.`);
+      }
+    }
+  }
+  return errors;
+}
+
+// What an `affects` entry's `concept` may name, and the fields it has.
+// Entities are indexed first, so a name that is both resolves to the entity.
+// `kind` is local: it never leaves this check, and exists only to say
+// `entity 'X'` or `relationship 'X'` in a message and to pick which fields
+// count.
+//
+// Inheritance is resolved through declaredFields for the same reason the
+// constraint check does it: a subtype's own `fields` omit what it inherits.
+interface DeclaredConcept {
+  kind: 'entity'|'relationship';
+  fields: Set<string>;
+}
+function declaredConcepts(model: SemanticModel): Map<string, DeclaredConcept> {
+  const concepts = new Map<string, DeclaredConcept>();
+  for (const [name, fields] of declaredFields(model)) {
+    concepts.set(name, {kind: 'entity', fields});
+  }
+  for (const r of model.relationships ?? []) {
+    if (concepts.has(r.name)) continue;
+    // Only a many-to-many edge has fields of its own (they live on the junction
+    // table it is backed by), and those are exactly what a `modify` on an edge
+    // names -- an enrollment's grade. A plain foreign-key edge carries none, so
+    // naming fields on one is an error: the properties an author means in that
+    // case belong to an endpoint entity.
+    concepts.set(r.name, {
+      kind: 'relationship',
+      fields: new Set((r.association?.fields ?? []).map(f => f.name)),
+    });
+  }
+  return concepts;
 }
 
 

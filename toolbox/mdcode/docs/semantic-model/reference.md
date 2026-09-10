@@ -285,16 +285,18 @@ relationship detail — the paired columns and foreign-key direction — in its
 aspect. Any element with `ai_context.instructions` (the model, an entity, or a
 metric) also gets a built-in `guidelines` aspect holding that text.
 
-An **action** entry carries its executor, its typed parameters, and the names
-of the constraints that gate it (`guards`) in a `semantic-action` aspect, along
-with the action's `ai_context.instructions`. A guard is stored as the constraint
-name, matching a sibling `semantic-constraint` entry on the same model, so a
-reader holding one action entry can find the rules it is checked against.
+An **action** entry carries its executor, its typed parameters, the names of the
+constraints that gate it (`guards`), and the concepts it changes (`affects`) in
+a `semantic-action` aspect, along with the action's `ai_context.instructions`. A
+guard is stored as the constraint name, matching a sibling `semantic-constraint`
+entry on the same model, so a reader holding one action entry can find the rules
+it is checked against. An affected concept is stored as its name — an entity or
+a relationship, named the same way, since the model is what says which.
 That aspect type is provisioned in your project rather than referenced from
 `dataplex-types`, because Dataplex has no built-in action type yet; when one
 ships, the entries move to it and their shape does not change. (This is the
-prototype scope — an action's `precondition` and `affects` are not modeled
-yet.)
+prototype scope — an action's `precondition` is not modeled yet, and nothing
+consumes its `affects`.)
 
 A **constraint** entry carries its expression in a `semantic-constraint`
 aspect, together with the whole of any `ai_context` declared on it. The
@@ -357,11 +359,26 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   altogether is rejected earlier, when the model is parsed. Each name in the
   action's `guards` must resolve to a constraint that the same model declares. A
   guard resolving to nothing leaves the author believing the write is checked
-  when nothing checks it. Two further rules are enforced at parse time: exactly
-  one executor kind (`executor requires exactly one kind, but 2 given (mcp,
-  rest)`) and the rejection of a repeated guard name. Every check here is
-  static, so it runs on every push, regardless of destination. Note
-  that actions themselves deploy **only** through the Knowledge Catalog leg — a
+  when nothing checks it. Every `concept` in the action's `affects` must
+  likewise resolve to an entity or a relationship the same model declares, and
+  its `fields` must be fields of that concept — for a relationship, the
+  properties of the junction table backing a many-to-many edge, so a plain
+  foreign-key edge has none. Naming fields beside a `delete` is rejected,
+  because a `delete` takes the whole instance. An affected concept that resolves
+  to nothing is reported and then left alone, since every later check about it
+  is meaningless; undeclared fields do not chain that way, so a concept that
+  does resolve reports every field it does not have. Everything that reads the
+  ontology — the concept check and the field check both — stands down on a
+  profile push, because pruning drops whole entities and whole relationships as
+  well as unbound fields, leaves actions untouched, and an action reaches no
+  graph in any case; the fields-beside-a-`delete` check reads only the entry, so
+  it still applies. Four further rules are enforced at parse time: exactly one
+  executor kind (`executor requires exactly one kind, but 2 given (mcp, rest)`),
+  the closed `create` / `modify` / `delete` vocabulary for `operation`, the
+  rejection of a repeated guard name, and the rejection of a repeated
+  concept-and-operation pair in `affects`. Every check here is static, so it
+  runs on every push, regardless of destination. Note that actions themselves
+  deploy **only** through the Knowledge Catalog leg — a
   graph-only `--no-kc` push validates them but has nowhere to put them, and
   warns that they will not be deployed. *(static)*
 * **Every constraint is checkable.** A constraint's `expression` must be
