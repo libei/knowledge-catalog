@@ -1,0 +1,553 @@
+// Running an action against a store.
+//
+// The store is faked here rather than mocked at the HTTP layer: the fake
+// records the statements it is given, answers queries from a programmable
+// table, and tracks whether the transaction ended in a commit or a rollback.
+// That is exactly the surface the runtime's guarantees are stated in -- "a
+// failed statement rolls back", "a refused action never opens a transaction"
+// -- so the assertions can be about those guarantees rather than about wire
+// format.
+//
+
+import {describe, expect, test} from 'bun:test';
+
+import * as spanner from '../../../src/libts/gcp/spanner';
+import {Action, Constraint, SemanticModel} from '../../../src/libts/semantic/ir';
+import {ActionPlan, runAction} from '../../../src/libts/semantic/runtime';
+
+
+// A query the fake knows how to answer: rows returned when `match` is found in
+// the statement's SQL.
+interface Answer {
+  match: string;
+  rows: string[][];
+}
+
+
+class FakeSpanner {
+  readonly database = 'projects/p/instances/i/databases/d';
+  readonly statements: spanner.Statement[] = [];
+  committed = false;
+  rolledBack = false;
+  sessionsOpen = 0;
+  sessionsOpened = 0;
+  beginFails = false;
+  commitFails = false;
+  // Statements whose SQL contains one of these fragments fail, so a store-level
+  // error can be provoked at a chosen point.
+  failOn: string[] = [];
+
+  constructor(private readonly answers: Answer[] = []) {}
+
+  async withSession<T>(fn: (s: string) => Promise<T>): Promise<T> {
+    this.sessionsOpen++;
+    this.sessionsOpened++;
+    try {
+      return await fn('sessions/1');
+    } finally {
+      this.sessionsOpen--;
+    }
+  }
+
+  async beginReadWrite() {
+    return this.beginFails ? {status: 400, message: 'nope'} :
+                             {status: 200, result: {id: 'txn-1'}};
+  }
+
+  async executeSql(_s: string, _t: string, stmt: spanner.Statement) {
+    this.statements.push(stmt);
+    if (this.failOn.some(f => stmt.sql.includes(f))) {
+      return {status: 400, message: 'statement rejected'};
+    }
+    const answer = this.answers.find(a => stmt.sql.includes(a.match));
+    return {status: 200, result: {rows: answer?.rows ?? []}};
+  }
+
+  async commit() {
+    if (this.commitFails) return {status: 500, message: 'commit failed'};
+    this.committed = true;
+    return {status: 200, result: {commitTimestamp: '2026-09-06T00:00:00Z'}};
+  }
+
+  async rollback() {
+    this.rolledBack = true;
+    return {status: 200, result: {}};
+  }
+
+  get client(): spanner.SpannerDataClient {
+    return this as unknown as spanner.SpannerDataClient;
+  }
+
+  // The SQL of every statement run, for asserting what did and did not happen.
+  get sql(): string[] {
+    return this.statements.map(s => s.sql);
+  }
+}
+
+
+const transfer: Action = {
+  name: 'Transfer',
+  description: 'Move funds between two accounts.',
+  executor: {
+    kind: 'mcp',
+    mcp: {server: '//example/servers/payments', tool: 'transfer'},
+  },
+  parameters: [
+    {name: 'source', type: 'Account', isEntityRef: true},
+    {name: 'target', type: 'Account', isEntityRef: true},
+    {name: 'amount', type: 'Float', isEntityRef: false},
+  ],
+};
+
+// The base model states no constraint, so every action in it is safe to run
+// unchecked and the tests below are about the write itself. The refusal rules
+// get their own model further down.
+function model(overrides: Partial<SemanticModel> = {}): SemanticModel {
+  return {
+    name: 'payments',
+    entities: [
+      {
+        name: 'Account',
+        dataSource: 'demo.payments.Account',
+        keys: ['accountId'],
+        fields: [
+          {name: 'accountId', expression: 'account_id'},
+          {name: 'balance', expression: 'balance'},
+          {name: 'name', expression: 'name', type: 'String'},
+        ],
+      },
+    ],
+    relationships: [],
+    metrics: [],
+    actions: [transfer],
+    ...overrides,
+  };
+}
+
+
+const debitAndCredit = async (): Promise<ActionPlan> => ({
+  statements: [{
+    sql: 'UPDATE Account SET balance = balance - 100 WHERE account_id = 1',
+  }],
+});
+
+// Answers that resolve 'A1' and 'A2' to account 1.
+function resolvingFake(extra: Answer[] = []) {
+  return new FakeSpanner([
+    {
+      match: 'FROM Account WHERE CAST(account_id AS STRING) = @ref',
+      rows: [['1']],
+    },
+    ...extra,
+  ]);
+}
+
+function run(
+    fake: FakeSpanner, over: Partial<Parameters<typeof runAction>[0]> = {}) {
+  return runAction({
+    model: model(),
+    actionName: 'Transfer',
+    args: {source: 'A1', target: 'A2', amount: 100},
+    client: fake.client,
+    handler: debitAndCredit,
+    ...over,
+  });
+}
+
+
+describe('resolving an entity-typed argument', () => {
+  test('matches on the key', async () => {
+    const fake = resolvingFake();
+    const outcome = await run(fake);
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+    expect(outcome.refs.source).toEqual({
+      entity: 'Account',
+      keys: ['1'],
+      input: 'A1',
+    });
+  });
+
+  test('also matches on an identifying name column', async () => {
+    // An agent saying "Alice" should reach the same row as one saying "7".
+    const fake = resolvingFake();
+    await run(fake);
+    const lookup = fake.statements[0];
+    expect(lookup.sql).toContain('CAST(account_id AS STRING) = @ref');
+    expect(lookup.sql).toContain('CAST(name AS STRING) = @ref');
+  });
+
+  test('rejects a reference that matches nothing', async () => {
+    const fake = new FakeSpanner([]);
+    const outcome = await run(fake);
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toBe("No Account matches 'A1'.");
+    expect(fake.rolledBack).toBe(true);
+  });
+
+  test('rejects an ambiguous reference and lists the candidates', async () => {
+    const fake =
+        new FakeSpanner([{match: 'FROM Account WHERE CAST', rows: [['1'], ['2']]}]);
+    const outcome = await run(fake);
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('matches more than one Account (1, 2)');
+  });
+
+  test('rejects a missing required reference', async () => {
+    const outcome =
+        await run(resolvingFake(), {args: {target: 'A2', amount: 100}});
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message)
+        .toContain("requires 'source', a reference to a Account");
+  });
+
+  test('leaves scalar arguments alone', async () => {
+    const outcome = await run(resolvingFake());
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+    expect(Object.keys(outcome.refs)).toEqual(['source', 'target']);
+  });
+});
+
+
+describe('failures that stop the write', () => {
+  test('an unknown action is refused before any store call', async () => {
+    const fake = resolvingFake();
+    const outcome = await run(fake, {actionName: 'Refund'});
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain("declares no action 'Refund'");
+    expect(fake.statements).toHaveLength(0);
+  });
+
+  test('a transaction that will not begin is reported, not retried',
+       async () => {
+         const fake = resolvingFake();
+         fake.beginFails = true;
+         const outcome = await run(fake);
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message).toContain('Could not begin a transaction');
+       });
+
+  test('a rejected statement rolls the transaction back', async () => {
+    const fake = resolvingFake();
+    fake.failOn = ['UPDATE Account'];
+    const outcome = await run(fake);
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('statement rejected');
+    expect(fake.rolledBack).toBe(true);
+    expect(fake.committed).toBe(false);
+  });
+
+  test('a handler that throws rolls the transaction back', async () => {
+    const fake = resolvingFake();
+    const outcome = await run(fake, {
+      handler: async () => {
+        throw new Error('handler blew up');
+      },
+    });
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('handler blew up');
+    expect(fake.rolledBack).toBe(true);
+  });
+
+  test('a commit that fails is reported as a commit failure', async () => {
+    const fake = resolvingFake();
+    fake.commitFails = true;
+    const outcome = await run(fake);
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('the commit failed');
+    expect(fake.committed).toBe(false);
+  });
+
+  test('the session is closed even when the action fails', async () => {
+    const fake = resolvingFake();
+    fake.failOn = ['UPDATE Account'];
+    await run(fake);
+    expect(fake.sessionsOpen).toBe(0);
+  });
+
+  test('the session is closed on the happy path too', async () => {
+    const fake = resolvingFake();
+    await run(fake);
+    expect(fake.sessionsOpen).toBe(0);
+    expect(fake.sessionsOpened).toBe(1);
+  });
+});
+
+
+describe('an executor the runtime cannot roll back', () => {
+  test('is refused when the caller supplies no handler', async () => {
+    // An MCP tool commits inside a system this transaction does not control,
+    // so a rollback here would leave the two out of step.
+    const fake = resolvingFake();
+    const outcome = await run(fake, {handler: undefined});
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('could not be rolled back');
+    expect(fake.statements).toHaveLength(0);
+  });
+});
+
+
+// A second model, for the half of the runtime the payments model cannot reach:
+// an action whose write is declared in the model rather than performed by a
+// handler.
+const credit: Action = {
+  name: 'Credit',
+  description: 'Credit an account and record the entry.',
+  executor: {
+    kind: 'sql',
+    sql: {
+      statements: [
+        'INSERT INTO Entry (entry_id, account_id, amount) ' +
+            'VALUES (@newEntryKey, @account, @amount)',
+        'UPDATE Account SET balance = balance - @amount ' +
+            'WHERE account_id = @account',
+      ],
+    },
+  },
+  parameters: [
+    {name: 'account', type: 'Account', isEntityRef: true},
+    {name: 'amount', type: 'Float', isEntityRef: false},
+  ],
+  affects: [
+    {concept: 'Entry', operation: 'create', fields: ['amount']},
+    {concept: 'Account', operation: 'modify', fields: ['balance']},
+  ],
+};
+
+function creditModel(overrides: Partial<SemanticModel> = {}): SemanticModel {
+  const base = model();
+  return {
+    ...base,
+    entities: [
+      ...base.entities,
+      {
+        name: 'Entry',
+        dataSource: 'demo.payments.Entry',
+        keys: ['entryId'],
+        fields: [
+          {name: 'entryId', expression: 'entry_id'},
+          {name: 'amount', expression: 'amount'},
+        ],
+      },
+    ],
+    actions: [credit],
+    ...overrides,
+  };
+}
+
+function runCredit(
+    fake: FakeSpanner, over: Partial<Parameters<typeof runAction>[0]> = {}) {
+  return runAction({
+    model: creditModel(),
+    actionName: 'Credit',
+    args: {account: 'A1', amount: 100},
+    client: fake.client,
+    ...over,
+  });
+}
+
+
+describe('an action whose write is declared in the model', () => {
+  test('runs the executor statements in order, with no handler involved',
+       async () => {
+         const fake = resolvingFake();
+         const outcome = await runCredit(fake);
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
+         expect(fake.sql.filter(s => s.startsWith('INSERT'))).toHaveLength(1);
+         expect(fake.sql.filter(s => s.startsWith('UPDATE'))).toHaveLength(1);
+         expect(fake.sql.indexOf('INSERT INTO Entry (entry_id, account_id, ' +
+                                 'amount) VALUES (@newEntryKey, @account, ' +
+                                 '@amount)'))
+             .toBeLessThan(fake.sql.findIndex(s => s.startsWith('UPDATE')));
+       });
+
+  test('binds every caller value as a parameter, interpolating nothing',
+       async () => {
+         const fake = resolvingFake();
+         await runCredit(fake);
+         const insert = fake.statements.find(s => s.sql.startsWith('INSERT'))!;
+         expect(insert.sql).not.toContain('100');
+         expect(insert.params?.amount).toBe(100);
+         expect(insert.paramTypes?.amount).toEqual({code: 'FLOAT64'});
+       });
+
+  test('binds only the parameters a given statement mentions', async () => {
+    // The UPDATE names both; a statement naming one would carry one.
+    const fake = resolvingFake();
+    await runCredit(fake);
+    const update = fake.statements.find(s => s.sql.startsWith('UPDATE'))!;
+    expect(Object.keys(update.params ?? {}).sort()).toEqual([
+      'account',
+      'amount',
+    ]);
+    expect(update.params?.newEntryKey).toBeUndefined();
+  });
+
+  test('generates the key of a created row rather than taking the caller\'s',
+       async () => {
+         // An agent that picks its own primary key can overwrite a row that
+         // already has that key.
+         const fake = resolvingFake();
+         await runCredit(fake);
+         const insert = fake.statements.find(s => s.sql.startsWith('INSERT'))!;
+         expect(typeof insert.params?.newEntryKey).toBe('string');
+         expect(insert.params?.newEntryKey as string).not.toBe('');
+       });
+
+  test('resolves an entity-typed argument to its key before binding it',
+       async () => {
+         const fake = resolvingFake();
+         await runCredit(fake);
+         const update = fake.statements.find(s => s.sql.startsWith('UPDATE'))!;
+         expect(update.params?.account).toBe('1');
+       });
+
+  test('commits once every statement has run', async () => {
+    const fake = resolvingFake();
+    await runCredit(fake);
+    expect(fake.committed).toBe(true);
+    expect(fake.rolledBack).toBe(false);
+  });
+});
+
+
+// Nothing evaluates a constraint yet. The runtime therefore has to tell an
+// action a constraint might decide from one no constraint touches, and refuse
+// the first rather than apply a write the model says must be checked.
+describe('an action a constraint may decide is refused, not run unchecked', () => {
+  const balance: Constraint = {
+    name: 'NonNegativeBalance',
+    expression: 'Account.balance >= 0',
+    description: 'An account cannot go negative.',
+  };
+
+  const runWith = (over: Partial<SemanticModel>, fake = resolvingFake()) =>
+      runAction({
+        model: creditModel(over),
+        actionName: 'Credit',
+        args: {account: 'A1', amount: 100},
+        client: fake.client,
+      });
+
+  test('an action that names a guard is refused', async () => {
+    const outcome = await runWith({
+      actions: [{...credit, guards: ['NonNegativeBalance']}],
+      constraints: [balance],
+    });
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain("guarded by 'NonNegativeBalance'");
+    expect(outcome.message).toContain('does not evaluate constraints yet');
+  });
+
+  test('a refused action never opens a transaction', async () => {
+    // The point of deciding before the store is touched: there is nothing to
+    // roll back, and no session to leak.
+    const fake = resolvingFake();
+    await runWith(
+        {
+          actions: [{...credit, guards: ['NonNegativeBalance']}],
+          constraints: [balance],
+        },
+        fake);
+    expect(fake.statements).toHaveLength(0);
+    expect(fake.sessionsOpened).toBe(0);
+    expect(fake.rolledBack).toBe(false);
+  });
+
+  test('an action writing data a constraint reads is refused, and says which',
+       async () => {
+         // Credit affects Account; NonNegativeBalance reads Account.balance.
+         // Nothing links them in the model -- an invariant holds for every
+         // write -- so the overlap is the only signal there is.
+         const outcome = await runWith({constraints: [balance]});
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message).toContain("'NonNegativeBalance' constrains");
+       });
+
+  test('an action writing data no constraint reads runs', async () => {
+    // The same constraint, over an entity Credit does not touch. This is what
+    // makes the runtime useful before the evaluator exists.
+    const outcome = await runWith({
+      constraints: [{
+        name: 'NamedAccount',
+        expression: 'Ledger.name IS NOT NULL',
+        description: 'Every ledger is named.',
+      }],
+      entities: [
+        ...creditModel().entities,
+        {
+          name: 'Ledger',
+          dataSource: 'demo.payments.Ledger',
+          keys: ['ledgerId'],
+          fields: [
+            {name: 'ledgerId', expression: 'ledger_id'},
+            {name: 'name', expression: 'name', type: 'String'},
+          ],
+        },
+      ],
+    });
+    expect(outcome.status).toBe('committed');
+  });
+
+  test('an action that declares no affects is refused when the model has ' +
+           'constraints',
+       async () => {
+         // Silence is not a statement that nothing is constrained, and reading
+         // it as one is the single guess here that fails open.
+         const outcome = await runWith({
+           actions: [{...credit, affects: undefined}],
+           constraints: [balance],
+         });
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message).toContain("declares no 'affects'");
+       });
+
+  test('an action that declares no affects runs when the model has no ' +
+           'constraints',
+       async () => {
+         // Nothing to be unsure about, so there is nothing to refuse. The DML
+         // is the UPDATE alone: dropping `affects` drops the `create` that
+         // generates `@newEntryKey`, so an INSERT binding it would fail for an
+         // unrelated reason and prove nothing about the refusal rules.
+         const outcome = await runWith({
+           actions: [{
+             ...credit,
+             affects: undefined,
+             executor: {
+               kind: 'sql',
+               sql: {
+                 statements: [
+                   'UPDATE Account SET balance = balance - @amount ' +
+                       'WHERE account_id = @account',
+                 ],
+               },
+             },
+           }],
+         });
+         expect(outcome.status).toBe('committed');
+       });
+
+  test('a guard is refused even when the model states no such constraint',
+       async () => {
+         // An unresolved guard fails the push, so this model should not exist.
+         // If one reaches the runtime anyway, the action still claims to be
+         // checked, and running it would still be running it unchecked.
+         const outcome = await runWith({
+           actions: [{...credit, guards: ['NoSuchRule']}],
+           constraints: [],
+         });
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message).toContain("guarded by 'NoSuchRule'");
+       });
+
+  test('several bearing constraints are all named, in a stable order',
+       async () => {
+         const outcome = await runWith({
+           constraints: [
+             {name: 'ZBalance', expression: 'Account.balance >= 0'},
+             {name: 'AEntry', expression: 'Entry.amount > 0'},
+           ],
+         });
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message).toContain("'AEntry' and 'ZBalance'");
+       });
+});
