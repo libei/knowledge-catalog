@@ -190,6 +190,7 @@
           "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
           "data": {
             "expression": "orders.o_totalprice >= 0",
+            "evaluation": "deterministic",
             "aiContext": {
               "instructions": "Quote the shortfall in the customer's own currency when refusing.",
               "synonyms": [
@@ -216,7 +217,8 @@
         "sqlgen-testing.global.semantic-constraint": {
           "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
           "data": {
-            "expression": "OrderedAs.quantity > 0"
+            "expression": "OrderedAs.quantity > 0",
+            "evaluation": "deterministic"
           }
         }
       }
@@ -234,6 +236,7 @@
           "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
           "data": {
             "expression": "orders.o_totalprice <= 100000",
+            "evaluation": "deterministic",
             "onViolation": "escalate",
             "severity": "high"
           }
@@ -252,7 +255,28 @@
         "sqlgen-testing.global.semantic-constraint": {
           "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
           "data": {
-            "expression": "quantity > 0"
+            "expression": "quantity > 0",
+            "evaluation": "deterministic"
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.LargeOrderIsJustified",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "LargeOrderIsJustified",
+        "description": "Say what makes this order larger than usual, then resubmit for approval."
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-constraint": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
+          "data": {
+            "judgment": "An order whose orders.o_totalprice is far above what this customer usually places must be explained by something in the request itself, such as a stated event or a contract reference. A round number alone is not an explanation.",
+            "evaluation": "judged",
+            "onViolation": "escalate",
+            "severity": "medium"
           }
         }
       }
@@ -302,7 +326,7 @@
   ],
   "warnings": [
     "model 'sales': 1 action(s) published as semantic-action entries (Knowledge Catalog is the only system an action reaches).",
-    "model 'sales': 4 constraint(s) published as semantic-constraint entries (Knowledge Catalog is the only system a constraint reaches).",
+    "model 'sales': 5 constraint(s) published as semantic-constraint entries (Knowledge Catalog is the only system a constraint reaches).",
     "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
   ]
 }

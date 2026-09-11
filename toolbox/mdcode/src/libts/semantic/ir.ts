@@ -64,11 +64,12 @@ export interface SemanticModel {
   // absent on models authored before actions existed, so consumers read it as
   // `actions ?? []`. See Action.
   actions?: Action[];
-  // Named invariants over the ontology: a boolean `expression` that must hold
-  // for every instance (e.g. `Customer.accountBalance >= 0`). Model-level, like
-  // metrics and actions. Optional, and absent on models authored before
-  // constraints existed, so consumers read it as `constraints ?? []`. See
-  // Constraint.
+  // Named invariants over the ontology, each stating one condition that must
+  // hold for every instance -- as a boolean `expression` a query can compute
+  // (`Customer.accountBalance >= 0`), or as a `judgment` in words for a rule no
+  // expression decides. Model-level, like metrics and actions. Optional, and
+  // absent on models authored before constraints existed, so consumers read it
+  // as `constraints ?? []`. See Constraint.
   constraints?: Constraint[];
   // Vendor extension blocks carried verbatim (round-trip fidelity), including the
   // model-level GOOGLE block. A typed deployment-target view is derived by the
@@ -473,7 +474,8 @@ export interface GrpcExecutor {
 }
 
 /**
- * What a violated constraint does to the write that tripped it.
+ * The strongest thing a violated constraint may do to the write that tripped
+ * it.
  *
  *   - `reject`   the write is refused. Nobody is allowed to approve it, which
  *                is what makes the rule an invariant rather than a policy.
@@ -485,6 +487,14 @@ export interface GrpcExecutor {
  * rule publishes with the same shape, and a $30 credit that needs a supervisor
  * is indistinguishable from one that is simply forbidden.
  *
+ * The three words are ordered by how much they let through: `reject` permits
+ * nothing, `escalate` permits the write once a person approves it, `warn`
+ * permits it outright. The declared word is a ceiling on that scale, so an
+ * evaluation may settle on a word that permits at least as much and never on
+ * one that permits less. A constraint with a single condition reaches its
+ * ceiling whenever it is violated at all, which is why an expression's declared
+ * word and its outcome are always the same word.
+ *
  * This is a disposition, not a magnitude, and the two are deliberately separate
  * keys. `escalate` is not "between" reject and warn on a scale of badness: it is
  * a different control flow, and what it really states is that an approver
@@ -494,6 +504,63 @@ export interface GrpcExecutor {
  *
  * `escalate` names that an approver exists. It does not name who: an approver
  * role is not modeled yet.
+ *
+ * A judged constraint may not declare `reject`, and must declare one of the
+ * other two. `reject` is what makes a rule an invariant: nobody in the
+ * organization may approve the write. That authority should not rest on an
+ * evaluation that can decide two identical proposals differently, with no
+ * person in the loop. `escalate` stops the write just as firmly and adds
+ * someone who can be held responsible for releasing it. The word is required
+ * rather than defaulted there, because the default for an unmarked constraint
+ * is `reject` and a rule whose safe default is unavailable should say what it
+ * wants instead of inheriting a different one by body kind.
+ *
+ * The ceiling exists for one narrow case: grading a single judged condition. A
+ * thin discount justification may warrant a warning where an obviously
+ * pretextual one warrants escalation, and the two cannot be written as separate
+ * constraints without asking a judge the same question twice and depending on
+ * the answers agreeing. The ceiling lets one condition carry both responses
+ * while the enforceable bound stays a word load can read.
+ *
+ * IT IS NOT A PLACE TO PUT A POLICY THAT BRANCHES. A written policy usually has
+ * several conditions -- over one amount a director approves, under another a
+ * missing receipt needs a manager, and separately the stated reason must be
+ * plausible -- and the first two of those are expressions. Each condition
+ * becomes its own constraint, with its own name, `onViolation` and `severity`,
+ * and `guards` on the action regroups them into the policy the business wrote.
+ * That keeps each branch independently searchable, revisable and owned, and it
+ * keeps the computable branches computable. Folding the set into one judgment
+ * because the prose can express the routing produces a judged rule where the
+ * model should hold three deterministic ones and a judged one, which discards
+ * the distinction the second body was added to draw.
+ *
+ * The ceiling is not checked against the judgment, and it cannot be: the prose
+ * is prose. A judgment naming a response above its declared word is enforced at
+ * the declared word, so the routing stays safe, but the published rule then
+ * says something the engine will not do. That is a real cost of the reading and
+ * the reason its scope is narrow.
+ *
+ * Three things need the declared word without running the judge, which is why
+ * the routing stays a field even though a sentence can carry its own
+ * consequence. The restriction above is one: load can refuse `reject` only
+ * while `reject` is a value it can see, and a check that asks a model whether a
+ * sentence means refusal is no guardrail at all. An unrunnable judge is the
+ * second: no judge, a failed call or a timeout still has to route the breach it
+ * could not evaluate. Translation is the third: a policy DSL states its effect
+ * in the rule head, so a rule whose consequence is only implied by its wording
+ * cannot be lowered into one.
+ *
+ * What the ceiling costs in search is precision. Rules that can escalate
+ * include ones that in practice usually only warn. The reverse error would be
+ * worse, a search for warnings that missed rules able to stop a write, so the
+ * overstatement runs in the safe direction.
+ *
+ * STATUS of the ceiling: the declared word is the enforced word, and that is
+ * the whole of what is implemented. Nothing evaluates a judgment, so no verdict
+ * has ever been graded beneath the bound. When a verdict format arrives this is
+ * what it is checked against; until then the reading is a bound with one
+ * possible value, and the paragraphs above describe what it is for rather than
+ * what runs.
  */
 export const VIOLATION_EFFECTS = ['reject', 'escalate', 'warn'] as const;
 
@@ -513,6 +580,10 @@ export type ViolationEffect = (typeof VIOLATION_EFFECTS)[number];
  * a severity called `warning` sitting beside an effect called `warn` would read
  * as the same statement made twice.
  *
+ * Like `onViolation`, this is the gravest a violation of the rule can be rather
+ * than the gravity of every violation of it, so a judged condition graded
+ * across a range publishes the top of that range.
+ *
  * STATUS: authored, published and read back. Nothing ranks or routes on it yet.
  */
 export const CONSTRAINT_SEVERITIES =
@@ -521,11 +592,57 @@ export const CONSTRAINT_SEVERITIES =
 export type ConstraintSeverity = (typeof CONSTRAINT_SEVERITIES)[number];
 
 /**
- * A constraint: a model-level, named invariant over the ontology -- a boolean
- * `expression` that must hold for every instance. It is written in the same
- * expression language as a metric (`Customer.accountBalance >= 0`,
+ * How a constraint is checked, derived from which body it declares.
+ *
+ *   - `deterministic` an `expression`. Computable, reproducible, and the only
+ *                     kind that can lower to a store-level `CHECK` or inform a
+ *                     query plan.
+ *   - `judged`        a `judgment`. Settled by a language model reading the
+ *                     proposed change, because no expression over the ontology
+ *                     decides it.
+ *
+ * Published on the aspect so a consumer can select without knowing which key
+ * the author populated. A pass that lowers constraints to SQL takes the
+ * deterministic ones; a judge takes the judged ones.
+ */
+export const CONSTRAINT_EVALUATIONS = ['deterministic', 'judged'] as const;
+
+export type ConstraintEvaluation = (typeof CONSTRAINT_EVALUATIONS)[number];
+
+/**
+ * How a constraint is checked. Derived rather than authored: a constraint
+ * declares exactly one body, and that choice is the whole of the distinction.
+ */
+export function constraintEvaluation(c: Constraint): ConstraintEvaluation {
+  return c.judgment !== undefined ? 'judged' : 'deterministic';
+}
+
+/**
+ * A constraint: a model-level, named invariant over the ontology. It declares
+ * exactly one body, and the body says how the rule is checked.
+ *
+ * An `expression` is a boolean that must hold for every instance, written in
+ * the same expression language as a metric (`Customer.accountBalance >= 0`,
  * `OrderedAs.quantity > 0`), and may reference a metric by name when the rule
  * needs an aggregate.
+ *
+ * A `judgment` is the same kind of rule stated in words, for the rules that no
+ * expression decides: *the credit memo must name a specific service failure*
+ * is a real requirement with a real owner, and no arithmetic settles it.
+ * Without this body such a rule has nowhere to go but `description`, where
+ * nothing distinguishes it from the message explaining a different rule.
+ *
+ * One judgment states one condition. A policy with several conditions becomes
+ * several constraints, and `guards` on the action regroups them -- see
+ * VIOLATION_EFFECTS for why folding them into one judgment is the wrong trade,
+ * and for the narrow grading the single condition still permits.
+ *
+ * What the catalog offers a judged rule is identity and governance, never
+ * determinism: one name, one owner, one version, one ceiling, and the same text
+ * for every caller instead of prose re-improvised per call. A language model
+ * can still decide two identical proposals differently, and no schema changes
+ * that. The mitigation is `onViolation`, which a judged constraint must state
+ * and may not set to `reject` -- see VIOLATION_EFFECTS.
  *
  * STATUS: authored, validated and published; not yet enforced. kcmd carries a
  * constraint to Knowledge Catalog, where an agent can read the rules a model
@@ -540,15 +657,29 @@ export type ConstraintSeverity = (typeof CONSTRAINT_SEVERITIES)[number];
  */
 export interface Constraint {
   name: string;
-  expression: string;     // boolean invariant in the model's expression language
-  description?: string;   // human-readable summary; also the violation error
-  // What the engine does when this constraint does not hold. Defaults to
-  // `reject`: an unmarked rule refuses the write, which is the safe reading of
-  // an author who did not say. See VIOLATION_EFFECTS.
+  // Exactly one of `expression` and `judgment`. Declaring neither, or both, is
+  // a hard load error: the pair is what tells a consumer whether the rule can
+  // be computed, and a constraint that answers both ways answers neither.
+  expression?: string;  // boolean invariant in the model's expression language
+  // The rule in words, for a rule no expression decides. Write field names
+  // model-qualified (`LineItem.memo` rather than "the memo"): validate resolves
+  // every `Entity.field` token in the text, so the reference is checked, and it
+  // lives in the sentence that uses it rather than in a second list that drifts
+  // from the prose beside it. States one condition: a policy with several goes
+  // in several constraints, regrouped by `guards` on the action. The one
+  // condition may still warrant a graded response, bounded by `onViolation`.
+  judgment?: string;
+  description?: string;  // human-readable summary; also the violation error
+  // The strongest thing a violation of this constraint may do to the write. On
+  // an `expression` it defaults to `reject`: an unmarked rule refuses the
+  // write, which is the safe reading of an author who did not say, and a
+  // single-condition rule reaches its ceiling whenever it is violated. On a
+  // `judgment` it is required, and `reject` is refused. See VIOLATION_EFFECTS.
   onViolation?: ViolationEffect;
-  // How grave a violation is, for ranking and reporting. Orthogonal to
-  // `onViolation` and carries no default -- an author who did not say has not
-  // said, and nothing reads it yet. See CONSTRAINT_SEVERITIES.
+  // The gravest a violation is, for ranking and reporting. Orthogonal to
+  // `onViolation`, read as a ceiling for the same reason, and carries no
+  // default -- an author who did not say has not said, and nothing reads it
+  // yet. See CONSTRAINT_SEVERITIES.
   severity?: ConstraintSeverity;
   aiContext?: AiContext;
   // No `customExtensions`. Every other IR object has one because vanilla Ossie

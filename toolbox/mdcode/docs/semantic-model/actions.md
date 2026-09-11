@@ -164,9 +164,9 @@ which lands separately.
 
 ## 2. Gate it with a constraint
 
-A **constraint** is a named boolean invariant a model states over its ontology.
-An action needs none; declare one when a rule decides whether a call may proceed
-at all. Where a constraint applies depends on what its expression reads.
+A **constraint** is a named invariant a model states over its ontology. An
+action needs none; declare one when a rule decides whether a call may proceed at
+all. Where a constraint applies depends on what its rule reads.
 
 An expression over stored data holds for every write, whatever performed that
 write. No action has to name such a constraint:
@@ -215,15 +215,72 @@ same rule may gate `TransferFunds` and leave `CloseAccount` alone.
 
 `guards` and `on_violation` answer different questions, and both can be set. A
 guard says *when* the constraint is checked — before the write, with the
-arguments bound. `on_violation` says what a breach does: `reject` refuses the
-call, `escalate` holds it for an approver, `warn` reports it and lets the write
-proceed. So guarding a constraint that declares `warn` is a real shape rather
+arguments bound. `on_violation` says the strongest thing a breach may do:
+`reject` refuses the call, `escalate` holds it for an approver, `warn` reports
+it and lets the write proceed. So guarding a constraint that declares `warn` is a real shape rather
 than a contradiction: it is how a rule the organization is not yet ready to
 block on still gets checked at the moment of the call and reported back.
 
+### When no expression decides it
+
+Some rules a business enforces cannot be written as a boolean. Whether a
+discount is justified by the reason given, whether a refund note explains the
+exception it claims — a query can read the text but cannot settle the question.
+Such a rule goes in `judgment` instead of `expression`:
+
+```yaml
+    constraints:
+      - name: DiscountIsJustified
+        judgment: >-
+          A discount over 30% must be justified by the reason given in
+          Order.discount_reason. A reason that only restates the discount, such
+          as "competitive pricing", is not a justification.
+        description: >-
+          Say what makes this discount necessary, then resubmit for approval.
+        on_violation: escalate
+        severity: high
+```
+
+A constraint declares one body or the other, never both and never neither. Field
+names inside a judgment are written model-qualified — `Order.discount_reason`
+rather than "the reason" — so `kcmd` resolves the reference against the model
+and a rename cannot leave the sentence pointing at nothing.
+
+A judgment must state `on_violation`, and it may not be `reject`. What settles a
+judged rule is a language model, which can decide two identical proposals
+differently. It may hold a write for a person to approve; it may not be the last
+word refusing a write nobody can appeal. A condition that must refuse outright
+belongs in its own constraint, written as an expression.
+
+One judgment states one condition. A written policy usually has several — over
+one amount a director approves, under another a manager does, and separately the
+stated reason must be specific — and it becomes several constraints, each named,
+each with its own `on_violation` and `severity`, which `guards` on the action
+then regroups into the policy the business wrote:
+
+```yaml
+        guards: [DiscountWithinDirectorLimit, DiscountIsJustified]
+```
+
+Folding those branches into one judgment would be the wrong trade. The branches
+an expression can decide stop being searchable, revisable and separately owned,
+and the line between what a query settles and what a reader settles — the reason
+the second body exists — disappears into prose.
+
+An action whose guards are *all* judged loads with a warning. It has no gate a
+query can decide, so every call costs a model decision and none of its rules can
+lower to a store-level check. One expression guard among them settles it.
+
+**Status: nothing calls a judge.** `kcmd` parses `judgment`, validates it,
+publishes it and reads it back, and publishes a derived `evaluation` field
+saying whether the rule is `deterministic` or `judged` so a consumer can select
+on it. No component asks a model to settle one.
+
 `kcmd` reports a mismatch from either side. A guard that names no constraint
 fails the push. A constraint over parameters that no action names loads with a
-warning, because nothing will ever evaluate it.
+warning, because nothing will ever evaluate it. That scan reads expressions
+only: a judgment is prose, in which a word matching a parameter name is not a
+read of that parameter.
 
 **Status: nothing evaluates a guard yet.** `kcmd` parses `guards`, resolves each
 name, publishes the list, and reads it back. No component checks a guard against

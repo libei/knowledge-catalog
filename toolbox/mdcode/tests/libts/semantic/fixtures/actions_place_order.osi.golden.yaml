@@ -104,3 +104,12 @@ semantic_model:
         expression: quantity > 0
         description: A request must be for at least one unit. Ask the caller for the
           quantity again before retrying.
+      - name: LargeOrderIsJustified
+        judgment: An order whose orders.o_totalprice is far above what this customer
+          usually places must be explained by something in the request itself,
+          such as a stated event or a contract reference. A round number alone
+          is not an explanation.
+        description: Say what makes this order larger than usual, then resubmit for
+          approval.
+        on_violation: escalate
+        severity: medium

@@ -173,12 +173,19 @@ foreign-key edges only, so a concept naming an M:N edge would look unresolvable
 on a model that is perfectly well-formed. It comes back untouched instead.
 
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry
-under the model entry, with the expression and any `instructions` in a
+under the model entry, with the rule and any `instructions` in a
 `semantic-constraint` aspect and the `description` as the entry's own summary.
-Name, expression, description, `on_violation`, `severity`, and instructions
-round-trip losslessly through `pull`. A constraint that declares neither routing
-word comes back without them rather than with a default filled in. That entry
-type is custom too, and a model that declares no constraint never needs it.
+Name, description, `on_violation`, `severity`, instructions, and whichever body
+states the rule — `expression` or `judgment` — round-trip losslessly through
+`pull`. A constraint that declares neither routing word comes back without them
+rather than with a default filled in. The aspect also carries a derived
+`evaluation` field, `deterministic` or `judged`, which a pull recomputes from
+the body rather than reading, so it can never come back disagreeing with the
+rule beside it; it is not written into the authored document, because a derived
+value in an authored file is a value that can go stale. An entry that states
+both bodies, or neither, is skipped with a warning rather than pulled into a
+model that would then fail its own push. That entry type is custom too, and a
+model that declares no constraint never needs it.
 
 ¹⁰ What you author is the `expression.dialects[]` list; the graph builds from the canonical (BigQuery/ANSI) variant. `importedExpression` / `importedDialect` are not authored keys — the loader *derives* them from a non-canonical dialect entry (e.g. the MAQL or Snowflake form a metric was imported from) and uses that verbatim as the fallback when no canonical variant exists. See [Model spec §2.5](model_spec.md#25-expressions).
 

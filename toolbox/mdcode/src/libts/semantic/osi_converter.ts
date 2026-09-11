@@ -318,13 +318,17 @@ function affectedConceptDoc(affected: AffectedConcept):
   });
 }
 
-// Inverts loader.convertConstraint. The expression is a logical invariant and
-// round-trips verbatim, since nothing about it is derived.
+// Inverts loader.convertConstraint. Both bodies are logical invariants and
+// round-trip verbatim, since nothing about either is derived. The `evaluation`
+// word the published aspect carries is absent here for that reason: it is
+// computed from which body the constraint states, so emitting it would put a
+// derived value in an authored document.
 function constraintDoc(constraint: Constraint): Record<string, any> {
   // No dropExtensions call: a constraint carries no custom extensions to drop.
   return compact({
     name: constraint.name,
     expression: constraint.expression,
+    judgment: constraint.judgment,
     description: constraint.description,
     on_violation: constraint.onViolation,
     severity: constraint.severity,

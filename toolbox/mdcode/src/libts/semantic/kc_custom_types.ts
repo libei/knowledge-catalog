@@ -395,8 +395,19 @@ export const CONSTRAINT_TYPE_ID = 'semantic-constraint';
 
 // The aspect that carries a constraint's rule.
 //
-// The expression is the whole of the machine-readable content, so it is a
-// required field: a constraint entry without one states no invariant.
+// A constraint states its rule in one of two fields, and neither is required on
+// its own because either one alone is a whole rule. `expression` is a boolean
+// expression a query can compute. `judgment` is the rule in words, for a rule
+// no expression decides -- whether a discount is justified, whether a refund
+// reason is plausible -- which a language-model judge settles at review time.
+// The push refuses a constraint that states both or neither, so the pair is
+// required in the sense that matters and the template cannot say so.
+//
+// `evaluation` restates which of the two the constraint used. It is derived,
+// never authored, and a reader recomputes it from the bodies rather than
+// trusting it. It exists so a consumer selecting rules to lower into a store
+// CHECK and a consumer selecting rules to hand a judge can each filter on one
+// field.
 //
 // The other two authored fields are the ones every model element carries, and
 // they land in different places. `description` rides the entry source, the way
@@ -416,9 +427,10 @@ export const CONSTRAINT_TYPE_ID = 'semantic-constraint';
 const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   displayName: 'Semantic Constraint',
   description:
-      'An invariant over a semantic model: a boolean expression that must ' +
-      'hold for every instance of an entity, however that instance was ' +
-      'written.',
+      'An invariant over a semantic model: a condition that must hold for ' +
+      'every instance of an entity, however that instance was written. The ' +
+      'condition is either a boolean expression a query can compute or a ' +
+      'rule stated in words for a reader to settle.',
   metadataTemplate: {
     name: CONSTRAINT_TYPE_ID,
     type: 'record',
@@ -427,12 +439,13 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         index: 1,
         name: 'expression',
         type: 'string',
-        constraints: {required: true},
         annotations: {
           displayName: 'Expression',
           description:
               'The invariant, as a boolean expression in the model\'s ' +
-              'expression language, for example `Customer.balance >= 0`.',
+              'expression language, for example `Customer.balance >= 0`. ' +
+              'Present on a constraint a query can decide; a constraint ' +
+              'states `judgment` instead when no expression decides it.',
         },
       },
       aiContextField(2),
@@ -443,11 +456,21 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         annotations: {
           displayName: 'On Violation',
           description:
-              'What a violation does to the write that tripped it: ' +
-              '`reject` refuses the write and nobody may approve it, ' +
-              '`escalate` holds the write for a human decision, `warn` lets ' +
-              'it proceed and reports it. Absent means `reject`. `escalate` ' +
-              'states that an approver exists, not who they are.',
+              'The strongest thing a violation may do to the write that ' +
+              'tripped it: `reject` refuses the write and nobody may approve ' +
+              'it, `escalate` holds the write for a human decision, `warn` ' +
+              'lets it proceed and reports it. Absent means `reject`. ' +
+              '`escalate` states that an approver exists, not who they are. ' +
+              'The words are ordered by how much they let through, and this ' +
+              'one is a ceiling: an evaluation may settle on a word that ' +
+              'permits at least as much and never on one that permits less, ' +
+              'which lets a single judged condition warrant a graded ' +
+              'response. A policy with several conditions is published as ' +
+              'several constraints instead, each with its own word. A ' +
+              'constraint stating `judgment` always states this field and ' +
+              'never states `reject`: an evaluation that can decide two ' +
+              'identical proposals differently may hold a write for a person ' +
+              'but may not be the last word refusing it.',
         },
       },
       {
@@ -457,10 +480,44 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         annotations: {
           displayName: 'Severity',
           description:
-              'How grave a violation is, for ranking and reporting: ' +
+              'The gravest a violation is, for ranking and reporting: ' +
               '`critical`, `high`, `medium` or `low`. Independent of what ' +
-              'the engine does about it, which is `onViolation`. Absent ' +
-              'means the model did not say; there is no default.',
+              'the engine does about it, which is `onViolation`, and read as ' +
+              'a ceiling for the same reason: a judged condition graded ' +
+              'across a range publishes the top of that range. Absent means ' +
+              'the model did not say; there is no default.',
+        },
+      },
+      {
+        index: 5,
+        name: 'judgment',
+        type: 'string',
+        annotations: {
+          displayName: 'Judgment',
+          description:
+              'The invariant in words, for a rule no boolean expression ' +
+              'decides, for example `A discount over 30% must be justified ' +
+              'by the reason given in Order.discount_reason`. A ' +
+              'language-model judge settles it against the proposed write at ' +
+              'review time. Field names are written model-qualified so a ' +
+              'reader can resolve them. States one condition: a policy with ' +
+              'several is published as several constraints. Present instead ' +
+              'of `expression`, never alongside it.',
+        },
+      },
+      {
+        index: 6,
+        name: 'evaluation',
+        type: 'string',
+        annotations: {
+          displayName: 'Evaluation',
+          description:
+              'How the constraint is settled: `deterministic` when it ' +
+              'states an `expression`, `judged` when it states a ' +
+              '`judgment`. Derived from which of the two the constraint ' +
+              'used, so it says nothing they do not, and present so a ' +
+              'consumer can select rules by how they are decided without ' +
+              'inspecting both bodies.',
         },
       },
     ],

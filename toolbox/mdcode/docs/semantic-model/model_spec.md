@@ -484,24 +484,62 @@ reads the document ([§6](#6-the-extension-mechanism)).
   whose `operation` is `create`. Those rules are what let every value be bound
   rather than interpolated, so an argument cannot reach the store as SQL.
 
-- **`constraints` (extended profile only).** Model-level named boolean
-  invariants over the ontology, written in the same expression language as a
-  metric — `Account.balance >= 0`. Accepted only under `0.2.0.dev0/google`.
+- **`constraints` (extended profile only).** Model-level named invariants over
+  the ontology, accepted only under `0.2.0.dev0/google`. Each states exactly one
+  condition, in exactly one of two bodies.
+
+  **`expression`** is a boolean written in the same expression language as a
+  metric — `Account.balance >= 0`. **`judgment`** is the rule in words, for a
+  condition no expression decides: whether a discount is justified by the reason
+  given, whether a refund note explains the exception it claims. Field names in
+  a judgment are written model-qualified (`Order.discount_reason` rather than
+  "the reason"), so the reference is checked against the model and lives in the
+  sentence that uses it. A constraint declaring both bodies, or neither, is a
+  load error.
+
+  A judgment states one condition. A written policy usually has several — over
+  one amount a director approves, under another a manager does, and separately
+  the stated reason must be specific — and it becomes several constraints, one
+  per condition, each with its own name, `on_violation` and `severity`, which
+  `guards` on the action then regroups into the policy the business wrote. That
+  keeps each branch independently searchable, revisable and owned, and it keeps
+  the branches an expression *can* decide out of prose that no query can read.
+
   A constraint that quantifies over stored data applies to every write without
   being referenced anywhere. A constraint that reads an action's parameters can
   be checked only before that call, so it applies only where an action names it
-  in `guards`; one that no action names at all draws a load warning. Status:
-  authored, validated and published; no component evaluates a constraint, so
-  nothing today rejects a write that would break one. Rules in
-  [Reference → Validation](reference.md#validation).
+  in `guards`; one that no action names at all draws a load warning. An action
+  whose every guard is judged draws one too: it has no gate a query can decide.
+  Status: authored, validated and published; no component evaluates a
+  constraint, so nothing today rejects a write that would break one, and nothing
+  calls a judge. Rules in [Reference → Validation](reference.md#validation).
 
   A constraint MAY say two things about a violation, under two separate keys.
-  **`on_violation`** is what the engine does to the write that tripped it:
-  `reject` refuses it outright and nobody may approve it, `escalate` holds it
-  for a human decision, `warn` lets it proceed and reports it. Absent means
-  `reject`, the safe reading of an author who did not say. **`severity`** is how
-  grave the violation is — `critical`, `high`, `medium` or `low` — for ranking
-  and reporting. It carries no default, and nothing ranks or routes on it yet.
+  **`on_violation`** is the strongest thing a violation may do to the write that
+  tripped it: `reject` refuses it outright and nobody may approve it, `escalate`
+  holds it for a human decision, `warn` lets it proceed and reports it. On an
+  `expression` it defaults to `reject`, the safe reading of an author who did
+  not say. **`severity`** is the gravest a violation is — `critical`, `high`,
+  `medium` or `low` — for ranking and reporting. It carries no default, and
+  nothing ranks or routes on it yet.
+
+  The three words are ordered by how much they let through: `reject` permits
+  nothing, `escalate` permits the write with a person's approval, `warn` permits
+  it outright. Reading `on_violation` as a ceiling rather than a fixed outcome
+  lets a judge grading one condition settle on a word that permits at least as
+  much as the declared one — a thin justification warned about where a
+  pretextual one escalates — while the enforceable bound stays a word the loader
+  can read. It bounds the grading of a single condition; a policy that branches
+  is encoded as several constraints instead.
+
+  A `judgment` MUST state `on_violation`, and it may not be `reject`. A judged
+  rule is settled by a language model that can decide two identical proposals
+  differently, so it may hold a write for a person but may not be the last word
+  refusing one nobody can appeal. The bound is not checked against the prose,
+  because the prose is prose: a judgment whose wording implies a harsher
+  response than its declared word still routes by the word, so the routing stays
+  safe while the published text is wrong. That is a real cost, and the reason
+  the ceiling reading is kept narrow.
 
   They are two keys because they answer different questions, and neither one
   implies the other. A `low` rule can still be an absolute refusal, and a

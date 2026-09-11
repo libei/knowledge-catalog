@@ -298,8 +298,15 @@ ships, the entries move to it and their shape does not change. (This is the
 prototype scope — an action's `precondition` is not modeled yet, and nothing
 consumes its `affects`.)
 
-A **constraint** entry carries its expression in a `semantic-constraint`
-aspect, together with the whole of any `ai_context` declared on it. The
+A **constraint** entry carries its rule in a `semantic-constraint`
+aspect, together with the whole of any `ai_context` declared on it. The rule
+sits in whichever of the two bodies states it — `expression` for a condition a
+query can compute, `judgment` for one stated in words because no expression
+decides it. The aspect adds a third field, `evaluation`, that no author writes:
+it restates which body was used, as `deterministic` or `judged`, so a consumer
+picking rules to lower into SQL and a consumer picking rules to hand to a
+language-model judge each select on one field. A pull recomputes it from the
+body that came back rather than reading it, so the two cannot drift apart. The
 constraint's `description` is the entry's own summary, because that sentence is
 what a caller refused by the rule reads. Its type is provisioned alongside the action pair and
 for the same reason. All three parts of `ai_context` survive, unlike an element
@@ -400,19 +407,41 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   deploy **only** through the Knowledge Catalog leg — a
   graph-only `--no-kc` push validates them but has nowhere to put them, and
   warns that they will not be deployed. *(static)*
-* **Every constraint is checkable.** A constraint's `expression` must be
-  non-empty. When the expression opens with an `<Entity>.<field>` qualifier
-  naming a **known** entity, that entity must declare the field; this catches a
-  typo that would otherwise surface only when something tries to check the rule.
-  A leading qualifier that is not a known entity — a relationship-qualified name
-  like `OrderedAs.quantity`, a metric reference, or compound logic — is left
-  alone rather than guessed at, so a valid constraint is never falsely rejected.
-  Like an action, a constraint reaches Knowledge Catalog only, and a `--no-kc`
-  push warns that it will not be deployed. Two rules are enforced at parse time:
-  `on_violation` and `severity` are each a closed vocabulary — `reject` /
-  `escalate` / `warn` and `critical` / `high` / `medium` / `low` — so an
-  unrecognized word is a hard load error rather than a value that publishes and
-  means nothing. *(static)*
+* **Every constraint states exactly one rule.** A constraint declares an
+  `expression` or a `judgment`, never both and never neither. Declaring both
+  answers the "can this be computed?" question two ways at once, which answers
+  it neither way; declaring neither states no rule at all. Either error names
+  the constraint. *(static)*
+* **Every expression constraint is checkable.** The `expression` must be
+  non-empty. When it opens with an `<Entity>.<field>` qualifier naming a
+  **known** entity, that entity must declare the field; this catches a typo that
+  would otherwise surface only when something tries to check the rule. A leading
+  qualifier that is not a known entity — a relationship-qualified name like
+  `OrderedAs.quantity`, a metric reference, or compound logic — is left alone
+  rather than guessed at, so a valid constraint is never falsely rejected.
+  *(static)*
+* **Every judged constraint says what a violation may do, and may not refuse
+  outright.** The `judgment` must be non-empty, and `on_violation` is required
+  on it rather than defaulting: `escalate` or `warn`, never `reject`. A judged
+  rule is settled by a language model, which can decide two identical proposals
+  differently, so it may hold a write for a person but may not be the last word
+  refusing one nobody can appeal. A condition that must refuse outright belongs
+  in its own constraint, stated as an expression. Every `Entity.field` token in
+  the prose is resolved against the model the same way an expression's leading
+  qualifier is, so a field name that has been renamed out from under the
+  sentence is caught. *(static)*
+* Like an action, a constraint of either kind reaches Knowledge Catalog only,
+  and a `--no-kc` push warns that it will not be deployed. Two rules are
+  enforced at parse time: `on_violation` and `severity` are each a closed
+  vocabulary — `reject` / `escalate` / `warn` and `critical` / `high` /
+  `medium` / `low` — so an unrecognized word is a hard load error rather than a
+  value that publishes and means nothing. *(static)*
+* **An action keeps at least one deterministic gate.** When every constraint an
+  action names in `guards` is judged, the model loads with a warning: the action
+  has nothing gating it that a query can decide, so each of its guards costs a
+  model call that may decide two identical calls differently, and none of them
+  can lower to a store-level check. One expression guard among them silences it.
+  *(warning, at load)*
 * **A constraint over an action's parameters is guarded.** A constraint whose
   expression reads a bare name that is a parameter of some action describes that
   call rather than the stored data, so it can be checked only before the call
@@ -425,7 +454,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   matches identifiers, and an expression may use a bare name that merely
   coincides with a parameter name. Neither a qualified name
   (`OrderedAs.quantity`) nor a quoted literal (`status = 'quantity'`) counts as
-  a parameter read.
+  a parameter read. The scan reads expressions only: a judgment is prose, in
+  which a word matching a parameter name is not a read of that parameter.
   *(warning, at load)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it

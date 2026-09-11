@@ -371,3 +371,63 @@ describe('guards survive every round trip', () => {
     expect(w).toContain(`'RequestedQuantityIsPositive'`);
   });
 });
+
+
+// A judged constraint states its rule as prose a language model settles. It
+// links to an action the way an expression does, and the two places the loader
+// treats it differently are both about what a warning can conclude.
+describe('judged constraints as guards', () => {
+  const judged = (name: string) => ({
+    name,
+    judgment: 'The request must be defensible.',
+    on_violation: 'escalate',
+  });
+
+  test('a judged constraint can guard an action', () => {
+    const {models, warnings} =
+        withGuards(['Defensible'], [judged('Defensible')]);
+    expect(models[0].actions![0].guards).toEqual(['Defensible']);
+    expect(warnings.some(w => w.includes('no constraint of that name')))
+        .toBe(false);
+  });
+
+  test('an action guarded only by judged constraints is warned about', () => {
+    // Nothing deterministic gates the write: no guard can lower to a store
+    // check, and none can refuse on its own.
+    const {warnings} = withGuards(['Defensible'], [judged('Defensible')]);
+    const w = warnings.find(x => x.includes('no deterministic gate'));
+    expect(w).toBeDefined();
+    expect(w).toContain(`action 'PlaceOrder'`);
+  });
+
+  test('one deterministic guard among them is enough to stay quiet', () => {
+    const {warnings} = withGuards(['Defensible', 'PositiveQuantity'], [
+      judged('Defensible'),
+      {name: 'PositiveQuantity', expression: 'quantity > 0'}
+    ]);
+    expect(warnings.some(w => w.includes('no deterministic gate'))).toBe(false);
+  });
+
+  test('an action naming no guards is not warned about', () => {
+    // The message is about the guards an action chose. An action that chose
+    // none raises a different question, which this does not answer.
+    const {warnings} = withGuards(undefined, [judged('Defensible')]);
+    expect(warnings.some(w => w.includes('no deterministic gate'))).toBe(false);
+  });
+
+  test(
+      'a judged constraint naming a parameter is not reported as unguarded',
+      () => {
+        // The unguarded-parameter scan looks for a bare identifier matching a
+        // parameter name. A judgment is prose, so `quantity` in it is as
+        // likely to be an ordinary noun as a reference, and concluding
+        // anything from the match would report rules that are well guarded.
+        const {warnings} =
+            withGuards(undefined, [{
+                         name: 'Defensible',
+                         judgment: 'The requested quantity must be defensible.',
+                         on_violation: 'warn',
+                       }]);
+        expect(warnings.some(w => w.includes(`'Defensible'`))).toBe(false);
+      });
+});

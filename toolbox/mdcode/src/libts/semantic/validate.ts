@@ -11,7 +11,7 @@
 import {BigQueryClient} from '../gcp/bigquery';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {Action, Executor, generatedKeyParam, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, Constraint, Executor, generatedKeyParam, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {LoadedModel} from './loader';
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedParameters} from './sql_identifiers';
@@ -347,11 +347,20 @@ function declaredConcepts(model: SemanticModel): Map<string, DeclaredConcept> {
 }
 
 
-// Static, target-independent checks for a model's constraints. Two checks:
+// Static, target-independent checks for a model's constraints.
+//
+// First, every constraint must declare exactly one body. `expression` says the
+// rule can be computed and `judgment` says it cannot, so a constraint with both
+// answers neither, and one with neither states no rule at all.
+//
+// An `expression` then gets two checks:
 //   - the expression must be non-empty;
 //   - when it opens with a `<Entity>.<field>` qualifier naming a KNOWN entity,
 //     that entity must declare the field. This catches a typo that would
 //     otherwise surface only inside an agent's rejected action.
+// A `judgment` gets the field-reference check over every qualified token in the
+// prose, plus the two routing rules in judgedConstraintErrors.
+//
 // Everything else is left alone. The expression is a logical invariant, and
 // whatever evaluates it resolves it against the ontology. So a leading
 // qualifier that is not a known entity is not guessed at here: a
@@ -378,18 +387,118 @@ function validateConstraints(
   for (const c of constraints) {
     const where =
         `constraint '${c.name}' in model '${model.name}' (${document})`;
-    if (!c.expression.trim()) {
+    const hasExpression = c.expression !== undefined;
+    const hasJudgment = c.judgment !== undefined;
+    if (hasExpression && hasJudgment) {
+      errors.push(
+          `${where} declares both an expression and a judgment. A constraint ` +
+          `states one rule in one body: use 'expression' when the rule can be ` +
+          `computed, 'judgment' when it cannot.`);
+      continue;
+    }
+    if (!hasExpression && !hasJudgment) {
+      errors.push(
+          `${where} declares neither an expression nor a judgment. Give it ` +
+          `one: 'expression' when the rule can be computed, 'judgment' when ` +
+          `it cannot.`);
+      continue;
+    }
+
+    if (hasJudgment) {
+      errors.push(...judgedConstraintErrors(c, where, fieldsByEntity));
+      continue;
+    }
+
+    if (!c.expression!.trim()) {
       errors.push(`${where} has an empty expression.`);
       continue;
     }
     if (!fieldsByEntity) continue;
-    const ref = leadingFieldRef(c.expression);
+    const ref = leadingFieldRef(c.expression!);
     if (!ref) continue;
     const fields = fieldsByEntity.get(ref.entity);
     if (fields && !fields.has(ref.field)) {
       errors.push(`${where} references '${ref.entity}.${ref.field}', but ` +
           `entity '${ref.entity}' declares no field '${ref.field}'.`);
     }
+  }
+  return errors;
+}
+
+// What a judged constraint must satisfy, beyond stating a body at all.
+//
+// Two of the three checks are about what a violation may do. A judged rule is
+// settled by a language model, which can decide two identical proposals
+// differently, so it may not be the last word on a refusal nobody may appeal.
+// Requiring the word rather than defaulting to `escalate` keeps one rule for
+// readers of the published aspect: absent means `reject`, whatever the body.
+//
+// `on_violation` bounds a judgment rather than fixing its outcome, and neither
+// check looks into the prose to confirm the bound holds -- the prose is prose.
+// A judgment naming a harsher response than its declared word is enforced at
+// the declared word, so the routing is safe and the published text is wrong;
+// VIOLATION_EFFECTS says why that cost is accepted and kept small.
+//
+// The third resolves the `Entity.field` tokens the prose mentions, which is the
+// whole of the static checking a judged rule can get.
+function judgedConstraintErrors(
+    c: Constraint, where: string,
+    fieldsByEntity: Map<string, Set<string>>|undefined): string[] {
+  const errors: string[] = [];
+  if (!c.judgment!.trim()) {
+    errors.push(`${where} has an empty judgment.`);
+    return errors;
+  }
+  if (c.onViolation === undefined) {
+    errors.push(
+        `${where} is judged, so it must state on_violation as 'escalate' or ` +
+        `'warn'. An unmarked constraint rejects the write, and a judged rule ` +
+        `may not do that.`);
+  } else if (c.onViolation === 'reject') {
+    errors.push(
+        `${where} is judged, so on_violation may not be 'reject'. Nobody may ` +
+        `approve a rejected write, and that authority cannot rest on a ` +
+        `judgment. Use 'escalate' to stop the write and let a human release ` +
+        `it, or 'warn' to report it. A condition that must refuse outright ` +
+        `belongs in its own constraint, stated as an expression.`);
+  }
+  errors.push(...unknownFieldRefs(c.judgment!, where, fieldsByEntity));
+  return errors;
+}
+
+// Every `Entity.field` token in a judgment whose entity the model declares and
+// whose field it does not.
+//
+// What makes a token a reference is that the model declares the entity, so no
+// spelling heuristic is needed and none is used: entity names here are as often
+// lowercase (`customer`, `orders`) as capitalized, and a rule keyed on the
+// capital would check some models and quietly skip others. An unrecognized
+// leading name is left alone on the principle that keeps leadingFieldRef
+// conservative -- a judgment may name a concept from another system, and
+// refusing to guess is what stops a valid rule being falsely rejected. A known
+// entity with an unknown field is the case where the author plainly meant this
+// model and got the name wrong, so that one is an error.
+//
+// The two segments must be adjacent to the dot, which is what keeps a sentence
+// boundary ("check the memo. Every credit...") out of the scan. A decimal
+// number cannot survive either, since no entity is named `30`.
+function unknownFieldRefs(
+    judgment: string, where: string,
+    fieldsByEntity: Map<string, Set<string>>|undefined): string[] {
+  if (!fieldsByEntity) return [];
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  const token = /\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g;
+  for (let m = token.exec(judgment); m; m = token.exec(judgment)) {
+    const [, entity, field] = m;
+    const fields = fieldsByEntity.get(entity);
+    if (!fields || fields.has(field)) continue;
+    const ref = `${entity}.${field}`;
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    errors.push(
+        `${where} references '${ref}', but entity '${entity}' declares no ` +
+        `field '${field}'.`);
   }
   return errors;
 }

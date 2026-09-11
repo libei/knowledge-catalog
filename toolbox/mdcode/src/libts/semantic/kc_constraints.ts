@@ -8,16 +8,25 @@
 // the encoding that fills the aspect.
 //
 // An entry of its own is what makes the invariant governable. A search can list
-// every rule a model states. The expression is a typed field rather than prose.
-// Dropping a constraint from the model deletes its entry, so the catalog never
-// advertises a rule the model stopped requiring.
+// every rule a model states, whichever way the rule is settled. Dropping a
+// constraint from the model deletes its entry, so the catalog never advertises
+// a rule the model stopped requiring.
 //
-// The five authored fields land in two places. `expression`, `on_violation`,
-// `severity` and `ai_context` go on the aspect, the last whole --
-// aiContextField in kc_custom_types.ts says why. `description` goes on the
+// The six authored fields land in two places. `expression`, `judgment`,
+// `on_violation`, `severity` and `ai_context` go on the aspect, the last whole
+// -- aiContextField in kc_custom_types.ts says why. `description` goes on the
 // entry source, where a pull of an action already reads it, and because a
 // violation quotes that sentence back to the caller as the error, which makes
 // it the entry's summary.
+//
+// A constraint states its rule in one of those first two fields and never in
+// both: `expression` for a rule a query can compute, `judgment` for one only a
+// reader can settle. The aspect adds a seventh field, `evaluation`, which no
+// author writes -- it restates which body the constraint used, as the word
+// `deterministic` or `judged`, so a consumer picking rules to lower into SQL
+// and a consumer picking rules to hand a language-model judge each select on
+// one field instead of testing which body is populated. A pull reads the
+// bodies and recomputes the word, so the two can never disagree in the IR.
 //
 // Both routing words are on the aspect because they are machine-readable, and
 // they are two fields because they answer different questions: what the engine
@@ -39,7 +48,7 @@
 
 import {Entry} from '../gcp/dataplex';
 
-import {Constraint, CONSTRAINT_SEVERITIES, ConstraintSeverity, SemanticModel, VIOLATION_EFFECTS, ViolationEffect} from './ir';
+import {Constraint, CONSTRAINT_SEVERITIES, constraintEvaluation, ConstraintSeverity, SemanticModel, VIOLATION_EFFECTS, ViolationEffect} from './ir';
 import {aiContextAspectValue, aiContextFromAspect, CONSTRAINT_TYPE_ID, customAspectKey, customAspectTypeName, customEntryTypeName} from './kc_custom_types';
 
 // Full resource name of the constraint entry type for a destination.
@@ -135,11 +144,19 @@ export function constraintEntries(
   return entries;
 }
 
-// The aspect payload for one constraint: the invariant, what a violation of it
-// does, how grave it is, and the whole of any `ai_context` declared on it.
+// The aspect payload for one constraint: the invariant in whichever body states
+// it, the word for which body that was, what a violation of it does, how grave
+// it is, and the whole of any `ai_context` declared on it.
+//
+// `evaluation` is the one field here that is computed rather than read off the
+// model. It is safe to compute because it is a restatement: it says nothing the
+// two bodies do not already say, and the reader recomputes it instead of
+// trusting it.
 function constraintAspectData(constraint: Constraint): Record<string, any> {
   return compact({
     expression: constraint.expression,
+    judgment: constraint.judgment,
+    evaluation: constraintEvaluation(constraint),
     aiContext: aiContextAspectValue(constraint.aiContext),
     onViolation: constraint.onViolation,
     severity: constraint.severity,
@@ -170,25 +187,37 @@ export function constraintAspectTypes(entryTypeBase: string): string[] {
 /**
  * Recovers one constraint from its entry, the inverse of constraintEntries.
  *
- * Returns undefined, with a warning, for an entry whose expression is missing
- * or blank: an invariant that states nothing would be pulled into a model that
- * then fails its own push-side validation, so one bad entry degrades itself
- * rather than the pull.
+ * Returns undefined, with a warning, for an entry that states neither body, and
+ * for one that states both: an invariant that states nothing, or states its
+ * rule twice, would be pulled into a model that then fails its own push-side
+ * validation, so one bad entry degrades itself rather than the pull.
+ *
+ * `evaluation` is not read. It is derived on the way out, so recomputing it
+ * from the body that came back is the only reading that cannot go stale.
  */
 export function readConstraint(entry: Entry, warnings: string[]): Constraint|
     undefined {
   const name = entry.entrySource?.displayName || idOf(entry.name);
   const data = constraintAspectDataOf(entry);
-  const expression =
-      typeof data.expression === 'string' ? data.expression.trim() : '';
-  if (!expression) {
+  const expression = text(data.expression);
+  const judgment = text(data.judgment);
+  if (!expression && !judgment) {
     warnings.push(
         `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect has no ` +
-        `expression; the constraint is skipped`);
+        `expression and no judgment; the constraint is skipped`);
+    return undefined;
+  }
+  if (expression && judgment) {
+    warnings.push(
+        `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect states both ` +
+        `an expression and a judgment, and a constraint states its rule in ` +
+        `one or the other; the constraint is skipped`);
     return undefined;
   }
 
-  const constraint: Constraint = {name, expression};
+  const constraint: Constraint = {name};
+  if (expression) constraint.expression = expression;
+  if (judgment) constraint.judgment = judgment;
   const description = entry.entrySource?.description;
   if (description !== undefined && description !== '')
     constraint.description = description;
@@ -210,7 +239,10 @@ export function readConstraint(entry: Entry, warnings: string[]): Constraint|
 // push-side validation. What dropping costs differs by field and both are safe:
 // an unreadable `onViolation` falls back to `reject`, which refuses more than
 // the catalog asked for and never less, and an unreadable `severity` leaves a
-// rule unranked, which nothing reads yet.
+// rule unranked, which nothing reads yet. On a judged constraint the first of
+// those is not a fallback but a load error, because a judge may not refuse: the
+// pulled model names the constraint and says the routing word is missing, which
+// is the outcome to want when the catalog no longer says how a breach routes.
 function readEnum(
     name: string, field: string, value: unknown, allowed: readonly string[],
     warnings: string[]): string|undefined {
@@ -255,6 +287,12 @@ function constraintAspectDataOf(entry: Entry): Record<string, any> {
     }
   }
   return {};
+}
+
+// The trimmed text an aspect field states, or '' when it states none. A blank
+// or whitespace-only value reads as unset, the same reading readEnum gives.
+function text(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 // Entry ids allow letters, numbers, underscores, hyphens, and periods.

@@ -272,14 +272,24 @@ const actionSchema = z.object({
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
 
-// A constraint: a named boolean invariant over the ontology. `expression` is a
-// logical expression in the model's own language (`Customer.accountBalance >=
-// 0`) rather than a physical binding, so it stays a plain string. Whatever
-// evaluates the constraint resolves it against the ontology; the loader leaves
-// it alone.
+// A constraint: a named invariant over the ontology, in one of two bodies.
+//
+// `expression` is a logical expression in the model's own language
+// (`Customer.accountBalance >= 0`) rather than a physical binding, so it stays
+// a plain string. Whatever evaluates the constraint resolves it against the
+// ontology; the loader leaves it alone.
+//
+// `judgment` is the rule in words, for a rule no expression decides. It is a
+// plain string for the same reason, and validate resolves the `Entity.field`
+// tokens it mentions.
+//
+// Both are optional here and exactly one is required, which `validate` enforces
+// so the author gets one message naming the constraint rather than a schema
+// union error naming a position in the document.
 const constraintSchema = z.object({
   name: z.string(),
-  expression: z.string(),
+  expression: z.string().optional(),
+  judgment: z.string().optional(),
   description: z.string().optional(),
   // What the engine does; absent means `reject`. See VIOLATION_EFFECTS.
   on_violation: z.enum(VIOLATION_EFFECTS).optional(),
@@ -457,11 +467,16 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                     ...ce,
                   }).strict();
 
+  // Both bodies are optional here because the schema cannot say "one of these
+  // two, never both". validateConstraints enforces the exclusivity, which also
+  // lets it name the constraint and say which way it went wrong.
   const constraint = z.object({
                         name: z.string(),
-                        expression: z.string(),
+                        expression: z.string().optional(),
+                        judgment: z.string().optional(),
                         description: z.string().optional(),
-                        // What the engine does; absent means `reject`. See
+                        // The strongest thing a violation may do; absent means
+                        // `reject`, and a judgment must state it. See
                         // VIOLATION_EFFECTS.
                         on_violation: z.enum(VIOLATION_EFFECTS).optional(),
                         // How grave it is; no default. See
@@ -762,6 +777,7 @@ function convertModel(
   rejectDuplicateNames(
       constraints.map(c => c.name), 'constraint name', `model '${m.name}'`);
   warnUnguardedParameterConstraints(actions, constraints, m.name, warnings);
+  warnAllGuardsJudged(actions, constraints, m.name, warnings);
 
   const description = composeDescription(m.description);
 
@@ -937,11 +953,17 @@ function convertMetric(
   return metric;
 }
 
-// Converts a constraint document to the IR. The `expression` is kept verbatim:
-// it is a logical invariant, resolved against the ontology by whatever
-// evaluates it. Description and AI context round-trip like everywhere else.
+// Converts a constraint document to the IR. Whichever body it declares is kept
+// verbatim: an expression is a logical invariant resolved against the ontology
+// by whatever evaluates it, and a judgment is the text a judge is handed.
+// Description and AI context round-trip like everywhere else.
+//
+// Both bodies are copied when a document sets both, so `validate` can name the
+// conflict against the real constraint rather than against a repaired one.
 function convertConstraint(c: ConstraintDoc): Constraint {
-  const constraint: Constraint = { name: c.name, expression: c.expression };
+  const constraint: Constraint = {name: c.name};
+  if (c.expression !== undefined) constraint.expression = c.expression;
+  if (c.judgment !== undefined) constraint.judgment = c.judgment;
   if (c.on_violation) constraint.onViolation = c.on_violation;
   if (c.severity) constraint.severity = c.severity;
   const description = composeDescription(c.description);
@@ -1071,6 +1093,34 @@ function warnMixedAffectsPrecision(
 //
 // This warns rather than fails because the scan matches identifiers, and an
 // expression may use a bare name that merely coincides with a parameter name.
+// An action every one of whose guards is judged has no deterministic gate at
+// all. Each of its guards is settled by a language model that may decide two
+// identical calls differently, and none of them can lower to a store-level
+// `CHECK`, so nothing protects the write when the judge is unavailable or
+// wrong.
+//
+// This is a warning and not an error, because it may be exactly what the author
+// meant: some operations really are governed only by rules no expression
+// decides. It exists so that state is visible in the source rather than
+// discovered from a published model.
+function warnAllGuardsJudged(
+    actions: Action[], constraints: Constraint[], modelName: string,
+    warnings: string[]): void {
+  if (!actions.length || !constraints.length) return;
+  const judged = new Set(
+      constraints.filter(c => c.judgment !== undefined).map(c => c.name));
+  if (!judged.size) return;
+  for (const a of actions) {
+    const guards = a.guards ?? [];
+    if (!guards.length || !guards.every(g => judged.has(g))) continue;
+    warnings.push(
+        `model '${modelName}': every constraint action '${a.name}' names in ` +
+        `guards is judged, so the action has no deterministic gate. A judged ` +
+        `constraint cannot reject a write on its own and cannot lower to a ` +
+        `store-level check.`);
+  }
+}
+
 // One message per pair, naming the first parameter that matched.
 function warnUnguardedParameterConstraints(
     actions: Action[], constraints: Constraint[], modelName: string,
@@ -1078,13 +1128,19 @@ function warnUnguardedParameterConstraints(
   if (!actions.length || !constraints.length) return;
   for (const c of constraints) {
     if (actions.some(a => a.guards?.includes(c.name))) continue;
+    // Judged constraints are skipped. The scan looks for a bare identifier that
+    // matches a parameter name, and a judgment is ordinary prose, so words like
+    // `amount` or `order` appear in it as English rather than as references.
+    // Running the scan there would warn on most judged rules ever written.
+    if (c.expression === undefined) continue;
     const identifiers = bareIdentifiers(c.expression);
     if (!identifiers.size) continue;
     for (const a of actions) {
       const read = a.parameters.find(p => identifiers.has(p.name));
       if (!read) continue;
       warnings.push(
-          `model '${modelName}': constraint '${c.name}' reads '${read.name}', ` +
+          `model '${modelName}': constraint '${c.name}' reads '${
+              read.name}', ` +
           `a parameter of action '${a.name}', but '${a.name}' does not list ` +
           `'${c.name}' in guards. A constraint over an action's parameters is ` +
           `checked only as a guard of that action.`);
