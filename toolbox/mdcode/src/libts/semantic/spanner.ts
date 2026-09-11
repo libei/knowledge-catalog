@@ -431,7 +431,7 @@ function physicalColumns(
 // path locates the store, not the table. A verbatim query (contains whitespace)
 // cannot back a graph element table, so it is passed through parenthesized with
 // a warning.
-function spannerTable(
+export function spannerTable(
     dataSource: string, warnings: string[], context: string): string {
   const trimmed = (dataSource ?? '').trim();
   if (!trimmed) {
