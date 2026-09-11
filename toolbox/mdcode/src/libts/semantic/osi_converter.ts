@@ -340,6 +340,8 @@ function executorDoc(ex: Executor): Record<string, any> {
       return {rest: {endpoint: ex.rest.endpoint, method: ex.rest.method}};
     case 'grpc':
       return {grpc: {service: ex.grpc.service, method: ex.grpc.method}};
+    case 'sql':
+      return {sql: {statements: [...ex.sql.statements]}};
   }
 }
 

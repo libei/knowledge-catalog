@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, CONSTRAINT_SEVERITIES, Constraint, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface LoadOptions {
@@ -192,8 +192,16 @@ const metricSchema = z.object({
 });
 
 // An action executor: exactly one kind. The open format expresses it as an
-// object with a single kind key (mcp/rest/grpc); we accept the union and enforce
-// the "exactly one" rule in a refinement so the message names the violation.
+// object with a single kind key (mcp/rest/grpc/sql); we accept the union and
+// enforce the "exactly one" rule in a refinement so the message names the
+// violation.
+//
+// `sql` carries the write itself rather than a pointer to whoever performs it,
+// so the schema only checks its shape here. What makes it safe -- one DML verb
+// per statement, and every `@parameter` declared by the action -- is checked in
+// validate.ts, where the action's parameter list is in scope. See SqlExecutor.
+const EXECUTOR_KINDS = ['mcp', 'rest', 'grpc', 'sql'] as const;
+
 const executorSchema =
     z.object({
        mcp: z.object({server: z.string(), tool: z.string()}).strict().optional(),
@@ -203,16 +211,19 @@ const executorSchema =
        grpc: z.object({service: z.string(), method: z.string()})
                  .strict()
                  .optional(),
+       sql: z.object({statements: z.array(z.string()).min(1)})
+                .strict()
+                .optional(),
      })
         .strict()
         .superRefine((ex, ctx) => {
-          const kinds =
-              (['mcp', 'rest', 'grpc'] as const).filter(k => ex[k] !== undefined);
+          const kinds = EXECUTOR_KINDS.filter(k => ex[k] !== undefined);
           if (kinds.length !== 1) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               message: kinds.length === 0 ?
-                  `executor requires exactly one kind (mcp, rest, or grpc); none given` :
+                  `executor requires exactly one kind (${
+                      EXECUTOR_KINDS.join(', ')}); none given` :
                   `executor requires exactly one kind, but ${kinds.length} given ` +
                       `(${kinds.join(', ')})`,
             });
@@ -270,6 +281,8 @@ const constraintSchema = z.object({
   name: z.string(),
   expression: z.string(),
   description: z.string().optional(),
+  // Absent means `reject`. See CONSTRAINT_SEVERITIES.
+  severity: z.enum(CONSTRAINT_SEVERITIES).optional(),
   ai_context: aiContextSchema.optional(),
   // No `custom_extensions`: it is a vanilla-Ossie surface, and `constraints` is
   // an extended-profile-only key, so the two never co-occur. See Constraint.
@@ -920,6 +933,7 @@ function convertMetric(
 // evaluates it. Description and AI context round-trip like everywhere else.
 function convertConstraint(c: ConstraintDoc): Constraint {
   const constraint: Constraint = { name: c.name, expression: c.expression };
+  if (c.severity) constraint.severity = c.severity;
   const description = composeDescription(c.description);
   if (description) constraint.description = description;
   const ai = aiContextOrUndefined(c.ai_context);
@@ -1111,7 +1125,13 @@ function convertParameter(
 function convertExecutor(ex: ExecutorDoc): Executor {
   if (ex.mcp) return { kind: 'mcp', mcp: { ...ex.mcp } };
   if (ex.rest) return { kind: 'rest', rest: { ...ex.rest } };
-  // The schema's refinement guarantees one of mcp/rest/grpc is set.
+  if (ex.sql) {
+    return {
+      kind: 'sql',
+      sql: { statements: ex.sql.statements.map(t => t.trim()) },
+    };
+  }
+  // The schema's refinement guarantees one of the four kinds is set.
   return { kind: 'grpc', grpc: { ...ex.grpc! } };
 }
 

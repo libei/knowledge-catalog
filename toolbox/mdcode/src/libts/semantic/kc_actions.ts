@@ -216,6 +216,15 @@ function executorData(ex: Executor): Record<string, any> {
         grpcService: ex.grpc.service,
         grpcMethod: ex.grpc.method,
       };
+    case 'sql':
+      // The statements are published verbatim. A consumer that only routes on
+      // the kind can ignore them; one that wants to know what the action
+      // actually writes -- a review engine deciding whether the declared
+      // `affects` matches the write -- has the text without a second lookup.
+      return {
+        executorKind: 'sql',
+        sqlStatements: ex.sql.statements,
+      };
   }
 }
 

@@ -31,18 +31,34 @@ import {spannerTable} from './spanner';
 
 // The comparison operators the grammar accepts. Ordered longest-first so the
 // tokenizer matches `>=` before `>`.
-const OPERATORS = ['>=', '<=', '!=', '<>', '=', '>', '<'] as const;
+const OPERATORS = ['>=', '<=', '!=', '<>', '==', '=', '>', '<'] as const;
 
 
-// A single `<Entity>.<field> <op> <operand>` comparison, as parsed.
+// One side of a comparison.
+//
+// `field` and `literal` are what a stored-state invariant is made of. The other
+// two are what a GUARD needs, and they are why this is a union rather than the
+// two optional strings it started as:
+//
+//   * `param` is an argument of the action being gated. It has no column, so it
+//     is bound as a query parameter and the comparison can be decided before the
+//     write happens -- which is the whole point of a guard.
+//   * `agg` is an aggregate over a RELATED entity (`SUM(LineItem.amount)`). It
+//     lowers to a correlated subquery, so an invariant can span the one-to-many
+//     edge that a per-row predicate cannot reach.
+type Operand =
+    {kind: 'field'; entity: string; field: string}|
+    {kind: 'param'; name: string}|
+    // Kept verbatim; already SQL-shaped and checked by isLiteral.
+    {kind: 'literal'; text: string}|
+    {kind: 'agg'; fn: string; entity: string; field: string};
+
+
+// A single `<operand> <op> <operand>` comparison, as parsed.
 interface Comparison {
-  entity: string;
-  field: string;
+  left: Operand;
   operator: string;
-  // Exactly one of these is set: a literal (kept verbatim, already SQL-shaped)
-  // or a reference to another field on the same entity.
-  literal?: string;
-  rightField?: string;
+  right: Operand;
 }
 
 
@@ -74,6 +90,15 @@ export interface ConstraintProbe {
   // Whether `sql` differs from `unscopedSql`. False when the caller asked for
   // no scoping, or when the entity's composite key rules it out.
   scoped: boolean;
+  // Whether the expression reads an action parameter. Such a constraint is a
+  // GUARD: it describes a proposed call, so it is checked before the write with
+  // the arguments bound, and it means nothing once the call is over. A
+  // constraint that reads only stored state is an INVARIANT and is checked
+  // against the uncommitted result instead. The runtime routes on this.
+  readsParameter: boolean;
+  // The action parameters the expression reads, sorted. The runtime binds
+  // exactly these.
+  parameters: string[];
 }
 
 
@@ -88,6 +113,17 @@ export type LoweringResult = {
 
 
 export interface LowerOptions {
+  // The action parameters a constraint may read, by name. A constraint that
+  // reads one is a guard: it describes a proposed CALL rather than stored state,
+  // so it can only be evaluated in the context of an action that supplies the
+  // values. Absent or empty means no parameter is in scope, and a constraint
+  // mentioning one is refused rather than lowered against a name that will never
+  // be bound.
+  parameters?: readonly string[];
+  // Prefix for the bound parameter carrying an action argument. The runtime
+  // binds `<prefix><name>`; keeping it distinct from the probe's own bindings
+  // means an action parameter called `touchedKeys` cannot collide with them.
+  parameterPrefix?: string;
   // The query parameter holding the touched key values (an ARRAY<STRING>), when
   // the caller can scope the probe. Only usable on a single-key entity: a
   // composite key needs a struct-array comparison, which the MVP does not emit,
@@ -111,19 +147,60 @@ export function lowerConstraint(
     reason: `constraint '${constraint.name}' cannot be evaluated: ${reason}`,
   });
 
-  const parsed = parseConstraint(constraint.expression);
+  const parsed = parseConstraint(constraint.expression, opts.parameters ?? []);
   if ('error' in parsed) return fail(parsed.error);
 
-  const entityNames =
-      new Set(parsed.comparisons.map(c => c.entity));
-  if (entityNames.size > 1) {
+  const operands = parsed.comparisons.flatMap(c => [c.left, c.right]);
+  const readsParameter = operands.some(op => op.kind === 'param');
+
+  // The entity the probe ranges over is the one whose fields the expression
+  // names directly. An aggregate's entity is NOT that entity: it is reached
+  // through a relationship and lands in a subquery, so it does not widen the
+  // row the probe walks.
+  const rowEntities = new Set(
+      operands.filter(op => op.kind === 'field')
+          .map(op => (op as {entity: string}).entity));
+  if (rowEntities.size > 1) {
     return fail(
-        `it spans more than one entity (${
-            [...entityNames].sort().join(', ')}); the evaluator probes a ` +
-        `single entity's table, so split it into one constraint per entity`);
+        `it reads fields of more than one entity (${
+            [...rowEntities].sort().join(', ')}) side by side; the probe walks ` +
+        `one entity's rows, so relate them with an aggregate ` +
+        `(SUM(Other.field)) or split it into one constraint per entity`);
   }
 
-  const entityName = parsed.comparisons[0].entity;
+  const entityName: string|undefined = [...rowEntities][0];
+
+  // No entity at all: every operand is a parameter or a literal, so the
+  // constraint decides on the arguments alone and never reads the store. It is
+  // still lowered to SQL rather than compared here, so that one code path
+  // decides every rule and the store's own comparison semantics apply
+  // throughout.
+  if (entityName === undefined) {
+    if (!readsParameter) {
+      return fail(
+          `it names no entity field and no action parameter, so there is ` +
+          `nothing for it to range over`);
+    }
+    const constant = renderPredicate(parsed, {model, columns: new Map(), opts});
+    if ('error' in constant) return fail(constant.error);
+    const sql = `SELECT 1 AS violated FROM UNNEST([1]) WHERE ${
+        violatingTest(constant.sql)} LIMIT 1`;
+    return {
+      ok: true,
+      probe: {
+        constraint,
+        entity: '',
+        table: '',
+        keyColumns: [],
+        sql,
+        unscopedSql: sql,
+        scoped: false,
+        readsParameter: true,
+        parameters: parameterNames(parsed),
+      },
+    };
+  }
+
   const entity = (model.entities ?? []).find(e => e.name === entityName);
   if (!entity) {
     return fail(`entity '${entityName}' is not declared in the model`);
@@ -133,21 +210,20 @@ export function lowerConstraint(
         `entity '${entityName}' is abstract, so it has no table to probe`);
   }
 
-  // Every field the expression mentions has to resolve to a real column.
+  // Every field the expression mentions on the ROW entity has to resolve to a
+  // real column. An aggregate's fields resolve inside aggregateSubquery,
+  // against its own entity.
   const columns = new Map<string, string>();
-  for (const c of parsed.comparisons) {
-    for (const fieldName of [c.field, c.rightField]) {
-      if (!fieldName || columns.has(fieldName)) continue;
-      const col = columnFor(entity, fieldName);
-      if ('error' in col) return fail(col.error);
-      columns.set(fieldName, col.column);
-    }
+  for (const op of operands) {
+    if (op.kind !== 'field' || columns.has(op.field)) continue;
+    const col = columnFor(entity, op.field);
+    if ('error' in col) return fail(col.error);
+    columns.set(op.field, col.column);
   }
 
   const keys = keyColumns(entity);
   if ('error' in keys) return fail(keys.error);
 
-  const predicate = renderPredicate(parsed, columns);
   const warnings: string[] = [];
   const table = spannerTable(
       entity.dataSource, warnings, `entity '${entity.name}'`);
@@ -156,12 +232,11 @@ export function lowerConstraint(
         `entity '${entityName}' has no usable table (${warnings.join('; ')})`);
   }
 
-  // NOT COALESCE(<predicate>, FALSE) rather than a plain NOT: SQL three-valued
-  // logic makes `NULL >= 0` unknown, and `NOT unknown` is unknown, so a NULL
-  // column would slip past a plain negation. Treating unknown as "did not
-  // satisfy the invariant" makes the row a violation -- the fail-closed reading,
-  // and the right one for a gate.
-  const violating = `NOT COALESCE(${predicate}, FALSE)`;
+  const rendered =
+      renderPredicate(parsed, {model, columns, opts, rowEntity: entity, table});
+  if ('error' in rendered) return fail(rendered.error);
+
+  const violating = violatingTest(rendered.sql);
   const limit = opts.limit ?? DEFAULT_LIMIT;
   const select = (where: string) =>
       `SELECT ${keys.columns.join(', ')} FROM ${table} WHERE ${where} LIMIT ${
@@ -192,8 +267,32 @@ export function lowerConstraint(
       sql,
       unscopedSql,
       scoped,
+      readsParameter,
+      parameters: parameterNames(parsed),
     },
   };
+}
+
+
+// NOT COALESCE(<predicate>, FALSE) rather than a plain NOT: SQL three-valued
+// logic makes `NULL >= 0` unknown, and `NOT unknown` is unknown, so a NULL
+// column would slip past a plain negation. Treating unknown as "did not satisfy
+// the invariant" makes the row a violation -- the fail-closed reading, and the
+// right one for a gate.
+function violatingTest(predicate: string): string {
+  return `NOT COALESCE(${predicate}, FALSE)`;
+}
+
+
+// The action parameters an expression reads, in sorted order.
+function parameterNames(parsed: ParsedExpression): string[] {
+  const names = new Set<string>();
+  for (const c of parsed.comparisons) {
+    for (const op of [c.left, c.right]) {
+      if (op.kind === 'param') names.add(op.name);
+    }
+  }
+  return [...names].sort();
 }
 
 
@@ -285,24 +384,152 @@ function keyColumns(entity: Entity): {columns: string[]}|{error: string} {
 }
 
 
-// Renders the parsed expression with logical field names replaced by their
-// physical columns. Each comparison is parenthesized, so a mixed AND/OR
-// expression keeps the precedence the SQL engine would give it rather than one
-// this module invents.
-function renderPredicate(
-    parsed: ParsedExpression, columns: Map<string, string>): string {
-  const parts = parsed.comparisons.map(c => {
-    const left = columns.get(c.field)!;
-    const right =
-        c.rightField !== undefined ? columns.get(c.rightField)! : c.literal!;
-    return `(${left} ${c.operator} ${right})`;
-  });
+// What a predicate is rendered against: the row entity's column map plus what
+// an aggregate needs in order to correlate back to that row.
+interface RenderContext {
+  model: SemanticModel;
+  columns: Map<string, string>;
+  opts: LowerOptions;
+  // Absent for a constraint that reads no entity field at all.
+  rowEntity?: Entity;
+  table?: string;
+}
+
+
+// Renders the parsed expression into SQL. Each comparison is parenthesized, so
+// a mixed AND/OR expression keeps the precedence the SQL engine would give it
+// rather than one this module invents.
+function renderPredicate(parsed: ParsedExpression, ctx: RenderContext):
+    {sql: string}|{error: string} {
+  const parts: string[] = [];
+  for (const c of parsed.comparisons) {
+    const left = renderOperand(c.left, ctx);
+    if ('error' in left) return left;
+    const right = renderOperand(c.right, ctx);
+    if ('error' in right) return right;
+    parts.push(`(${left.sql} ${c.operator} ${right.sql})`);
+  }
   let out = parts[0];
   for (let i = 1; i < parts.length; i++) {
     out = `${out} ${parsed.joiners[i - 1]} ${parts[i]}`;
   }
-  return out;
+  return {sql: out};
 }
+
+
+// One operand as SQL.
+function renderOperand(op: Operand, ctx: RenderContext):
+    {sql: string}|{error: string} {
+  switch (op.kind) {
+    case 'literal':
+      return {sql: op.text};
+    case 'field':
+      return {sql: ctx.columns.get(op.field)!};
+    case 'param':
+      // Bound, never interpolated: the value is supplied by the caller, so it
+      // must reach the store as a parameter rather than as text.
+      return {sql: `@${ctx.opts.parameterPrefix ?? ''}${op.name}`};
+    case 'agg':
+      return aggregateSubquery(op, ctx);
+  }
+}
+
+
+// Lowers `SUM(Other.field)` to a subquery correlated to the row being probed.
+//
+// The correlation comes from a DECLARED relationship, so the constraint author
+// writes `Order.total == SUM(LineItem.amount)` and the join columns are read out
+// of the model rather than guessed from the names. Exactly one relationship may
+// connect the two entities: with two, the expression is ambiguous about which
+// edge it means, and picking one would silently check a different rule than the
+// one written.
+function aggregateSubquery(
+    op: {fn: string; entity: string; field: string},
+    ctx: RenderContext): {sql: string}|{error: string} {
+  if (!ctx.rowEntity || !ctx.table) {
+    return {
+      error: `'${op.fn}(${op.entity}.${op.field})' needs a row to correlate ` +
+          `to, but the expression names no entity field to probe`,
+    };
+  }
+  const rowEntity = ctx.rowEntity;
+  const inner = (ctx.model.entities ?? []).find(e => e.name === op.entity);
+  if (!inner) {
+    return {error: `entity '${op.entity}' is not declared in the model`};
+  }
+  if (inner.abstract) {
+    return {
+      error: `entity '${op.entity}' is abstract, so it has no table to ` +
+          `aggregate over`,
+    };
+  }
+
+  const edges = (ctx.model.relationships ?? []).filter(
+      r => !r.association &&
+          ((r.source.entity === op.entity &&
+            r.destination.entity === rowEntity.name) ||
+           (r.source.entity === rowEntity.name &&
+            r.destination.entity === op.entity)));
+  if (!edges.length) {
+    return {
+      error: `no relationship connects '${op.entity}' to '${
+          rowEntity.name}', so '${op.fn}(${op.entity}.${op.field})' cannot be ` +
+          `correlated to the row being checked; declare one`,
+    };
+  }
+  if (edges.length > 1) {
+    return {
+      error: `${edges.length} relationships connect '${op.entity}' to '${
+          rowEntity.name}' (${
+          edges.map(e => e.name).sort().join(', ')}), so '${op.fn}(${
+          op.entity}.${op.field})' is ambiguous about which one it means`,
+    };
+  }
+  const edge = edges[0];
+  const [innerEnd, outerEnd] = edge.source.entity === op.entity ?
+      [edge.source, edge.destination] :
+      [edge.destination, edge.source];
+  if (innerEnd.columns.length !== outerEnd.columns.length ||
+      !innerEnd.columns.length) {
+    return {
+      error: `relationship '${edge.name}' does not pair its join columns, so ` +
+          `'${op.fn}(${op.entity}.${op.field})' cannot be correlated`,
+    };
+  }
+
+  const measured = columnFor(inner, op.field);
+  if ('error' in measured) return {error: measured.error};
+
+  const warnings: string[] = [];
+  const innerTable =
+      spannerTable(inner.dataSource, warnings, `entity '${inner.name}'`);
+  if (warnings.length) {
+    return {
+      error: `entity '${op.entity}' has no usable table (${
+          warnings.join('; ')})`,
+    };
+  }
+
+  // The outer table is unaliased, so its own name qualifies its columns. That
+  // keeps the emitted SQL for every existing (non-aggregate) constraint byte for
+  // byte what it was.
+  const on = innerEnd.columns
+                 .map((c, i) => `${innerTable}.${quoteIfReserved(c)} = ${
+                          ctx.table}.${quoteIfReserved(outerEnd.columns[i])}`)
+                 .join(' AND ');
+
+  // SUM and COUNT over no rows are 0, not NULL: an order with no line items has
+  // a line-item total of zero, and leaving it NULL would make the comparison
+  // unknown and so report a violation the data does not have. MIN, MAX and AVG
+  // have no such identity, so they stay NULL and the fail-closed reading applies.
+  const body = `SELECT ${op.fn}(${measured.column}) FROM ${innerTable} WHERE ${on}`;
+  const zeroed = op.fn === 'SUM' || op.fn === 'COUNT';
+  return {sql: zeroed ? `COALESCE((${body}), 0)` : `(${body})`};
+}
+
+
+// The aggregate functions an expression may apply to a related entity.
+const AGGREGATES = ['SUM', 'COUNT', 'MIN', 'MAX', 'AVG'] as const;
 
 
 // Parses a constraint expression into comparisons and the AND/OR between them.
@@ -310,36 +537,138 @@ function renderPredicate(
 // The grammar:
 //
 //   expression := comparison (('AND'|'OR') comparison)*
-//   comparison := <Entity>.<field> <op> (literal | <Entity>.<field>)
-//   op         := >= | <= | != | <> | = | > | <
+//   comparison := operand <op> operand
+//   operand    := <Entity>.<field>            a column on the row being probed
+//               | <parameter>                 an argument of the action
+//               | <AGG>(<Entity>.<field>)     an aggregate over a related entity
+//               | literal
+//   op         := >= | <= | != | <> | == | = | > | <
 //   literal    := a number, a single-quoted string, TRUE, FALSE, or NULL
 //
 // `= NULL` and `!= NULL` are read as null tests and lowered to IS NULL /
 // IS NOT NULL; NULL with an ordering operator is refused. See parseComparison.
 //
-// Parentheses, function calls, IN/BETWEEN/LIKE, and metric references are all
-// outside it -- on purpose. Each is a real thing a constraint might want, and
-// each needs a decision (how to evaluate a metric inside a row-level probe, for
-// one) that this prototype does not make. They are rejected with a reason
-// rather than partially handled.
-function parseConstraint(expression: string): ParsedExpression|{error: string} {
+// Arbitrary parentheses, IN/BETWEEN/LIKE, arithmetic, and metric references are
+// all outside the grammar -- on purpose. Each is a real thing a constraint might
+// want, and each needs a decision that this evaluator does not make. They are
+// rejected with a reason rather than partially handled, because a gate that
+// approximates a rule is worse than one that admits it cannot check it.
+function parseConstraint(expression: string, parameters: readonly string[]):
+    ParsedExpression|{error: string} {
   const expr = expression.trim();
   if (!expr) return {error: 'the expression is empty'};
-  if (/[()]/.test(expr)) {
-    return {
-      error: `it uses parentheses or a function call (${
-          expr}), which the evaluator does not parse`,
-    };
-  }
 
   const segments = splitOnLogicalOperators(expr);
   const comparisons: Comparison[] = [];
   for (const segment of segments.parts) {
-    const comparison = parseComparison(segment);
+    const comparison = parseComparison(segment, parameters);
     if ('error' in comparison) return comparison;
     comparisons.push(comparison);
   }
   return {comparisons, joiners: segments.joiners};
+}
+
+
+function parseComparison(segment: string, parameters: readonly string[]):
+    Comparison|{error: string} {
+  const text = segment.trim();
+  const found = findOperator(text);
+  if (!found) {
+    return {
+      error: `'${text}' is not a comparison (expected ${
+          OPERATORS.join(', ')})`,
+    };
+  }
+  const lhs = text.slice(0, found.index).trim();
+  const rhs = text.slice(found.index + found.operator.length).trim();
+  if (!rhs) return {error: `'${text}' has nothing on the right of the operator`};
+
+  const left = parseOperand(lhs, parameters);
+  if ('error' in left) {
+    return {error: `the left side of '${text}' ${left.error}`};
+  }
+  if (left.operand.kind === 'literal') {
+    return {
+      error: `the left side of '${text}' is a literal, so the comparison ` +
+          `does not range over anything`,
+    };
+  }
+  const right = parseOperand(rhs, parameters);
+  if ('error' in right) {
+    return {error: `the right side of '${text}' ${right.error}`};
+  }
+
+  const operator = normalizeOperator(found.operator);
+
+  // NULL is not an operand any comparison operator accepts -- GoogleSQL rejects
+  // `col = NULL` outright rather than evaluating it to unknown, so lowering it
+  // verbatim would emit a probe that can never run. An author writing
+  // `Account.ownerId != NULL` means the column must be populated, which SQL
+  // spells IS NOT NULL, so translate the two operators that have a null-test
+  // reading and refuse the four that do not: an ordering comparison against
+  // NULL has no meaning to preserve.
+  if (right.operand.kind === 'literal' && /^NULL$/i.test(right.operand.text)) {
+    if (operator !== '=' && operator !== '!=') {
+      return {
+        error: `'${text}' compares with NULL using '${operator}', which has no ` +
+            `meaning; write '= NULL' or '!= NULL' to test whether the field is ` +
+            `set`,
+      };
+    }
+    return {
+      left: left.operand,
+      operator: operator === '=' ? 'IS' : 'IS NOT',
+      right: {kind: 'literal', text: 'NULL'},
+    };
+  }
+
+  return {left: left.operand, operator, right: right.operand};
+}
+
+
+// One side of a comparison, or why it is not one this evaluator can lower.
+function parseOperand(text: string, parameters: readonly string[]):
+    {operand: Operand}|{error: string} {
+  const agg = text.match(/^([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\)$/);
+  if (agg) {
+    const fn = agg[1].toUpperCase();
+    if (!(AGGREGATES as readonly string[]).includes(fn)) {
+      return {
+        error: `calls '${agg[1]}', which is not one of the aggregates the ` +
+            `evaluator lowers (${AGGREGATES.join(', ')})`,
+      };
+    }
+    return {operand: {kind: 'agg', fn, entity: agg[2], field: agg[3]}};
+  }
+
+  const field = text.match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
+  if (field) {
+    return {operand: {kind: 'field', entity: field[1], field: field[2]}};
+  }
+
+  // A bare name is an action parameter or nothing. It is checked against the
+  // action's declared parameters rather than accepted on sight, so a mistyped
+  // field reference (`amout`) is refused here instead of lowering to a binding
+  // the runtime would never supply.
+  if (/^[A-Za-z_]\w*$/.test(text)) {
+    if (parameters.includes(text)) {
+      return {operand: {kind: 'param', name: text}};
+    }
+    return {
+      error: `reads '${text}', which is neither an <Entity>.<field> reference ` +
+          `nor a parameter of the action being checked${
+              parameters.length ?
+                  ` (declared: ${[...parameters].sort().join(', ')})` :
+                  ''}`,
+    };
+  }
+
+  if (isLiteral(text)) return {operand: {kind: 'literal', text}};
+
+  return {
+    error: `is '${text}', which is neither a literal, an <Entity>.<field> ` +
+        `reference, an action parameter, nor an aggregate over a related entity`,
+  };
 }
 
 
@@ -363,84 +692,6 @@ function splitOnLogicalOperators(expr: string):
   return {parts, joiners};
 }
 
-
-function parseComparison(segment: string): Comparison|{error: string} {
-  const text = segment.trim();
-  const found = findOperator(text);
-  if (!found) {
-    return {
-      error: `'${text}' is not a comparison (expected ${
-          OPERATORS.join(', ')})`,
-    };
-  }
-  const lhs = text.slice(0, found.index).trim();
-  const rhs = text.slice(found.index + found.operator.length).trim();
-
-  const left = parseFieldRef(lhs);
-  if (!left) {
-    return {
-      error: `the left side of '${text}' is not an <Entity>.<field> reference`,
-    };
-  }
-  if (!rhs) return {error: `'${text}' has nothing on the right of the operator`};
-
-  const right = parseFieldRef(rhs);
-  if (right) {
-    if (right.entity !== left.entity) {
-      return {
-        error: `'${text}' compares fields of two entities (${left.entity}, ${
-            right.entity})`,
-      };
-    }
-    return {
-      entity: left.entity,
-      field: left.field,
-      operator: normalizeOperator(found.operator),
-      rightField: right.field,
-    };
-  }
-
-  if (!isLiteral(rhs)) {
-    return {
-      error: `'${rhs}' in '${text}' is neither a literal nor an ` +
-          `<Entity>.<field> reference`,
-    };
-  }
-
-  const operator = normalizeOperator(found.operator);
-
-  // NULL is not an operand any comparison operator accepts -- GoogleSQL rejects
-  // `col = NULL` outright rather than evaluating it to unknown, so lowering it
-  // verbatim would emit a probe that can never run. An author writing
-  // `Account.ownerId != NULL` means the column must be populated, which SQL
-  // spells IS NOT NULL, so translate the two operators that have a null-test
-  // reading and refuse the four that do not: an ordering comparison against
-  // NULL has no meaning to preserve.
-  if (/^NULL$/i.test(rhs)) {
-    if (operator !== '=' && operator !== '!=') {
-      return {
-        error: `'${text}' compares with NULL using '${operator}', which has no ` +
-            `meaning; write '= NULL' or '!= NULL' to test whether the field is ` +
-            `set`,
-      };
-    }
-    return {
-      entity: left.entity,
-      field: left.field,
-      operator: operator === '=' ? 'IS' : 'IS NOT',
-      literal: 'NULL',
-    };
-  }
-
-  return {
-    entity: left.entity,
-    field: left.field,
-    operator,
-    literal: rhs,
-  };
-}
-
-
 // The first comparison operator in `text`, longest match first so `>=` is not
 // read as `>` followed by a stray `=`.
 function findOperator(text: string): {operator: string; index: number}|null {
@@ -457,17 +708,15 @@ function findOperator(text: string): {operator: string; index: number}|null {
 }
 
 
-// `!=` and `<>` mean the same thing; GoogleSQL accepts both, so pick one and
-// emit it consistently.
+// Several spellings mean the same comparison. `!=` and `<>` are both SQL, and
+// `==` is not SQL at all but is what a model author reaches for; each is folded
+// to the one form the probe emits.
 function normalizeOperator(operator: string): string {
-  return operator === '<>' ? '!=' : operator;
+  if (operator === '<>') return '!=';
+  if (operator === '==') return '=';
+  return operator;
 }
 
-
-function parseFieldRef(text: string): {entity: string; field: string}|null {
-  const m = text.match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
-  return m ? {entity: m[1], field: m[2]} : null;
-}
 
 
 // A literal the probe can embed verbatim. Restricted to shapes with no quoting
