@@ -214,14 +214,28 @@ export function readConstraint(entry: Entry, warnings: string[]): Constraint|
 function readEnum(
     name: string, field: string, value: unknown, allowed: readonly string[],
     warnings: string[]): string|undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  const text = String(value).trim();
-  if (allowed.includes(text)) return text;
+  if (value === undefined || value === null) return undefined;
+  // Only a string can be one of these words, and the check says so rather than
+  // coercing: `String(["escalate"])` is `escalate`, so a coercing reader would
+  // invent a routing word the catalog never stated. A blank or whitespace-only
+  // value is unset rather than wrong, the same reading a blank expression gets.
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (text === '') return undefined;
+    if (allowed.includes(text)) return text;
+  }
   warnings.push(
       `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect states ` +
-      `${field} '${text}', which is not one of ${allowed.join(', ')}; the ` +
-      `constraint reads back without one`);
+      `${field} ${showAspectValue(value)}, which is not one of ${
+          allowed.join(', ')}; the constraint reads back without one`);
   return undefined;
+}
+
+// How an unusable aspect value is quoted back in a warning: a string in single
+// quotes, so the word reads plainly, and anything else as JSON, so the reader
+// can see it was never a word at all.
+function showAspectValue(value: unknown): string {
+  return typeof value === 'string' ? `'${value.trim()}'` : JSON.stringify(value);
 }
 
 

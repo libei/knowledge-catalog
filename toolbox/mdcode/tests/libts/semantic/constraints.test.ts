@@ -449,6 +449,42 @@ describe('Knowledge Catalog publish/pull round trip', () => {
         .toBe(true);
   });
 
+  test('a non-string routing word is dropped rather than coerced', () => {
+    // A hand-edited or programmatically written aspect can hold a list where a
+    // word belongs. Coercing it would read `["escalate"]` back as `escalate`,
+    // which invents a routing word the catalog never stated -- the one failure
+    // mode worse than dropping it, because nothing would say it happened.
+    const {entries} = generateCatalogResources(model, OPTS);
+    const held = entries.find(
+        e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
+    held.aspects![CONSTRAINT_ASPECT].data!.onViolation = ['escalate'];
+
+    const {models, warnings} = modelsFromCatalogResources(entries);
+    const held2 = models[0].constraints!.find(
+        c => c.name === 'OrderWithinStandingLimit')!;
+    expect(held2.onViolation).toBeUndefined();
+    expect(warnings.some(
+               w => w.includes("constraint 'OrderWithinStandingLimit'") &&
+                   w.includes('onViolation ["escalate"]')))
+        .toBe(true);
+  });
+
+  test('a whitespace-only routing word reads as unset, not as wrong', () => {
+    // Blank is the aspect saying nothing, which is what an absent field says.
+    // Warning about it would quote an empty word back at a reader who has no
+    // typo to fix.
+    const {entries} = generateCatalogResources(model, OPTS);
+    const held = entries.find(
+        e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
+    held.aspects![CONSTRAINT_ASPECT].data!.onViolation = '   ';
+
+    const {models, warnings} = modelsFromCatalogResources(entries);
+    const held2 = models[0].constraints!.find(
+        c => c.name === 'OrderWithinStandingLimit')!;
+    expect(held2.onViolation).toBeUndefined();
+    expect(warnings.some(w => w.includes('onViolation'))).toBe(false);
+  });
+
   test('an unrecognized severity is dropped with a warning', () => {
     // Severity ranks and reports rather than routes, so an unreadable one
     // leaves the rule unranked rather than changing what the engine does. That
