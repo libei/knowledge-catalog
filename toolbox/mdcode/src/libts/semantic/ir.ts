@@ -518,7 +518,7 @@ export interface GrpcExecutor {
  * policy whose conditions carry different consequences is written as several
  * constraints, which `guards` on an action lists together; the strictest
  * consequence among the violated ones is what the action does. See
- * docs/semantic-model/constraints.md for a worked policy.
+ * docs/semantic-model/actions.md for a worked policy.
  *
  * STATUS: the declared word is published and read back. Nothing evaluates a
  * constraint, so nothing routes on it yet.
