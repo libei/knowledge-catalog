@@ -213,6 +213,14 @@ data that is already broken, and it puts that check before the call.
 The reference lives on the action rather than on the constraint, because the
 same rule may gate `TransferFunds` and leave `CloseAccount` alone.
 
+`guards` and `on_violation` answer different questions, and both can be set. A
+guard says *when* the constraint is checked — before the write, with the
+arguments bound. `on_violation` says what a breach does: `reject` refuses the
+call, `escalate` holds it for an approver, `warn` reports it and lets the write
+proceed. So guarding a constraint that declares `warn` is a real shape rather
+than a contradiction: it is how a rule the organization is not yet ready to
+block on still gets checked at the moment of the call and reported back.
+
 `kcmd` reports a mismatch from either side. A guard that names no constraint
 fails the push. A constraint over parameters that no action names loads with a
 warning, because nothing will ever evaluate it.

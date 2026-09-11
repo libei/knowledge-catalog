@@ -413,14 +413,6 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   `escalate` / `warn` and `critical` / `high` / `medium` / `low` — so an
   unrecognized word is a hard load error rather than a value that publishes and
   means nothing. *(static)*
-* **A guard actually gates.** An action that lists a constraint in `guards`
-  states that the constraint decides whether the call may proceed. A constraint
-  declaring `on_violation: warn` states the opposite — the write proceeds and
-  the breach is reported — so the pair loads with a warning: the action reads as
-  gated by a rule that gates nothing. It warns rather than fails because the
-  pair is coherent, just not a gate; checking and reporting a rule at the moment
-  of the call is worth doing for a rule the organization is not yet ready to
-  block on. Which half is wrong is the author's call. *(static)*
 * **A constraint over an action's parameters is guarded.** A constraint whose
   expression reads a bare name that is a parameter of some action describes that
   call rather than the stored data, so it can be checked only before the call

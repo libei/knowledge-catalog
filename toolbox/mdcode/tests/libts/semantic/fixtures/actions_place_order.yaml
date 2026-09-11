@@ -23,12 +23,14 @@
 # OSI golden shows the normalization: the first two keep their record, the
 # third stays a bare name.
 #
-# Those last two are one business rule in its two bindings. The invariant holds
-# over stored order lines, whatever wrote them. The guard holds over the
-# argument a caller passed, and can be checked only before the call runs, which
-# is why a guard has to be named by the action and an invariant does not.
+# PositiveQuantity and RequestedQuantityIsPositive are one business rule in its
+# two bindings. The invariant holds over stored order lines, whatever wrote
+# them. The guard holds over the argument a caller passed, and can be checked
+# only before the call runs, which is why a guard has to be named by the action
+# and an invariant does not.
 #
-# They also cover both annotation shapes, which land in different places.
+# The constraints also cover both annotation shapes, which land in different
+# places.
 # NonNegativeOrderTotal declares a full `ai_context` beside its description --
 # instructions, synonyms and examples -- so the catalog golden shows the
 # description on the entry source and the whole `ai_context` on the aspect.

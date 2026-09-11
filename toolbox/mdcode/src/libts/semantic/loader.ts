@@ -762,7 +762,6 @@ function convertModel(
   rejectDuplicateNames(
       constraints.map(c => c.name), 'constraint name', `model '${m.name}'`);
   warnUnguardedParameterConstraints(actions, constraints, m.name, warnings);
-  warnGuardsThatDoNotGate(actions, constraints, m.name, warnings);
 
   const description = composeDescription(m.description);
 
@@ -1089,34 +1088,6 @@ function warnUnguardedParameterConstraints(
           `a parameter of action '${a.name}', but '${a.name}' does not list ` +
           `'${c.name}' in guards. A constraint over an action's parameters is ` +
           `checked only as a guard of that action.`);
-    }
-  }
-}
-
-// A guard is the model's statement that a constraint decides whether the call
-// may proceed. A constraint declaring `on_violation: warn` states the opposite:
-// the write proceeds and the breach is reported. Listing such a constraint in
-// `guards` therefore reads as a gate while declaring that nothing is gated, and
-// an author who wrote it believes the write is checked when it is not -- the
-// same false belief an unresolved guard produces, reached from the other side.
-//
-// This warns rather than fails because the pair is coherent, just not a gate: a
-// rule an organization is not yet ready to block on is worth checking and
-// reporting at the moment of the call, and that is exactly what the pair says.
-// The author has to be the one to decide which half is wrong.
-function warnGuardsThatDoNotGate(
-    actions: Action[], constraints: Constraint[], modelName: string,
-    warnings: string[]): void {
-  if (!actions.length || !constraints.length) return;
-  const byName = new Map(constraints.map(c => [c.name, c]));
-  for (const a of actions) {
-    for (const guard of a.guards ?? []) {
-      if (byName.get(guard)?.onViolation !== 'warn') continue;
-      warnings.push(
-          `model '${modelName}': action '${a.name}' lists '${guard}' in ` +
-          `guards, but '${guard}' states on_violation 'warn', so a violation ` +
-          `reports and the write proceeds. The action reads as gated by a ` +
-          `rule that gates nothing.`);
     }
   }
 }
