@@ -134,6 +134,29 @@ describe('loader parses actions', () => {
     });
   });
 
+  test('a sql executor normalizes to the tagged union, trimmed', () => {
+    // The statements are the write, so whitespace an author wrapped them in is
+    // not part of it; trimming here keeps the verb check in validate.ts
+    // reading the first word rather than the first character.
+    const {models} = withActions([{
+      name: 'S',
+      executor:
+          {sql: {statements: ['  DELETE FROM orders WHERE id = @id  ']}},
+      parameters: [{name: 'id', type: 'Integer'}],
+    }]);
+    expect(models[0].actions![0].executor).toEqual({
+      kind: 'sql',
+      sql: {statements: ['DELETE FROM orders WHERE id = @id']},
+    });
+  });
+
+  test('a sql executor with no statements is rejected at parse', () => {
+    // An empty list is not an executor that does nothing; it is one that was
+    // never written, and it is caught before validate has to reason about it.
+    expect(() => withActions([{name: 'S', executor: {sql: {statements: []}}}]))
+        .toThrow();
+  });
+
   test('duplicate action names are rejected', () => {
     expect(() => withActions([
              {name: 'Dup', executor: MCP},
@@ -202,6 +225,106 @@ describe('validatePushRequirements gates actions', () => {
     }])]);
     expect(errs.some(e => e.includes('executor') && e.includes('server')))
         .toBe(true);
+  });
+
+  // A sql executor carries the write itself, so unlike the other three kinds it
+  // has text the model can check -- and must check, since it is the one kind
+  // that could otherwise smuggle an unreviewed write into a governed model.
+
+  test('a sql statement must be a single DML write', () => {
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: ['SELECT * FROM customer']}},
+      parameters: [],
+    }])]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('starts with \'SELECT\'');
+  });
+
+  test('a statement separator is rejected', () => {
+    // Each entry is executed on its own, so anything past the ';' would
+    // silently not run -- the failure an author is least likely to notice.
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {
+        kind: 'sql',
+        sql: {statements: ['DELETE FROM orders; DELETE FROM customer']}
+      },
+      parameters: [],
+    }])]);
+    expect(errs.some(e => e.includes('contains \';\''))).toBe(true);
+  });
+
+  test('a trailing semicolon is allowed', () => {
+    // It separates nothing, so rejecting it would be pedantry rather than a
+    // check.
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: ['DELETE FROM orders;']}},
+      parameters: [],
+    }])]);
+    expect(errs).toEqual([]);
+  });
+
+  test('a statement may bind only parameters the action declares', () => {
+    // The load-bearing check: it is what lets a runtime bind every value
+    // instead of interpolating it, so an argument cannot become SQL.
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {
+        kind: 'sql',
+        sql: {statements: ['DELETE FROM orders WHERE id = @orderId']}
+      },
+      parameters: [{name: 'id', type: 'Integer', isEntityRef: false}],
+    }])]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('binds \'@orderId\'');
+  });
+
+  test('an @ inside a string literal is not read as a binding', () => {
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {
+        kind: 'sql',
+        sql: {statements: ['UPDATE customer SET email = \'a@b.com\'']}
+      },
+      parameters: [],
+    }])]);
+    expect(errs).toEqual([]);
+  });
+
+  test('a created row keys off a parameter the caller cannot supply', () => {
+    // The key of a new row cannot come from the caller: an agent that picks
+    // its own primary keys can overwrite an existing row by choosing one that
+    // is already taken. Declaring the create is what makes the generated name
+    // bindable, so an action that writes a key it never declared creating is
+    // told exactly which declaration is missing.
+    const stmt = 'INSERT INTO customer (id) VALUES (@newcustomerKey)';
+    const declared = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: [stmt]}},
+      parameters: [],
+      affects: [{concept: 'customer', operation: 'create'}],
+    }])]);
+    expect(declared).toEqual([]);
+
+    const undeclared = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: [stmt]}},
+      parameters: [],
+      affects: [{concept: 'customer', operation: 'modify'}],
+    }])]);
+    expect(undeclared.length).toBe(1);
+    expect(undeclared[0]).toContain('operation: create');
+  });
+
+  test('a sql executor of nothing but blanks is a hard error', () => {
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: ['   ']}},
+      parameters: [],
+    }])]);
+    expect(errs.some(e => e.includes('statements'))).toBe(true);
   });
 });
 
@@ -305,6 +428,7 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
       'commerce.actions.PlaceOrder',
       'commerce.actions.RefundOrder',
       'commerce.actions.CloseBooks',
+      'commerce.actions.ReplaceOrder',
     ]);
     for (const e of actions) expect(e.parentEntry).toBe(entries[0].name);
   });
@@ -330,12 +454,23 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
       grpcService: 'commerce.v1.Ledger',
       grpcMethod: 'CloseBooks',
     });
+    // The one kind whose coordinate is a list, and whose order is part of the
+    // meaning: the insert has to reach the store before the delete.
+    expect(dataOf('ReplaceOrder')).toMatchObject({
+      executorKind: 'sql',
+      sqlStatements: [
+        'INSERT INTO orders (o_orderkey, o_custkey) VALUES ' +
+            '(@newordersKey, @buyer)',
+        'DELETE FROM orders WHERE o_orderkey = @supersedes',
+      ],
+    });
     // A kind writes nothing belonging to another kind, so the aspect never
     // carries two executors at once.
     for (const [kind, foreign] of [
-             ['PlaceOrder', ['restEndpoint', 'restMethod', 'grpcService', 'grpcMethod']],
-             ['RefundOrder', ['mcpServer', 'mcpTool', 'grpcService', 'grpcMethod']],
-             ['CloseBooks', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod']],
+             ['PlaceOrder', ['restEndpoint', 'restMethod', 'grpcService', 'grpcMethod', 'sqlStatements']],
+             ['RefundOrder', ['mcpServer', 'mcpTool', 'grpcService', 'grpcMethod', 'sqlStatements']],
+             ['CloseBooks', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod', 'sqlStatements']],
+             ['ReplaceOrder', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod', 'grpcService', 'grpcMethod']],
     ] as Array<[string, string[]]>) {
       for (const field of foreign) expect(dataOf(kind)[field]).toBeUndefined();
     }

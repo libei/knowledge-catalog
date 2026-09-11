@@ -56,7 +56,7 @@ semantic_model:
     actions:
       - name: TransferFunds
         description: Move money from one account to another.
-        executor:                             # exactly one kind: mcp / rest / grpc
+        executor:                             # exactly one kind: mcp / rest / grpc / sql
           mcp:
             server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/payments
             tool: transfer_funds
@@ -77,7 +77,10 @@ relationships — is authored as it is for any model; see
 The executor says where the operation lives. `mcp` (`{server, tool}`) references
 a tool already registered in Agent Registry by the server's resource name plus
 the tool's name within it. `rest` (`{endpoint, method}`) and `grpc`
-(`{service, method}`) are the other kinds, and exactly one kind is required.
+(`{service, method}`) are the other two remote kinds. A fourth, `sql`, carries
+the write itself rather than a pointer to whoever performs it — see
+[Writing the statements in the model](#writing-the-statements-in-the-model).
+Exactly one kind is required.
 
 `description` and `ai_context.instructions` are both carried through to the
 catalog. Write the instructions for the agent that will call the action, as
@@ -94,6 +97,70 @@ parameter typed against the model says what the input *denotes*:
 consumer generating a tool schema knows to accept an identifier and resolve it
 against `Account`'s key rather than pass a number through. A parameter typed by
 a scalar datatype, such as `amount` above, is an ordinary value.
+
+### Writing the statements in the model
+
+The three kinds above name a system that performs the write, so what the write
+does is opaque to the model: it states an `affects` list and nothing can check
+that list against reality. The fourth kind, `sql`, contains the write instead.
+
+```yaml
+      - name: TransferFunds
+        executor:
+          sql:
+            statements:
+              - UPDATE Account SET balance = balance - @amount WHERE accountId = @source
+              - UPDATE Account SET balance = balance + @amount WHERE accountId = @target
+        parameters:
+          - { name: source, type: Account }
+          - { name: target, type: Account }
+          - { name: amount, type: Float }
+        affects:
+          - { concept: Account, operation: modify, fields: [balance] }
+```
+
+Containing the write buys three things a pointer cannot:
+
+- **The blast radius is checkable.** `affects` can be read against the
+  statements rather than taken on trust.
+- **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
+  system `kcmd` does not control, so a check wrapped around it is advisory. A
+  statement runs in the caller's own transaction and can be rolled back.
+- **The gate sees the write.** The statements run where the constraints are
+  probed, so a check observes the uncommitted result of the write it is gating.
+
+The narrowness is what makes that safe, and push enforces it:
+
+- Each statement is a **single `INSERT`, `UPDATE` or `DELETE`**. A statement that
+  reads is a query and belongs in a metric; one that reshapes the schema is not
+  an action. A `;` inside a statement is rejected, because each list entry runs
+  on its own and anything after the separator would silently not run.
+- Every value arrives as a **bound `@parameter`** naming a parameter the action
+  declares. Nothing is interpolated into the statement text, so an argument
+  cannot become SQL.
+- There is no control flow, and no statement composed at call time. An action
+  whose body arrives with the call declares nothing, and a gate cannot check what
+  was never declared.
+
+An action that **creates** a row needs a key for it, and the key cannot come from
+the caller: an agent that picks its own primary keys can overwrite an existing
+row by choosing one that is already taken. Declare the creation in `affects` and
+refer to the generated key as `@new<Concept>Key`:
+
+```yaml
+        executor:
+          sql:
+            statements:
+              - >-
+                INSERT INTO Transfer (transferId, amount, debitedId)
+                VALUES (@newTransferKey, @amount, @source)
+        affects:
+          - { concept: Transfer, operation: create }
+```
+
+Nothing executes a statement yet. `kcmd` validates the statements, publishes
+them to the catalog and reads them back; what runs them is the action runtime,
+which lands separately.
 
 ## 2. Gate it with a constraint
 

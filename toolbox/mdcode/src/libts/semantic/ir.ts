@@ -398,7 +398,57 @@ export interface ActionParameter {
 export type Executor =
   | { kind: 'mcp'; mcp: McpExecutor }
   | { kind: 'rest'; rest: RestExecutor }
-  | { kind: 'grpc'; grpc: GrpcExecutor };
+  | { kind: 'grpc'; grpc: GrpcExecutor }
+  | { kind: 'sql'; sql: SqlExecutor };
+
+/**
+ * A SQL executor: the write itself, declared in the model as an ordered list of
+ * DML statements.
+ *
+ * The other three executor kinds name a system that performs the write, so what
+ * the write does is opaque to the model. This one contains it, which buys three
+ * things the opaque kinds cannot offer.
+ *
+ *   - The blast radius is checkable. `affects` can be read against the
+ *     statements rather than taken on trust.
+ *   - A guard becomes a real gate. An MCP, REST or gRPC call commits inside a
+ *     system the runtime does not control, so a check around it is advisory; a
+ *     statement run in the runtime's own transaction can be rolled back.
+ *   - The statements run where the constraints are probed, so the gate observes
+ *     the uncommitted result of the write it is gating.
+ *
+ * The narrowness is the safety argument, and validate.ts enforces it. A
+ * statement is a single INSERT, UPDATE or DELETE. Every value it uses arrives as
+ * a bound query parameter naming a declared action parameter, so nothing is
+ * interpolated into the text and an argument cannot become SQL. There is no
+ * control flow, no statement composed at call time, and no way for a caller to
+ * supply a statement of its own: an action whose body arrives with the call
+ * declares nothing, and a gate cannot check what was never declared.
+ */
+export interface SqlExecutor {
+  // The statements, run in order inside the action's transaction. Each is a
+  // single DML statement; parameters are referenced as `@name`.
+  statements: string[];
+}
+
+// The verbs a SQL executor's statement may begin with. A statement is one write,
+// so there is no SELECT here and no DDL: a statement that reads is a query and
+// belongs in a metric, and a statement that reshapes the schema is not an action.
+export const SQL_EXECUTOR_VERBS = ['INSERT', 'UPDATE', 'DELETE'] as const;
+
+/**
+ * The bound parameter carrying the key of a row the action creates.
+ *
+ * An action that inserts a row needs a key for it, and the key cannot come from
+ * the caller: an agent that picks its own primary keys can overwrite an existing
+ * row by choosing a key that is already taken. So a runtime generates one per
+ * `affects` entry whose operation is `create`, binds it under this name, and
+ * records it as touched so the constraint probes cover the new row. A statement
+ * refers to it the same way it refers to any other parameter.
+ */
+export function generatedKeyParam(concept: string): string {
+  return `new${concept}Key`;
+}
 
 /**
  * An MCP executor: references a tool already registered in Agent Registry, by

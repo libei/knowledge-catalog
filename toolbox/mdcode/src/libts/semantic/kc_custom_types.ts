@@ -367,6 +367,23 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               'what it writes.',
         },
       },
+      {
+        index: 12,
+        name: 'sqlStatements',
+        type: 'array',
+        arrayItems: {name: 'statement', type: 'string'},
+        annotations: {
+          displayName: 'SQL Statements',
+          description:
+              'The DML statements a `sql` executor runs, in order, each a ' +
+              'single INSERT, UPDATE or DELETE with its values bound as ' +
+              '`@parameter` references. Present only for that executor ' +
+              'kind: the other three name a system that performs the write ' +
+              'and carry no text. A reader with these can check the ' +
+              'declared `affects` against the write itself instead of ' +
+              'taking it on trust.',
+        },
+      },
     ],
   },
 };

@@ -216,6 +216,15 @@ function executorData(ex: Executor): Record<string, any> {
         grpcService: ex.grpc.service,
         grpcMethod: ex.grpc.method,
       };
+    case 'sql':
+      // The statements are published verbatim. A consumer that only routes on
+      // the kind can ignore them; one that wants to know what the action
+      // actually writes -- a review engine deciding whether the declared
+      // `affects` matches the write -- has the text without a second lookup.
+      return {
+        executorKind: 'sql',
+        sqlStatements: [...ex.sql.statements],
+      };
   }
 }
 
@@ -409,6 +418,17 @@ function readExecutor(data: Record<string, any>): Executor|undefined {
           grpc: {service: data.grpcService, method: data.grpcMethod}
         };
       return undefined;
+    case 'sql': {
+      // Unlike the other three, the coordinate here is a list. A blank entry is
+      // dropped rather than kept: it is not a statement, and validate would
+      // reject the pulled model for carrying it. An executor left with no
+      // statement at all is malformed, like a missing coordinate elsewhere.
+      const statements = Array.isArray(data.sqlStatements) ?
+          data.sqlStatements.filter(str).map((s: string) => s.trim()) :
+          [];
+      if (statements.length) return {kind: 'sql', sql: {statements}};
+      return undefined;
+    }
     default:
       return undefined;
   }

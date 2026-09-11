@@ -167,3 +167,15 @@ export function quoteIfReserved(name: string): string {
   return isSimpleIdentifier(name) && isReservedKeyword(name) ? backtick(name) :
                                                                name;
 }
+
+
+// The distinct `@name` references in a SQL statement, ignoring the ones inside
+// a single-quoted string so a literal containing an '@' is not read as a
+// binding. Used to check that every parameter a statement reads is one the
+// caller will bind, and to bind only the parameters a statement actually reads.
+export function referencedParameters(text: string): string[] {
+  const withoutStrings = text.replace(/'(?:[^'\\]|\\.)*'/g, "''");
+  const names = new Set<string>();
+  for (const m of withoutStrings.matchAll(/@([A-Za-z_]\w*)/g)) names.add(m[1]);
+  return [...names];
+}

@@ -153,8 +153,10 @@ round-trip losslessly through `pull` (name, description, executor, typed
 parameters, `guards`, `affects`, and `instructions`). A parameter's
 `isEntityRef` is re-derived against the entities the pull recovered rather than
 read back from the aspect, so it stays consistent with the model the pull hands
-you. The entry type is custom, so `kcmd init` creates it; a model that declares
-no action never needs it.
+you. A `sql` executor round-trips its `statements` with the rest: they are the
+write, not a note about it, so a catalog that dropped them would describe an
+action nobody could re-deploy. The entry type is custom, so `kcmd init` creates
+it; a model that declares no action never needs it.
 
 What an action affects round-trips as a fact, not as the text it was authored
 in. The two authored shapes — the bare name and the record — are one shape in

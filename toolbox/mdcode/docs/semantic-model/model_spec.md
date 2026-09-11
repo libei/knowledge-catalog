@@ -474,6 +474,16 @@ reads the document ([§6](#6-the-extension-mechanism)).
   so `affects` is the author's declaration and nothing verifies it against what
   the executor does. See [Modeling write operations](actions.md).
 
+  An executor MUST declare exactly one kind. Three of them — `mcp`, `rest` and
+  `grpc` — name a system that performs the write; the fourth, `sql`, carries the
+  write itself as an ordered list of `statements`. Because that one is the only
+  kind whose text the model can read, it is the only one with rules about that
+  text: each statement MUST be a single `INSERT`, `UPDATE` or `DELETE`, MUST NOT
+  contain a `;` other than a trailing one, and MUST reference only `@parameter`
+  names the action declares, plus `@new<Concept>Key` for each `affects` entry
+  whose `operation` is `create`. Those rules are what let every value be bound
+  rather than interpolated, so an argument cannot reach the store as SQL.
+
 - **`constraints` (extended profile only).** Model-level named boolean
   invariants over the ontology, written in the same expression language as a
   metric — `Account.balance >= 0`. Accepted only under `0.2.0.dev0/google`.
