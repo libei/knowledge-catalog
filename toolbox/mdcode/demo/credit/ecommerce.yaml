@@ -1,0 +1,178 @@
+# The credit-flow model: one action, three rules, nothing hand-written.
+#
+# A customer-service agent issues a credit against an order. Three rules have to
+# hold:
+#
+#   1. a credit never exceeds the order it credits;
+#   2. a credit over $25 requires a human decision;
+#   3. an order's total always equals the sum of its line items.
+#
+# Rules 1 and 2 are policy about the CALL: both read the `amount` the caller
+# asked for, so both are guards, checked before anything is written, and both
+# escalate to a human rather than refusing outright. Rule 3 is an invariant
+# about the DATA: it reads no argument, applies to every write from every
+# source, and rejects. Nobody is allowed to approve an order whose total does
+# not add up.
+#
+# The action's executor is the DML itself. That is what takes rule 3 out of
+# review: the agent supplies three values, and the statements that keep the
+# total in step with the line items are in the model, authored once. The second
+# statement recomputes the total from the line items rather than adjusting it by
+# the credit amount, so there is no arithmetic for a caller to get wrong.
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: ecommerce
+    description: Customers, their orders, and the lines that make up an order
+    datasets:
+      - name: Customer
+        source: Customer
+        primary_key: [customerId]
+        fields:
+          - name: customerId
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: customer_id}]
+          - name: name
+            datatype: String
+            description: The customer's display name, e.g. "Andy Brook".
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: name}]
+          - name: email
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: email}]
+
+      - name: Order
+        source: Orders
+        description: >-
+          A customer order. Its total is the sum of its line items: items, tax
+          and fees add, credits subtract. A positive total is money owed to the
+          company.
+        primary_key: [orderId]
+        fields:
+          - name: orderId
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_id}]
+          - name: customerId
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: customer_id}]
+          - name: total
+            datatype: Decimal
+            description: What the customer owes on this order, in dollars.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: total}]
+          - name: status
+            datatype: String
+            description: OPEN or CLOSED.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: status}]
+
+      - name: LineItem
+        source: LineItem
+        description: >-
+          One line of an order. A charge line is positive; a credit line is
+          negative, so that the order total is always a plain sum.
+        primary_key: [lineItemId]
+        fields:
+          - name: lineItemId
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: line_item_id}]
+          - name: orderId
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_id}]
+          - name: type
+            datatype: String
+            description: item, shipping, tax, or credit.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: type}]
+          - name: amount
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+          - name: memo
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: memo}]
+
+    relationships:
+      - name: PlacedBy
+        from: Order
+        to: Customer
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+      # How SUM(LineItem.amount) finds its way back to the order being checked.
+      # The evaluator reads the join columns out of this declaration rather than
+      # guessing them from the field names, and refuses the aggregate outright if
+      # two relationships connect the same pair of entities.
+      - name: BelongsTo
+        from: LineItem
+        to: Order
+        from_columns: [order_id]
+        to_columns: [order_id]
+
+    actions:
+      - name: IssueCredit
+        description: >-
+          Credit a customer against one order -- a late delivery, a coupon, a
+          shipping charge applied in error. The credit is added as a negative
+          line and the order total is recomputed from the lines.
+        executor:
+          sql:
+            statements:
+              # `@newLineItemKey` is generated by the runtime, because the
+              # affects entry below says this call creates a LineItem. Naming it
+              # is how the new row's key reaches both the INSERT and the probes.
+              - >-
+                INSERT INTO LineItem (line_item_id, order_id, type, amount, memo)
+                VALUES (@newLineItemKey, @order, 'credit', -@amount, @memo)
+              # Recomputed, not adjusted. This is the DML composed by a query:
+              # whatever the lines now say is what the total becomes, so rule 3
+              # cannot be broken by this action however it is called.
+              - >-
+                UPDATE Orders SET total = (
+                  SELECT COALESCE(SUM(li.amount), 0)
+                  FROM LineItem AS li
+                  WHERE li.order_id = @order
+                ) WHERE order_id = @order
+        parameters:
+          - {name: order, type: Order}
+          - {name: amount, type: Decimal}
+          - {name: memo, type: String}
+        guards: [CreditWithinOrderTotal, CreditUnderReviewThreshold]
+        affects:
+          - {concept: LineItem, operation: create, fields: [type, amount, memo]}
+          - {concept: Order, operation: modify, fields: [total]}
+        ai_context:
+          instructions: >-
+            Give the order as its number or the customer's name, the amount in
+            dollars, and a memo saying why. If the call comes back needing
+            review, do not retry it with a smaller amount: report the reason and
+            wait for a decision.
+
+    constraints:
+      - name: CreditWithinOrderTotal
+        expression: amount <= Order.total
+        severity: escalate
+        description: >-
+          A credit cannot exceed the total of the order it credits. Lower the
+          credit amount, or split it across the orders it actually covers.
+
+      - name: CreditUnderReviewThreshold
+        expression: amount <= 25
+        severity: escalate
+        description: >-
+          A credit over $25 is above the self-service ceiling. A supervisor
+          decides it.
+
+      - name: OrderTotalMatchesLineItems
+        expression: Order.total == SUM(LineItem.amount)
+        severity: reject
+        description: >-
+          An order's total must equal the sum of its line items, with credits
+          subtracted. Nobody can approve an order that does not add up.

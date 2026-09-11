@@ -254,7 +254,7 @@ export async function runAction(opts: RunActionOptions):
         }
         const refs = resolved.refs;
 
-        const bound = bindArguments(action, args, refs);
+        const bound = bindArguments(model, action, args, refs);
         if ('error' in bound) {
           return await rollback({status: 'error', message: bound.error});
         }
@@ -402,34 +402,43 @@ interface Bindings {
 // matching type. Nothing is interpolated into SQL, so no argument can reach the
 // store as anything but data.
 function bindArguments(
-    action: Action, args: Record<string, unknown>,
+    model: SemanticModel, action: Action, args: Record<string, unknown>,
     refs: Record<string, EntityRef>): Bindings|{error: string} {
   const params: Record<string, unknown> = {};
   const types: Record<string, {code: string}> = {};
   for (const param of action.parameters) {
-    if (param.isEntityRef) {
-      const ref = refs[param.name];
-      if (!ref) {
-        return {error: `Parameter '${param.name}' was not resolved.`};
-      }
-      if (ref.keys.length !== 1) {
-        return {
-          error: `Parameter '${param.name}' refers to a ${param.type}, whose ` +
-              `key has ${ref.keys.length} parts; the runtime binds an object ` +
-              `reference as a single value, so a composite key cannot be ` +
-              `passed to a constraint or a statement.`,
-        };
-      }
-      params[param.name] = ref.keys[0];
-      types[param.name] = {code: 'STRING'};
-      continue;
-    }
-    const bound = bindScalar(param, args[param.name]);
+    const bound = param.isEntityRef ?
+        bindReference(model, param, refs[param.name]) :
+        bindScalar(param, args[param.name]);
     if ('error' in bound) return {error: bound.error};
     params[param.name] = bound.value;
     types[param.name] = {code: bound.code};
   }
   return {params, types};
+}
+
+
+// An object reference as its key value, typed by the ontology. Resolution
+// returns every key as a string, because that is what the store's REST surface
+// gives back; binding it into a statement needs the type the KEY FIELD declares,
+// or an integer-keyed row would be handed to the store as text.
+function bindReference(
+    model: SemanticModel, param: ActionParameter, ref: EntityRef|undefined):
+    {value: unknown; code: string}|{error: string} {
+  if (!ref) return {error: `Parameter '${param.name}' was not resolved.`};
+  if (ref.keys.length !== 1) {
+    return {
+      error: `Parameter '${param.name}' refers to a ${param.type}, whose key ` +
+          `has ${ref.keys.length} parts; the runtime binds an object ` +
+          `reference as a single value, so a composite key cannot be passed ` +
+          `to a constraint or a statement.`,
+    };
+  }
+  const entity = (model.entities ?? []).find(e => e.name === param.type);
+  const keyField =
+      entity?.fields.find(f => f.name === (entity.keys ?? [])[0]);
+  return bindScalar(
+      {name: param.name, type: keyField?.type ?? 'String'}, ref.keys[0]);
 }
 
 
@@ -576,7 +585,10 @@ async function checkConstraints(
         constraint: probe.constraint.name,
         entity: probe.entity,
         message: violationMessage(probe, rows),
-        violatingKeys: rows,
+        // A constraint reading only the action's arguments ranges over no
+        // table. Its probe returns one placeholder row meaning "the test
+        // failed", which is not a key of anything and is not reported as one.
+        violatingKeys: probe.entity ? rows : [],
         severity: probe.constraint.severity ?? 'reject',
         stage,
       });

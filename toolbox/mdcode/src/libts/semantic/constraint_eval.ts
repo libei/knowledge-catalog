@@ -324,9 +324,19 @@ export function violationMessage(
     probe: ConstraintProbe, violatingKeys: string[][]): string {
   const lead = probe.constraint.description ??
       `Constraint '${probe.constraint.name}' does not hold.`;
-  const cite = `Rejected by constraint '${probe.constraint.name}' (${
+  // Named for what the severity actually does, so an escalation does not tell
+  // the caller it was rejected when a supervisor can still let it through.
+  const verb = {
+    reject: 'Rejected by',
+    escalate: 'Held for review by',
+    warn: 'Flagged by',
+  }[probe.constraint.severity ?? 'reject'];
+  const cite = `${verb} constraint '${probe.constraint.name}' (${
       probe.constraint.expression}).`;
-  if (!violatingKeys.length) return `${lead} ${cite}`;
+  // A constraint over the action's arguments alone ranges over no table, so it
+  // has no violating rows to cite -- the probe returns a single placeholder row
+  // meaning "the test failed", and printing it as a key would be noise.
+  if (!violatingKeys.length || !probe.entity) return `${lead} ${cite}`;
   const rows = violatingKeys.map(k => k.join('/')).join(', ');
   return `${lead} ${cite} Violating ${probe.entity}: ${rows}.`;
 }

@@ -458,6 +458,8 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                         name: z.string(),
                         expression: z.string(),
                         description: z.string().optional(),
+                        // Absent means `reject`. See CONSTRAINT_SEVERITIES.
+                        severity: z.enum(CONSTRAINT_SEVERITIES).optional(),
                         ai_context: aiContextSchema.optional(),
                         ...ce,
                       }).strict();

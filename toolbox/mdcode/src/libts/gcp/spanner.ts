@@ -47,6 +47,37 @@ export class SpannerClient extends api.ApiClient {
     return await this._patch<Operation>(name, {statements});
   }
 
+  // Creates a database. Like DDL, this is asynchronous: the response is a
+  // long-running Operation to poll with getOperation. The database name goes
+  // inside a CREATE DATABASE statement rather than in a field, which is the
+  // REST surface's own shape; it is backticked because a database may be named
+  // for a reserved word.
+  async createDatabase(
+      project: string, instance: string, database: string,
+      extraStatements: string[] = []): Promise<api.ApiResult<Operation>> {
+    const parent = `projects/${project}/instances/${instance}/databases`;
+    return await this._post<Operation>(parent, {
+      createStatement: `CREATE DATABASE \`${database}\``,
+      extraStatements,
+    });
+  }
+
+  // Fetches a database. A 404 means it does not exist, which is the only
+  // reliable way to ask: listing and matching names has to guess at whether the
+  // surface returns bare ids or full resource paths.
+  async getDatabase(project: string, instance: string, database: string):
+      Promise<api.ApiResult<{name?: string; state?: string}>> {
+    return await this._get<{name?: string; state?: string}>(
+        `projects/${project}/instances/${instance}/databases/${database}`);
+  }
+
+  // Drops a database and everything in it. Synchronous, and irreversible.
+  async dropDatabase(project: string, instance: string, database: string):
+      Promise<api.ApiResult<{}>> {
+    return await this._delete<{}>(
+        `projects/${project}/instances/${instance}/databases/${database}`);
+  }
+
   // Fetches a long-running operation by its resource name (as returned in
   // Operation.name, e.g.
   // `projects/.../instances/.../databases/.../operations/...`).
@@ -165,6 +196,20 @@ export class SpannerDataClient extends api.ApiClient {
       // Ignored for queries, required for DML; sent unconditionally so the
       // counter stays in step with the statements actually issued.
       seqno: `${seqno}`,
+    });
+  }
+
+  // Runs one statement outside any read-write transaction, as a single-use
+  // strong read. For a plain read -- showing state, resolving a display name --
+  // there is nothing to commit, and holding a transaction open for it would add
+  // a round trip and a rollback that say nothing.
+  async executeQuery(sessionName: string, stmt: Statement):
+      Promise<api.ApiResult<ResultSet>> {
+    return await this._post<ResultSet>(`${sessionName}:executeSql`, {
+      transaction: {singleUse: {readOnly: {strong: true}}},
+      sql: stmt.sql,
+      params: stmt.params,
+      paramTypes: stmt.paramTypes,
     });
   }
 

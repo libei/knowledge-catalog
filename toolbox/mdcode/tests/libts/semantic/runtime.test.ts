@@ -383,3 +383,222 @@ describe('failures that are not constraint violations', () => {
     expect(fake.sessionsOpen).toBe(0);
   });
 });
+
+
+// A second model, for the half of the runtime the payments model cannot reach:
+// an action whose write is declared in the model rather than performed by a
+// handler, and a constraint that reads the call's arguments rather than the
+// stored rows.
+const credit: Action = {
+  name: 'Credit',
+  description: 'Credit an account and record the entry.',
+  executor: {
+    kind: 'sql',
+    sql: {
+      statements: [
+        'INSERT INTO Entry (entry_id, account_id, amount) ' +
+            'VALUES (@newEntryKey, @account, @amount)',
+        'UPDATE Account SET balance = balance - @amount ' +
+            'WHERE account_id = @account',
+      ],
+    },
+  },
+  parameters: [
+    {name: 'account', type: 'Account', isEntityRef: true},
+    {name: 'amount', type: 'Float', isEntityRef: false},
+  ],
+  guards: ['UnderSelfServiceLimit'],
+  affects: [
+    {concept: 'Entry', operation: 'create', fields: ['amount']},
+    {concept: 'Account', operation: 'modify', fields: ['balance']},
+  ],
+};
+
+function creditModel(overrides: Partial<SemanticModel> = {}): SemanticModel {
+  const base = model();
+  return {
+    ...base,
+    entities: [
+      ...base.entities,
+      {
+        name: 'Entry',
+        dataSource: 'demo.payments.Entry',
+        keys: ['entryId'],
+        fields: [
+          {name: 'entryId', expression: 'entry_id'},
+          {name: 'amount', expression: 'amount'},
+        ],
+      },
+    ],
+    actions: [credit],
+    constraints: [
+      ...base.constraints!,
+      {
+        name: 'UnderSelfServiceLimit',
+        expression: 'amount <= 25',
+        description: 'A credit over 25 is above the self-service ceiling. A supervisor decides it.',
+        severity: 'escalate',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+// The guard probe ranges over no table, so it is the one statement selecting
+// from a literal; the invariant probe is the one that mentions the column.
+const GUARD = 'UNNEST([1])';
+const INVARIANT = 'balance >= 0';
+
+function runCredit(
+    fake: FakeSpanner, over: Partial<Parameters<typeof runAction>[0]> = {}) {
+  return runAction({
+    model: creditModel(),
+    actionName: 'Credit',
+    args: {account: 'A1', amount: 100},
+    client: fake.client,
+    ...over,
+  });
+}
+
+
+describe('an action whose write is declared in the model', () => {
+  test('runs the executor statements in order, with no handler involved',
+       async () => {
+         const fake = resolvingFake();
+         const outcome = await runCredit(fake);
+         expect(outcome.status).toBe('committed');
+         expect(fake.sql.filter(s => s.startsWith('INSERT'))).toHaveLength(1);
+         expect(fake.sql.filter(s => s.startsWith('UPDATE'))).toHaveLength(1);
+       });
+
+  test('binds every caller value as a parameter, interpolating nothing',
+       async () => {
+         const fake = resolvingFake();
+         await runCredit(fake);
+         const insert = fake.statements.find(s => s.sql.startsWith('INSERT'))!;
+         expect(insert.sql).not.toContain('100');
+         expect(insert.params?.amount).toBe(100);
+         expect(insert.paramTypes?.amount).toEqual({code: 'FLOAT64'});
+       });
+
+  test('binds only the parameters a given statement mentions', async () => {
+    // The UPDATE names both; a statement naming one would carry one.
+    const fake = resolvingFake();
+    await runCredit(fake);
+    const update = fake.statements.find(s => s.sql.startsWith('UPDATE'))!;
+    expect(Object.keys(update.params ?? {}).sort())
+      .toEqual(['account', 'amount']);
+    expect(update.params?.newEntryKey).toBeUndefined();
+  });
+
+  test('generates the key of a created row rather than taking the caller\'s',
+       async () => {
+         // An agent that picks its own primary key can overwrite a row that
+         // already has that key.
+         const fake = resolvingFake();
+         await runCredit(fake);
+         const insert = fake.statements.find(s => s.sql.startsWith('INSERT'))!;
+         expect(typeof insert.params?.newEntryKey).toBe('string');
+         expect(insert.params?.newEntryKey as string).not.toBe('');
+       });
+
+  test('resolves an entity-typed argument to its key before binding it',
+       async () => {
+         const fake = resolvingFake();
+         await runCredit(fake);
+         const update = fake.statements.find(s => s.sql.startsWith('UPDATE'))!;
+         expect(update.params?.account).toBe('1');
+       });
+
+  test('scopes the invariant probe to the row the write touched', async () => {
+    const fake = resolvingFake();
+    await runCredit(fake);
+    const probe = fake.statements.find(s => s.sql.includes(INVARIANT))!;
+    expect(probe.params?.touchedKeys).toEqual(['1']);
+  });
+});
+
+
+describe('an executor the runtime cannot roll back', () => {
+  test('is refused when the caller supplies no handler', async () => {
+    // An MCP tool commits inside a system this transaction does not control,
+    // so a constraint checked around it would be advisory.
+    const fake = resolvingFake();
+    const outcome = await run(fake, {handler: undefined});
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('could not be rolled back');
+    expect(fake.statements).toHaveLength(0);
+  });
+});
+
+
+describe('a constraint that reads the action arguments', () => {
+  const overLimit = () => resolvingFake([{match: GUARD, rows: [['1']]}]);
+
+  test('is checked BEFORE the write, not after it', async () => {
+    // Once the write has happened there is no longer an `amount` to read.
+    const fake = resolvingFake();
+    await runCredit(fake);
+    const guard = fake.sql.findIndex(s => s.includes(GUARD));
+    const insert = fake.sql.findIndex(s => s.startsWith('INSERT'));
+    expect(guard).toBeGreaterThanOrEqual(0);
+    expect(guard).toBeLessThan(insert);
+  });
+
+  test('stops the write before a single statement runs', async () => {
+    const fake = overLimit();
+    const outcome = await runCredit(fake);
+    expect(outcome.status).toBe('escalated');
+    expect(fake.sql.some(s => s.startsWith('INSERT'))).toBe(false);
+    expect(fake.rolledBack).toBe(true);
+    expect(fake.committed).toBe(false);
+  });
+
+  test('escalates rather than rejecting when the model says so', async () => {
+    const outcome = await runCredit(overLimit());
+    if (outcome.status !== 'escalated') throw new Error('expected an escalation');
+    expect(outcome.approvalRequired).toEqual(['UnderSelfServiceLimit']);
+    expect(outcome.violations[0].stage).toBe('guard');
+    expect(outcome.violations[0].severity).toBe('escalate');
+  });
+
+  test('says it is held for review, not that it was rejected', async () => {
+    const outcome = await runCredit(overLimit());
+    if (outcome.status !== 'escalated') throw new Error('expected an escalation');
+    expect(outcome.message).toContain('above the self-service ceiling');
+    expect(outcome.message).toContain("Held for review by constraint 'UnderSelfServiceLimit'");
+    expect(outcome.message).not.toContain('Rejected');
+  });
+
+  test('cites no violating row, because it ranges over no table', async () => {
+    // The probe returns one placeholder row meaning "the test failed". That is
+    // not a key of anything and is not reported as one.
+    const outcome = await runCredit(overLimit());
+    if (outcome.status !== 'escalated') throw new Error('expected an escalation');
+    expect(outcome.violations[0].entity).toBe('');
+    expect(outcome.violations[0].violatingKeys).toEqual([]);
+    expect(outcome.message).not.toContain('Violating');
+  });
+
+  test('lets the same call through once the approval is supplied', async () => {
+    const fake = overLimit();
+    const outcome =
+        await runCredit(fake, {approvals: ['UnderSelfServiceLimit']});
+    expect(outcome.status).toBe('committed');
+    expect(fake.committed).toBe(true);
+  });
+
+  test('an approval does not carry over to a different constraint', async () => {
+    // Approving the ceiling says nothing about the balance going negative.
+    const fake = resolvingFake([
+      {match: GUARD, rows: [['1']]},
+      {match: INVARIANT, rows: [['1']]},
+    ]);
+    const outcome =
+        await runCredit(fake, {approvals: ['UnderSelfServiceLimit']});
+    if (outcome.status !== 'rejected') throw new Error('expected a rejection');
+    expect(outcome.violations.map(v => v.constraint))
+      .toEqual(['NonNegativeBalance']);
+    expect(fake.rolledBack).toBe(true);
+  });
+});
