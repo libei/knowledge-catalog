@@ -210,6 +210,20 @@ constraints that have no other moment to run. Naming an invariant over stored
 data as a guard is still useful. It states that the call must not proceed on
 data that is already broken, and it puts that check before the call.
 
+The two kinds are settled at different moments, and what each rule reads decides
+which. A constraint that reads an action's parameters can be settled before
+anything is written, from the arguments and the data as it stands. A constraint
+over stored data states a condition on the state the write produces, so it is
+settled against the proposed result, inside the write, and a breach stops the
+commit. A rule meant to report rather than block is one that declares `warn`,
+checked at the same moment and let through.
+
+Not every rule can be handed to the store to check. A condition on a single row
+lowers to a store-level `CHECK`. A condition that aggregates across a child
+table, such as an order total matching the sum of its line items, lowers to
+neither Spanner nor BigQuery, so enforcing it before the commit falls to
+whatever performs the write.
+
 The reference lives on the action rather than on the constraint, because the
 same rule may gate `TransferFunds` and leave `CloseAccount` alone.
 
@@ -373,7 +387,9 @@ for every write from every source, whether or not an action mentions it, so it
 is declared and left unguarded. It is also the only rule here that nobody in the
 business may approve: an order whose total disagrees with its line items is
 broken rather than unusual. When a rule tempts you toward `reject`, check first
-whether it is really an invariant, which belongs outside `guards`.
+whether it is really an invariant. One is in force without being listed, and
+naming it in `guards` would add an early check rather than switch enforcement
+on.
 
 **Rules 4 and 5 are why the second body exists.** Neither reduces to arithmetic
 over `Order` and `LineItem`, and before `judgment` they had nowhere to go but a
