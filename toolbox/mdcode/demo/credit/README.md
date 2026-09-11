@@ -56,7 +56,10 @@ All commands are run from this directory.
 ### Create the database and seed it
 
 ```bash
-bun setup.ts
+gcloud spanner databases create semantic_credit_demo \
+  --instance=graph-unified-solution-demo --project=sqlgen-testing \
+  --ddl-file=demo/credit/schema.sql
+demo/credit/seed.sh
 ```
 
 This creates a database of its own and three orders. Re-running it is safe.
@@ -235,7 +238,8 @@ that already has it.
 | File | What it is |
 | --- | --- |
 | `ecommerce.yaml` | The semantic model: three entities, two relationships, one action, three constraints. |
-| `setup.ts` | Creates the Spanner database, applies the schema, seeds three orders. |
+| `schema.sql` | The three tables, applied with `gcloud spanner databases create --ddl-file`. |
+| `seed.sh` | Three orders, one `gcloud spanner databases execute-sql` call per statement. |
 | `credit.ts` | The command-line demo, including `--by-hand`. |
 | `agent.ts` | The same thing with an ADK 2.0 agent in front of it. |
 | `config.ts` | Where the demo runs; every value overridable by environment variable. |

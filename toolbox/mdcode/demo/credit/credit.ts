@@ -1,6 +1,6 @@
 // The credit-flow demo: one declared action, three rules, against a live store.
 //
-//   bun setup.ts                                        create and seed
+//   demo/credit/seed.sh                                 seed the tables
 //   bun credit.ts --list                                what is in there
 //   bun credit.ts --order 12345 --amount 30 --memo "…"  escalates (rule 2)
 //   bun credit.ts --order 12345 --amount 30 --memo "…" \
