@@ -413,20 +413,21 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   it neither way; declaring neither states no rule at all. Either error names
   the constraint. *(static)*
 * **Every expression constraint is checkable.** The `expression` must be
-  non-empty. When it opens with an `<Entity>.<field>` qualifier naming a
-  **known** entity, that entity must declare the field; this catches a typo that
-  would otherwise surface only when something tries to check the rule. A leading
-  qualifier that is not a known entity — a relationship-qualified name like
-  `OrderedAs.quantity`, a metric reference, or compound logic — is left alone
-  rather than guessed at, so a valid constraint is never falsely rejected.
+  non-empty. Every `<Entity>.<field>` token in it that names a **known** entity
+  must name a field that entity declares, wherever in the expression it appears;
+  this catches a typo that would otherwise surface only when something tries to
+  check the rule. A qualifier that is not a known entity — a
+  relationship-qualified name like `OrderedAs.quantity`, a metric reference, or
+  compound logic — is left alone rather than guessed at, so a valid constraint
+  is never falsely rejected. A quoted literal is data, so it is not scanned.
   *(static)*
 * **Every judged constraint says what a violation does.** The `judgment` must
   be non-empty, and `on_violation` is required on it rather than defaulting. Any
   of the three words is allowed, `reject` included; leaving the key out is the
   error, because an unmarked constraint rejects and that is too strong a
   consequence to inherit by silence. Every `Entity.field` token in the prose is
-  resolved against the model the same way an expression's leading qualifier is,
-  so a field name that has been renamed out from under the sentence is caught.
+  resolved against the model by the same scan an expression gets, so a field
+  name that has been renamed out from under the sentence is caught.
   *(static)*
 * Like an action, a constraint of either kind reaches Knowledge Catalog only,
   and a `--no-kc` push warns that it will not be deployed. Two rules are

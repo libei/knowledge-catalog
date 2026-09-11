@@ -355,11 +355,15 @@ function declaredConcepts(model: SemanticModel): Map<string, DeclaredConcept> {
 //
 // An `expression` then gets two checks:
 //   - the expression must be non-empty;
-//   - when it opens with a `<Entity>.<field>` qualifier naming a KNOWN entity,
-//     that entity must declare the field. This catches a typo that would
-//     otherwise surface only inside an agent's rejected action.
-// A `judgment` gets the field-reference check over every qualified token in the
-// prose, plus the one routing rule in judgedConstraintErrors.
+//   - every `<Entity>.<field>` token naming a KNOWN entity must name a field
+//     that entity declares. This catches a typo that would otherwise surface
+//     only inside an agent's rejected action.
+// A `judgment` gets the same field-reference check over the qualified tokens in
+// its prose, plus the one routing rule in judgedConstraintErrors.
+//
+// Both bodies are scanned the same way, because a rule is as easy to misspell
+// in `amount <= Order.totl` as in a sentence, and an expression that names a
+// field no entity has can never be computed.
 //
 // Everything else is left alone. The expression is a logical invariant, and
 // whatever evaluates it resolves it against the ontology. So a leading
@@ -413,14 +417,10 @@ function validateConstraints(
       errors.push(`${where} has an empty expression.`);
       continue;
     }
-    if (!fieldsByEntity) continue;
-    const ref = leadingFieldRef(c.expression!);
-    if (!ref) continue;
-    const fields = fieldsByEntity.get(ref.entity);
-    if (fields && !fields.has(ref.field)) {
-      errors.push(`${where} references '${ref.entity}.${ref.field}', but ` +
-          `entity '${ref.entity}' declares no field '${ref.field}'.`);
-    }
+    // A quoted literal is data rather than a reference, so it is blanked
+    // before the scan: `status = 'Order.total'` compares against a string.
+    errors.push(...unknownFieldRefs(
+        c.expression!.replace(/'[^']*'|"[^"]*"/g, ' '), where, fieldsByEntity));
   }
   return errors;
 }
@@ -462,8 +462,8 @@ function judgedConstraintErrors(
 // spelling heuristic is needed and none is used: entity names here are as often
 // lowercase (`customer`, `orders`) as capitalized, and a rule keyed on the
 // capital would check some models and quietly skip others. An unrecognized
-// leading name is left alone on the principle that keeps leadingFieldRef
-// conservative -- a judgment may name a concept from another system, and
+// entity name is left alone on the principle that keeps this scan
+// conservative -- a rule may name a concept from another system, and
 // refusing to guess is what stops a valid rule being falsely rejected. A known
 // entity with an unknown field is the case where the author plainly meant this
 // model and got the name wrong, so that one is an error.
@@ -502,13 +502,6 @@ function declaredFields(model: SemanticModel): Map<string, Set<string>> {
       (inherits ? resolveInheritance(model).model : model).entities ?? [];
   return new Map(
       entities.map(e => [e.name, new Set((e.fields ?? []).map(f => f.name))]));
-}
-
-// The leading `<name>.<field>` qualifier of a constraint expression, or null
-// when it does not open with one.
-function leadingFieldRef(expr: string): {entity: string; field: string}|null {
-  const m = expr.trim().match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)/);
-  return m ? {entity: m[1], field: m[2]} : null;
 }
 
 // The executor coordinate fields that are absent or blank. An executor with no

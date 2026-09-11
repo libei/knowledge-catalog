@@ -221,6 +221,22 @@ describe('validatePushRequirements gates constraints', () => {
     expect(errs).toEqual([]);
   });
 
+  test('a bad reference anywhere in an expression is a hard error', () => {
+    // The scan does not stop at the leading qualifier. A guard reads its
+    // action's parameters first, so the field it misspells is usually not the
+    // token the expression opens with.
+    const errs = validatePushRequirements(
+        [loaded([{name: 'C', expression: 'amount <= customer.blance'}])]);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain('customer.blance');
+  });
+
+  test('a quoted literal in an expression is not a field reference', () => {
+    const errs = validatePushRequirements([loaded(
+        [{name: 'C', expression: "customer.balance = 'customer.blance'"}])]);
+    expect(errs).toEqual([]);
+  });
+
   // The field check reads a field list, and by the time this gate runs the
   // model's field lists are no longer what the author wrote. Both directions
   // of that gap rejected a valid constraint.
@@ -340,8 +356,8 @@ describe('validatePushRequirements gates constraints', () => {
     }
   });
 
-  // A judgment gets its `Entity.field` tokens resolved, which is stricter than
-  // an expression gets: leadingFieldRef checks only the leading qualifier.
+  // A judgment gets its `Entity.field` tokens resolved by the same scan an
+  // expression gets, so the two bodies are checked alike.
 
   test(
       'an unknown field on a KNOWN entity in a judgment is a hard error',
