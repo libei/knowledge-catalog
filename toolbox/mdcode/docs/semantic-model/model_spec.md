@@ -497,13 +497,15 @@ reads the document ([§6](#6-the-extension-mechanism)).
   sentence that uses it. A constraint declaring both bodies, or neither, is a
   load error.
 
-  A judgment states one condition. A written policy usually has several — over
-  one amount a director approves, under another a manager does, and separately
-  the stated reason must be specific — and it becomes several constraints, one
-  per condition, each with its own name, `on_violation` and `severity`, which
-  `guards` on the action then regroups into the policy the business wrote. That
-  keeps each branch independently searchable, revisable and owned, and it keeps
-  the branches an expression *can* decide out of prose that no query can read.
+  A judgment states one condition, the same as an expression does. A written
+  policy that branches — a large refund is held for a director, a disguised one
+  is refused, a vague reason is only reported — becomes one constraint per
+  branch, each with its own name, `on_violation` and `severity`, which `guards`
+  on the action lists together. That keeps each branch independently searchable,
+  revisable and owned, and it keeps the branches an expression *can* decide out
+  of prose that no query can read. [Actions → A policy whose branches end
+  differently](actions.md#a-policy-whose-branches-end-differently) works one
+  through.
 
   A constraint that quantifies over stored data applies to every write without
   being referenced anywhere. A constraint that reads an action's parameters can
@@ -515,31 +517,29 @@ reads the document ([§6](#6-the-extension-mechanism)).
   calls a judge. Rules in [Reference → Validation](reference.md#validation).
 
   A constraint MAY say two things about a violation, under two separate keys.
-  **`on_violation`** is the strongest thing a violation may do to the write that
-  tripped it: `reject` refuses it outright and nobody may approve it, `escalate`
-  holds it for a human decision, `warn` lets it proceed and reports it. On an
+  **`on_violation`** is what a violation does to the write that tripped it:
+  `reject` refuses it outright and nobody may approve it, `escalate` holds it
+  for a human decision, `warn` lets it proceed and reports it. On an
   `expression` it defaults to `reject`, the safe reading of an author who did
-  not say. **`severity`** is the gravest a violation is — `critical`, `high`,
+  not say. **`severity`** is how grave a violation is — `critical`, `high`,
   `medium` or `low` — for ranking and reporting. It carries no default, and
   nothing ranks or routes on it yet.
 
-  The three words are ordered by how much they let through: `reject` permits
-  nothing, `escalate` permits the write with a person's approval, `warn` permits
-  it outright. Reading `on_violation` as a ceiling rather than a fixed outcome
-  lets a judge grading one condition settle on a word that permits at least as
-  much as the declared one — a thin justification warned about where a
-  pretextual one escalates — while the enforceable bound stays a word the loader
-  can read. It bounds the grading of a single condition; a policy that branches
-  is encoded as several constraints instead.
+  When an action's `guards` names several constraints and a write violates more
+  than one, the strictest outcome among them applies: any `reject` refuses the
+  call, failing that any `escalate` holds it, failing that any `warn` lets it
+  through with the violations reported. That combination is fixed and no part of
+  the model states it, which is why an action can name any number of guards
+  without saying how to add them up.
 
-  A `judgment` MUST state `on_violation`, and it may not be `reject`. A judged
-  rule is settled by a language model that can decide two identical proposals
-  differently, so it may hold a write for a person but may not be the last word
-  refusing one nobody can appeal. The bound is not checked against the prose,
-  because the prose is prose: a judgment whose wording implies a harsher
-  response than its declared word still routes by the word, so the routing stays
-  safe while the published text is wrong. That is a real cost, and the reason
-  the ceiling reading is kept narrow.
+  A `judgment` MUST state `on_violation`, and it MAY be any of the three words.
+  Omitting the key is the only error: an unmarked constraint rejects, and that
+  is too strong a consequence for an author of a judged rule to inherit by
+  silence. Pairing `judgment` with `reject` is the riskiest thing the format can
+  express, because a language model can decide two identical proposals
+  differently and `reject` leaves no appeal. It is published rather than
+  refused, and made findable: the derived `evaluation` field carries `judged`
+  beside the word, so unappealable rules settled by a model are one query.
 
   They are two keys because they answer different questions, and neither one
   implies the other. A `low` rule can still be an absolute refusal, and a

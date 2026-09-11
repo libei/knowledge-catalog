@@ -321,31 +321,19 @@ describe('validatePushRequirements gates constraints', () => {
   });
 
   test('a judged constraint must state on_violation', () => {
-    // An unmarked constraint rejects, and a judged rule may not, so the safe
-    // default is unavailable and silence cannot stand in for a choice.
+    // Silence means `reject`, which is too strong a thing for an author to
+    // inherit by leaving the key out of a rule a model settles.
     const errs = validatePushRequirements(
         [loaded([{name: 'C', judgment: 'The memo must be specific.'}])]);
     expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain(
-        `must state on_violation as 'escalate' or 'warn'`);
+    expect(errs[0]).toContain('is judged, so it must state on_violation');
   });
 
-  test('a judged constraint may not reject', () => {
-    // The one real mitigation for a non-deterministic evaluation: it can stop a
-    // write for a person to release, and it cannot be the last word refusing
-    // one.
-    const errs = validatePushRequirements([loaded([{
-      name: 'C',
-      judgment: 'The memo must be specific.',
-      onViolation: 'reject',
-    }])]);
-    expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain(`on_violation may not be 'reject'`);
-    expect(errs[0]).toContain('stated as an expression');
-  });
-
-  test('escalate and warn are both accepted', () => {
-    for (const onViolation of ['escalate', 'warn'] as const) {
+  test('all three words are accepted on a judgment', () => {
+    // `reject` included. A rule an organization means as unappealable is
+    // representable, and publishes as `judged` beside the word so the pairing
+    // can be found.
+    for (const onViolation of ['reject', 'escalate', 'warn'] as const) {
       const errs = validatePushRequirements(
           [loaded([{name: 'C', judgment: 'Be specific.', onViolation}])]);
       expect(errs).toEqual([]);
@@ -436,15 +424,13 @@ describe('validatePushRequirements gates constraints', () => {
     expect(errs).toEqual([]);
   });
 
-  test('the routing checks still run on a pruned model', () => {
-    // Pruning is about fields. What a violation may do does not depend on
-    // which columns this profile binds.
+  test('the routing check still runs on a pruned model', () => {
+    // Pruning is about fields. Whether a violation says what it does not
+    // depend on which columns this profile binds.
     const errs = validatePushRequirements(
-        [loaded(
-            [{name: 'C', judgment: 'Be specific.', onViolation: 'reject'}])],
-        {fieldsPruned: true});
+        [loaded([{name: 'C', judgment: 'Be specific.'}])], {fieldsPruned: true});
     expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain(`may not be 'reject'`);
+    expect(errs[0]).toContain('is judged, so it must state on_violation');
   });
 });
 

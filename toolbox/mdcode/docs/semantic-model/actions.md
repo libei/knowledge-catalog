@@ -215,9 +215,9 @@ same rule may gate `TransferFunds` and leave `CloseAccount` alone.
 
 `guards` and `on_violation` answer different questions, and both can be set. A
 guard says *when* the constraint is checked — before the write, with the
-arguments bound. `on_violation` says the strongest thing a breach may do:
-`reject` refuses the call, `escalate` holds it for an approver, `warn` reports
-it and lets the write proceed. So guarding a constraint that declares `warn` is a real shape rather
+arguments bound. `on_violation` says what a breach does: `reject` refuses the
+call, `escalate` holds it for an approver, `warn` reports it and lets the write
+proceed. So guarding a constraint that declares `warn` is a real shape rather
 than a contradiction: it is how a rule the organization is not yet ready to
 block on still gets checked at the moment of the call and reported back.
 
@@ -241,40 +241,141 @@ Such a rule goes in `judgment` instead of `expression`:
         severity: high
 ```
 
-A constraint declares one body or the other, never both and never neither. Field
-names inside a judgment are written model-qualified — `Order.discount_reason`
-rather than "the reason" — so `kcmd` resolves the reference against the model
-and a rename cannot leave the sentence pointing at nothing.
+A constraint declares one body or the other, never both and never neither. A
+judgment must state `on_violation`, and it may state any of the three words.
+Leaving the key out is the one thing it may not do: an unmarked constraint
+rejects, and that is too strong a consequence to inherit by silence.
 
-A judgment must state `on_violation`, and it may not be `reject`. What settles a
-judged rule is a language model, which can decide two identical proposals
-differently. It may hold a write for a person to approve; it may not be the last
-word refusing a write nobody can appeal. A condition that must refuse outright
-belongs in its own constraint, written as an expression.
+### Writing a judgment
 
-One judgment states one condition. A written policy usually has several — over
-one amount a director approves, under another a manager does, and separately the
-stated reason must be specific — and it becomes several constraints, each named,
-each with its own `on_violation` and `severity`, which `guards` on the action
-then regroups into the policy the business wrote:
+A language model reads the sentence at review time with the proposed write in
+front of it. Five habits make that reading consistent.
+
+**State what must be true of the data.** Write the condition — *the reason must
+name a specific problem with the order* — rather than the procedure — *check
+whether the reason is specific*. The sentence describes a clean write, and
+everything about handling a breach lives elsewhere.
+
+**Name fields model-qualified.** Write `Order.discount_reason` rather than "the
+reason". `kcmd` resolves every `Entity.field` token in the text against the
+model and fails the push when the entity declares no such field, so a rename
+cannot leave the sentence pointing at nothing. The qualified name also tells the
+judge exactly which value to read.
+
+**Say what does not count.** A rule with no negative example is graded against
+whatever the model guesses the author had in mind. "A reason that only restates
+the discount, such as 'competitive pricing', is not a justification" buys more
+consistency than any further description of what a good reason is.
+
+**Leave the consequence out of the prose.** What happens on a breach is
+`on_violation`. A judgment ending "…otherwise escalate to a director" states a
+routing nothing reads, and the engine routes by the field regardless.
+
+**Keep it to one condition.** When the sentence needs "and also", the second
+half is a second constraint. One `on_violation` cannot carry two consequences,
+so two conditions that end differently cannot share a constraint.
+
+### A policy whose branches end differently
+
+Written policies branch, and the branches rarely end the same way. A refund
+policy might say: a refund over $10,000 needs a director's approval; the stated
+reason has to be a real problem with the order; and a refund that looks like a
+larger one split into pieces is refused outright. Three conditions, three
+different outcomes.
+
+Each condition becomes its own constraint, carrying its own outcome in its own
+`on_violation`:
 
 ```yaml
-        guards: [DiscountWithinDirectorLimit, DiscountIsJustified]
+    constraints:
+      - name: LargeRefundHasDirectorApproval
+        expression: >-
+          Refund.amount <= 10000 OR Refund.director_approval IS NOT NULL
+        description: >-
+          Refunds over $10,000 need a director's approval. Attach one and
+          resubmit.
+        on_violation: escalate
+        severity: high
+
+      - name: RefundReasonIsSpecific
+        judgment: >-
+          Refund.reason must name a specific, verifiable problem with the order
+          — a late delivery, a damaged item, an incorrect charge. A reason that
+          only restates that the customer asked for a refund does not satisfy
+          this rule.
+        description: >-
+          Say what went wrong with the order in the refund reason.
+        on_violation: warn
+        severity: low
+
+      - name: RefundIsNotStructured
+        judgment: >-
+          A refund must not appear to be one larger refund split into parts to
+          stay under an approval limit. Read Refund.amount together with the
+          other refunds on the same Order in the same week: several near-limit
+          refunds for related reasons are structuring, whatever each one says
+          on its own.
+        description: >-
+          Issue this as a single refund at its full amount and route it for
+          approval.
+        on_violation: reject
+        severity: critical
+
+    actions:
+      - name: IssueRefund
+        parameters:
+          - { name: order, type: Order }
+          - { name: amount, type: Float }
+        guards:
+          - LargeRefundHasDirectorApproval
+          - RefundReasonIsSpecific
+          - RefundIsNotStructured
 ```
 
-Folding those branches into one judgment would be the wrong trade. The branches
-an expression can decide stop being searchable, revisable and separately owned,
-and the line between what a query settles and what a reader settles — the reason
-the second body exists — disappears into prose.
+Reading down the `on_violation` column gives the branching that the policy
+describes in prose. A structured refund is refused. A large refund with no
+director's approval is held until one arrives. A vague reason is reported and
+the refund proceeds.
 
-An action whose guards are *all* judged loads with a warning. It has no gate a
-query can decide, so every call costs a model decision and none of its rules can
-lower to a store-level check. One expression guard among them settles it.
+Three properties come from writing it this way. The words stay in fields, so a
+search for the rules that can stop a refund finds them without reading prose.
+The first condition stays an expression, so a query settles it and no model call
+is spent on arithmetic. And each branch has its own name, owner and history, so
+raising the approval limit is an edit to one constraint rather than to a
+paragraph that also governs two other things.
+
+A judgment may declare `reject`, as `RefundIsNotStructured` does. Structuring is
+a rule an organization means as unappealable, and no expression detects it, so
+the alternative to representing the pairing is leaving the rule out of the model
+entirely. What the pairing costs is real: a language model can decide two
+identical refunds differently, and `reject` leaves nobody to appeal to. It is
+made visible rather than forbidden. Every published constraint carries a derived
+`evaluation` field, so "unappealable rules settled by a model" is one query
+against the catalog.
+
+### When several guards fire at once
+
+An action's `guards` names all the constraints checked before the call, and more
+than one can be violated by the same write. The strictest outcome wins: any
+`reject` refuses the call; failing that, any `escalate` holds it; failing that,
+any `warn` lets it through with the violations reported. A refund that is both
+vaguely justified and structured is refused.
+
+That rule is fixed, and no part of the model states it. It is why an action can
+name any number of guards without the author writing how to combine them. It is
+also how `forbid` overrides `permit` in Cedar and how a deny wins in Open Policy
+Agent, so a model written this way lowers into either.
+
+An action whose guards are *all* judged loads with a warning. Every gate then
+costs a model call, none can lower to a store-level check, and each may decide
+two identical calls differently. One expression guard among them settles it.
 
 **Status: nothing calls a judge.** `kcmd` parses `judgment`, validates it,
 publishes it and reads it back, and publishes a derived `evaluation` field
 saying whether the rule is `deterministic` or `judged` so a consumer can select
-on it. No component asks a model to settle one.
+on it. No component asks a model to settle a judgment, and nothing combines
+guard outcomes. The rule above says what an engine is expected to do, and `kcmd`
+publishes the fields it needs to do it.
 
 `kcmd` reports a mismatch from either side. A guard that names no constraint
 fails the push. A constraint over parameters that no action names loads with a

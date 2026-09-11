@@ -359,7 +359,7 @@ function declaredConcepts(model: SemanticModel): Map<string, DeclaredConcept> {
 //     that entity must declare the field. This catches a typo that would
 //     otherwise surface only inside an agent's rejected action.
 // A `judgment` gets the field-reference check over every qualified token in the
-// prose, plus the two routing rules in judgedConstraintErrors.
+// prose, plus the one routing rule in judgedConstraintErrors.
 //
 // Everything else is left alone. The expression is a logical invariant, and
 // whatever evaluates it resolves it against the ontology. So a leading
@@ -427,20 +427,15 @@ function validateConstraints(
 
 // What a judged constraint must satisfy, beyond stating a body at all.
 //
-// Two of the three checks are about what a violation may do. A judged rule is
-// settled by a language model, which can decide two identical proposals
-// differently, so it may not be the last word on a refusal nobody may appeal.
-// Requiring the word rather than defaulting to `escalate` keeps one rule for
-// readers of the published aspect: absent means `reject`, whatever the body.
+// It must say what a violation does. Any of the three words is allowed,
+// `reject` included, but silence is not: an unmarked constraint rejects, and
+// inheriting the harshest consequence by omission is the one outcome an author
+// of a judged rule is least likely to have meant. Nothing here reads the prose
+// to check the word against it -- the prose is prose, and a check that asked a
+// model whether a sentence means refusal would be no guardrail at all.
 //
-// `on_violation` bounds a judgment rather than fixing its outcome, and neither
-// check looks into the prose to confirm the bound holds -- the prose is prose.
-// A judgment naming a harsher response than its declared word is enforced at
-// the declared word, so the routing is safe and the published text is wrong;
-// VIOLATION_EFFECTS says why that cost is accepted and kept small.
-//
-// The third resolves the `Entity.field` tokens the prose mentions, which is the
-// whole of the static checking a judged rule can get.
+// The other check resolves the `Entity.field` tokens the prose mentions, which
+// is the whole of the static checking a judged rule can get.
 function judgedConstraintErrors(
     c: Constraint, where: string,
     fieldsByEntity: Map<string, Set<string>>|undefined): string[] {
@@ -451,16 +446,10 @@ function judgedConstraintErrors(
   }
   if (c.onViolation === undefined) {
     errors.push(
-        `${where} is judged, so it must state on_violation as 'escalate' or ` +
-        `'warn'. An unmarked constraint rejects the write, and a judged rule ` +
-        `may not do that.`);
-  } else if (c.onViolation === 'reject') {
-    errors.push(
-        `${where} is judged, so on_violation may not be 'reject'. Nobody may ` +
-        `approve a rejected write, and that authority cannot rest on a ` +
-        `judgment. Use 'escalate' to stop the write and let a human release ` +
-        `it, or 'warn' to report it. A condition that must refuse outright ` +
-        `belongs in its own constraint, stated as an expression.`);
+        `${where} is judged, so it must state on_violation: 'reject' to ` +
+        `refuse the write, 'escalate' to hold it for a person, or 'warn' to ` +
+        `let it through and report it. An unmarked constraint rejects, which ` +
+        `is too strong a thing to inherit by leaving the key out.`);
   }
   errors.push(...unknownFieldRefs(c.judgment!, where, fieldsByEntity));
   return errors;

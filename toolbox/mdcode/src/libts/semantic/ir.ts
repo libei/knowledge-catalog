@@ -474,26 +474,17 @@ export interface GrpcExecutor {
 }
 
 /**
- * The strongest thing a violated constraint may do to the write that tripped
- * it.
+ * What a violated constraint does to the write that tripped it.
  *
  *   - `reject`   the write is refused. Nobody is allowed to approve it, which
  *                is what makes the rule an invariant rather than a policy.
- *   - `escalate` the write is held and a human decides. The rule is a business
+ *   - `escalate` the write is held and a person decides. The rule is a business
  *                threshold, so somebody is allowed to say yes.
  *   - `warn`     the write proceeds and the violation is reported.
  *
  * An engine reading the catalog needs this in order to route. Without it every
  * rule publishes with the same shape, and a $30 credit that needs a supervisor
  * is indistinguishable from one that is simply forbidden.
- *
- * The three words are ordered by how much they let through: `reject` permits
- * nothing, `escalate` permits the write once a person approves it, `warn`
- * permits it outright. The declared word is a ceiling on that scale, so an
- * evaluation may settle on a word that permits at least as much and never on
- * one that permits less. A constraint with a single condition reaches its
- * ceiling whenever it is violated at all, which is why an expression's declared
- * word and its outcome are always the same word.
  *
  * This is a disposition, not a magnitude, and the two are deliberately separate
  * keys. `escalate` is not "between" reject and warn on a scale of badness: it is
@@ -505,62 +496,32 @@ export interface GrpcExecutor {
  * `escalate` names that an approver exists. It does not name who: an approver
  * role is not modeled yet.
  *
- * A judged constraint may not declare `reject`, and must declare one of the
- * other two. `reject` is what makes a rule an invariant: nobody in the
- * organization may approve the write. That authority should not rest on an
- * evaluation that can decide two identical proposals differently, with no
- * person in the loop. `escalate` stops the write just as firmly and adds
- * someone who can be held responsible for releasing it. The word is required
- * rather than defaulted there, because the default for an unmarked constraint
- * is `reject` and a rule whose safe default is unavailable should say what it
- * wants instead of inheriting a different one by body kind.
+ * The consequence is a field rather than something a `judgment` states in its
+ * own prose, because three things need it without running a judge. An
+ * unrunnable judge -- none configured, a failed call, a timeout -- still has to
+ * route the breach it could not evaluate. A search for the rules that can stop
+ * a write cannot read prose. And a policy DSL states its effect in the rule
+ * head, so a rule whose consequence is only implied by its wording cannot be
+ * lowered into OPA or Cedar.
  *
- * The ceiling exists for one narrow case: grading a single judged condition. A
- * thin discount justification may warrant a warning where an obviously
- * pretextual one warrants escalation, and the two cannot be written as separate
- * constraints without asking a judge the same question twice and depending on
- * the answers agreeing. The ceiling lets one condition carry both responses
- * while the enforceable bound stays a word load can read.
+ * A judgment may declare any of the three, `reject` included. What settles a
+ * judgment can decide two identical proposals differently, and `reject` leaves
+ * no appeal, so that pairing is the riskiest thing this model can express. It
+ * is still a bet an organization is entitled to place, and refusing to
+ * represent it would move the policy out of the catalog rather than prevent it.
+ * It is made auditable instead: `evaluation` publishes `judged` beside the
+ * word, so "unappealable rules settled by a model" is one query. `onViolation`
+ * is required on a judgment rather than defaulted, because a forgotten word
+ * would produce exactly that pairing silently.
  *
- * IT IS NOT A PLACE TO PUT A POLICY THAT BRANCHES. A written policy usually has
- * several conditions -- over one amount a director approves, under another a
- * missing receipt needs a manager, and separately the stated reason must be
- * plausible -- and the first two of those are expressions. Each condition
- * becomes its own constraint, with its own name, `onViolation` and `severity`,
- * and `guards` on the action regroups them into the policy the business wrote.
- * That keeps each branch independently searchable, revisable and owned, and it
- * keeps the computable branches computable. Folding the set into one judgment
- * because the prose can express the routing produces a judged rule where the
- * model should hold three deterministic ones and a judged one, which discards
- * the distinction the second body was added to draw.
+ * A constraint's word is the consequence of the one condition it states. A
+ * policy whose conditions carry different consequences is written as several
+ * constraints, which `guards` on an action lists together; the strictest
+ * consequence among the violated ones is what the action does. See
+ * docs/semantic-model/constraints.md for a worked policy.
  *
- * The ceiling is not checked against the judgment, and it cannot be: the prose
- * is prose. A judgment naming a response above its declared word is enforced at
- * the declared word, so the routing stays safe, but the published rule then
- * says something the engine will not do. That is a real cost of the reading and
- * the reason its scope is narrow.
- *
- * Three things need the declared word without running the judge, which is why
- * the routing stays a field even though a sentence can carry its own
- * consequence. The restriction above is one: load can refuse `reject` only
- * while `reject` is a value it can see, and a check that asks a model whether a
- * sentence means refusal is no guardrail at all. An unrunnable judge is the
- * second: no judge, a failed call or a timeout still has to route the breach it
- * could not evaluate. Translation is the third: a policy DSL states its effect
- * in the rule head, so a rule whose consequence is only implied by its wording
- * cannot be lowered into one.
- *
- * What the ceiling costs in search is precision. Rules that can escalate
- * include ones that in practice usually only warn. The reverse error would be
- * worse, a search for warnings that missed rules able to stop a write, so the
- * overstatement runs in the safe direction.
- *
- * STATUS of the ceiling: the declared word is the enforced word, and that is
- * the whole of what is implemented. Nothing evaluates a judgment, so no verdict
- * has ever been graded beneath the bound. When a verdict format arrives this is
- * what it is checked against; until then the reading is a bound with one
- * possible value, and the paragraphs above describe what it is for rather than
- * what runs.
+ * STATUS: the declared word is published and read back. Nothing evaluates a
+ * constraint, so nothing routes on it yet.
  */
 export const VIOLATION_EFFECTS = ['reject', 'escalate', 'warn'] as const;
 
@@ -579,10 +540,6 @@ export type ViolationEffect = (typeof VIOLATION_EFFECTS)[number];
  * The scale is the ordinary four-point one, and it avoids `warning` on purpose:
  * a severity called `warning` sitting beside an effect called `warn` would read
  * as the same statement made twice.
- *
- * Like `onViolation`, this is the gravest a violation of the rule can be rather
- * than the gravity of every violation of it, so a judged condition graded
- * across a range publishes the top of that range.
  *
  * STATUS: authored, published and read back. Nothing ranks or routes on it yet.
  */
@@ -632,17 +589,20 @@ export function constraintEvaluation(c: Constraint): ConstraintEvaluation {
  * Without this body such a rule has nowhere to go but `description`, where
  * nothing distinguishes it from the message explaining a different rule.
  *
- * One judgment states one condition. A policy with several conditions becomes
- * several constraints, and `guards` on the action regroups them -- see
- * VIOLATION_EFFECTS for why folding them into one judgment is the wrong trade,
- * and for the narrow grading the single condition still permits.
+ * A judgment states one condition, the same as an expression, because the
+ * consequence is carried by `onViolation` and one word cannot route two
+ * branches. A policy whose branches end differently -- a missing approval is
+ * held for a person, a disguised transaction is refused -- is written as one
+ * constraint per branch, and `guards` on the action lists them together. That
+ * also keeps the branches an expression could decide computable, which is the
+ * distinction the second body exists to draw.
  *
  * What the catalog offers a judged rule is identity and governance, never
- * determinism: one name, one owner, one version, one ceiling, and the same text
- * for every caller instead of prose re-improvised per call. A language model
- * can still decide two identical proposals differently, and no schema changes
- * that. The mitigation is `onViolation`, which a judged constraint must state
- * and may not set to `reject` -- see VIOLATION_EFFECTS.
+ * determinism: one name, one owner, one version, one declared consequence, and
+ * the same text for every caller instead of prose re-improvised per call. A
+ * language model can still decide two identical proposals differently, and no
+ * schema changes that. `onViolation` is required on a judgment so that the
+ * consequence of that non-determinism is always stated rather than inherited.
  *
  * STATUS: authored, validated and published; not yet enforced. kcmd carries a
  * constraint to Knowledge Catalog, where an agent can read the rules a model
@@ -665,21 +625,21 @@ export interface Constraint {
   // model-qualified (`LineItem.memo` rather than "the memo"): validate resolves
   // every `Entity.field` token in the text, so the reference is checked, and it
   // lives in the sentence that uses it rather than in a second list that drifts
-  // from the prose beside it. States one condition: a policy with several goes
-  // in several constraints, regrouped by `guards` on the action. The one
-  // condition may still warrant a graded response, bounded by `onViolation`.
+  // from the prose beside it. States one condition, in the form of what must be
+  // true rather than what to do, and says what does not satisfy it: a policy
+  // with several conditions goes in several constraints, regrouped by `guards`
+  // on the action. The consequence goes in `onViolation`, not the prose.
   judgment?: string;
   description?: string;  // human-readable summary; also the violation error
-  // The strongest thing a violation of this constraint may do to the write. On
-  // an `expression` it defaults to `reject`: an unmarked rule refuses the
-  // write, which is the safe reading of an author who did not say, and a
-  // single-condition rule reaches its ceiling whenever it is violated. On a
-  // `judgment` it is required, and `reject` is refused. See VIOLATION_EFFECTS.
+  // What a violation of this constraint does to the write. On an `expression`
+  // it defaults to `reject`: an unmarked rule refuses the write, which is the
+  // safe reading of an author who did not say. On a `judgment` it is required,
+  // any of the three words, because inheriting the harshest one by silence is
+  // not a thing to do to a rule a model settles. See VIOLATION_EFFECTS.
   onViolation?: ViolationEffect;
-  // The gravest a violation is, for ranking and reporting. Orthogonal to
-  // `onViolation`, read as a ceiling for the same reason, and carries no
-  // default -- an author who did not say has not said, and nothing reads it
-  // yet. See CONSTRAINT_SEVERITIES.
+  // How grave a violation is, for ranking and reporting. Orthogonal to
+  // `onViolation`, and carries no default -- an author who did not say has not
+  // said, and nothing reads it yet. See CONSTRAINT_SEVERITIES.
   severity?: ConstraintSeverity;
   aiContext?: AiContext;
   // No `customExtensions`. Every other IR object has one because vanilla Ossie

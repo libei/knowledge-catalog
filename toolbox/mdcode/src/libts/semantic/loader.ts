@@ -475,9 +475,8 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                         expression: z.string().optional(),
                         judgment: z.string().optional(),
                         description: z.string().optional(),
-                        // The strongest thing a violation may do; absent means
-                        // `reject`, and a judgment must state it. See
-                        // VIOLATION_EFFECTS.
+                        // What a violation does; absent means `reject`, and
+                        // a judgment must state it. See VIOLATION_EFFECTS.
                         on_violation: z.enum(VIOLATION_EFFECTS).optional(),
                         // How grave it is; no default. See
                         // CONSTRAINT_SEVERITIES.
@@ -1094,10 +1093,9 @@ function warnMixedAffectsPrecision(
 // This warns rather than fails because the scan matches identifiers, and an
 // expression may use a bare name that merely coincides with a parameter name.
 // An action every one of whose guards is judged has no deterministic gate at
-// all. Each of its guards is settled by a language model that may decide two
-// identical calls differently, and none of them can lower to a store-level
-// `CHECK`, so nothing protects the write when the judge is unavailable or
-// wrong.
+// all. Every gate costs a model call, none can lower to a store-level `CHECK`,
+// and each may decide two identical calls differently, so nothing protects the
+// write when the judge is unavailable or wrong.
 //
 // This is a warning and not an error, because it may be exactly what the author
 // meant: some operations really are governed only by rules no expression
@@ -1115,9 +1113,8 @@ function warnAllGuardsJudged(
     if (!guards.length || !guards.every(g => judged.has(g))) continue;
     warnings.push(
         `model '${modelName}': every constraint action '${a.name}' names in ` +
-        `guards is judged, so the action has no deterministic gate. A judged ` +
-        `constraint cannot reject a write on its own and cannot lower to a ` +
-        `store-level check.`);
+        `guards is judged, so the action has no deterministic gate. Every ` +
+        `gate costs a model call, and none can lower to a store-level check.`);
   }
 }
 

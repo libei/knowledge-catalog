@@ -420,16 +420,14 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   `OrderedAs.quantity`, a metric reference, or compound logic — is left alone
   rather than guessed at, so a valid constraint is never falsely rejected.
   *(static)*
-* **Every judged constraint says what a violation may do, and may not refuse
-  outright.** The `judgment` must be non-empty, and `on_violation` is required
-  on it rather than defaulting: `escalate` or `warn`, never `reject`. A judged
-  rule is settled by a language model, which can decide two identical proposals
-  differently, so it may hold a write for a person but may not be the last word
-  refusing one nobody can appeal. A condition that must refuse outright belongs
-  in its own constraint, stated as an expression. Every `Entity.field` token in
-  the prose is resolved against the model the same way an expression's leading
-  qualifier is, so a field name that has been renamed out from under the
-  sentence is caught. *(static)*
+* **Every judged constraint says what a violation does.** The `judgment` must
+  be non-empty, and `on_violation` is required on it rather than defaulting. Any
+  of the three words is allowed, `reject` included; leaving the key out is the
+  error, because an unmarked constraint rejects and that is too strong a
+  consequence to inherit by silence. Every `Entity.field` token in the prose is
+  resolved against the model the same way an expression's leading qualifier is,
+  so a field name that has been renamed out from under the sentence is caught.
+  *(static)*
 * Like an action, a constraint of either kind reaches Knowledge Catalog only,
   and a `--no-kc` push warns that it will not be deployed. Two rules are
   enforced at parse time: `on_violation` and `severity` are each a closed

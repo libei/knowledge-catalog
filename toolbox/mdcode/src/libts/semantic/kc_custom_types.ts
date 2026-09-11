@@ -456,21 +456,18 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         annotations: {
           displayName: 'On Violation',
           description:
-              'The strongest thing a violation may do to the write that ' +
-              'tripped it: `reject` refuses the write and nobody may approve ' +
-              'it, `escalate` holds the write for a human decision, `warn` ' +
-              'lets it proceed and reports it. Absent means `reject`. ' +
-              '`escalate` states that an approver exists, not who they are. ' +
-              'The words are ordered by how much they let through, and this ' +
-              'one is a ceiling: an evaluation may settle on a word that ' +
-              'permits at least as much and never on one that permits less, ' +
-              'which lets a single judged condition warrant a graded ' +
-              'response. A policy with several conditions is published as ' +
-              'several constraints instead, each with its own word. A ' +
-              'constraint stating `judgment` always states this field and ' +
-              'never states `reject`: an evaluation that can decide two ' +
-              'identical proposals differently may hold a write for a person ' +
-              'but may not be the last word refusing it.',
+              'What a violation does to the write that tripped it: ' +
+              '`reject` refuses the write and nobody may approve it, ' +
+              '`escalate` holds the write for a human decision, `warn` lets ' +
+              'it proceed and reports it. Absent means `reject`. `escalate` ' +
+              'states that an approver exists, not who they are. A ' +
+              'constraint states one condition and this is that ' +
+              'condition\'s consequence, so a policy whose conditions end ' +
+              'differently is published as several constraints, each with ' +
+              'its own word, listed together by an action\'s `guards`; the ' +
+              'strictest consequence among the violated ones is what the ' +
+              'action does. A constraint stating `judgment` always states ' +
+              'this field, and may state any of the three words.',
         },
       },
       {
@@ -480,12 +477,10 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         annotations: {
           displayName: 'Severity',
           description:
-              'The gravest a violation is, for ranking and reporting: ' +
+              'How grave a violation is, for ranking and reporting: ' +
               '`critical`, `high`, `medium` or `low`. Independent of what ' +
-              'the engine does about it, which is `onViolation`, and read as ' +
-              'a ceiling for the same reason: a judged condition graded ' +
-              'across a range publishes the top of that range. Absent means ' +
-              'the model did not say; there is no default.',
+              'the engine does about it, which is `onViolation`. Absent ' +
+              'means the model did not say; there is no default.',
         },
       },
       {
@@ -500,9 +495,11 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               'by the reason given in Order.discount_reason`. A ' +
               'language-model judge settles it against the proposed write at ' +
               'review time. Field names are written model-qualified so a ' +
-              'reader can resolve them. States one condition: a policy with ' +
-              'several is published as several constraints. Present instead ' +
-              'of `expression`, never alongside it.',
+              'reader can resolve them. States one condition, as what must ' +
+              'be true rather than what to do; the consequence is ' +
+              '`onViolation`, and a policy whose conditions end differently ' +
+              'is published as several constraints. Present instead of ' +
+              '`expression`, never alongside it.',
         },
       },
       {
