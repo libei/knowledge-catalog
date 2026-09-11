@@ -3,71 +3,48 @@
 // A constraint is a logical invariant over the ontology (`Account.balance >=
 // 0`). To enforce it against a live store, something has to turn that logical
 // statement into a query the store can answer. That is this module: given a
-// model and a constraint, it produces a PROBE -- a SELECT that returns the rows
-// which VIOLATE the constraint. No violating rows means the invariant holds.
+// model and a constraint, it produces a PROBE -- a SELECT returning the rows
+// that VIOLATE the constraint. No violating rows means the invariant holds.
 //
-// Two properties matter more than expressive power here:
+// A constraint expression is SQL already. Four substitutions separate it from a
+// runnable query, and they are the whole of what happens here:
 //
-//   * The probe is scoped. An action touches a handful of rows, so re-checking
-//     the whole table on every write would make the gate cost grow with the
-//     data. When the caller knows which keys it touched, the probe restricts to
-//     them.
-//   * The lowering FAILS CLOSED. An expression this module cannot lower does
-//     not silently pass -- it returns an error, and the runtime aborts the
-//     action. A gate that quietly lets writes through is worse than no gate,
-//     because it is believed.
+//   * `Order.total` names a logical field. It becomes the column the binding
+//     profile mapped it to, on the table that profile chose. Change the
+//     profile and the same constraint probes a different table.
+//   * `amount` names an argument of the action being gated. It becomes a bound
+//     query parameter, so a caller's value reaches the store as a value and
+//     can never be read as SQL.
+//   * `SUM(LineItem.amount)` reaches across a relationship. It becomes a
+//     subquery correlated on the join columns the model declares, which lets an
+//     invariant span a one-to-many edge that a per-row predicate cannot.
+//   * The constraint states what must hold; the probe asks who breaks it. So
+//     the predicate is negated, as NOT COALESCE(x, FALSE) rather than NOT x,
+//     because three-valued logic would let a NULL through a plain negation.
 //
-// The grammar is deliberately small (see parseConstraint): comparisons between
-// a field and a literal or another field of the same entity, joined by AND/OR.
-// It covers the invariants an operational action actually trips -- a balance
-// going negative, a quantity going to zero -- and everything outside it is
-// reported rather than approximated.
+// Everything the substitutions do not touch is handed to the store verbatim.
+// Whether `BETWEEN`, `CASE`, a function call or a parenthesized subexpression
+// is acceptable is the store's question, and the store answers it exactly; a
+// grammar here would only answer it earlier and worse. That choice has a cost,
+// and it is where a mistake surfaces: a name that is neither a field nor a
+// parameter is not caught here, and comes back from the store as an
+// unrecognized name the first time the probe runs.
+//
+// What this module still refuses is what it cannot substitute -- an undeclared
+// field, an entity with no table or no key, an aggregate over an ambiguous
+// relationship. Those are errors in the model rather than in the SQL, and no
+// store can phrase them. Every refusal aborts the action: a gate that quietly
+// lets writes through is worse than no gate, because it is believed.
 //
 
 import {Constraint, Entity, SemanticModel} from './ir';
 import {quoteIdentifier, quoteIfReserved} from './sql_identifiers';
+import {
+  escapeRegExp,
+  mapOutsideStringLiterals,
+  referencedEntityNames,
+} from './sql_expr_utils';
 import {spannerTable} from './spanner';
-
-
-// The comparison operators the grammar accepts. Ordered longest-first so the
-// tokenizer matches `>=` before `>`.
-const OPERATORS = ['>=', '<=', '!=', '<>', '==', '=', '>', '<'] as const;
-
-
-// One side of a comparison.
-//
-// `field` and `literal` are what a stored-state invariant is made of. The other
-// two are what a GUARD needs, and they are why this is a union rather than the
-// two optional strings it started as:
-//
-//   * `param` is an argument of the action being gated. It has no column, so it
-//     is bound as a query parameter and the comparison can be decided before the
-//     write happens -- which is the whole point of a guard.
-//   * `agg` is an aggregate over a RELATED entity (`SUM(LineItem.amount)`). It
-//     lowers to a correlated subquery, so an invariant can span the one-to-many
-//     edge that a per-row predicate cannot reach.
-type Operand =
-    {kind: 'field'; entity: string; field: string}|
-    {kind: 'param'; name: string}|
-    // Kept verbatim; already SQL-shaped and checked by isLiteral.
-    {kind: 'literal'; text: string}|
-    {kind: 'agg'; fn: string; entity: string; field: string};
-
-
-// A single `<operand> <op> <operand>` comparison, as parsed.
-interface Comparison {
-  left: Operand;
-  operator: string;
-  right: Operand;
-}
-
-
-// A parsed constraint expression: comparisons joined by the logical operators
-// between them (`joiners[i]` sits between `comparisons[i]` and `[i+1]`).
-interface ParsedExpression {
-  comparisons: Comparison[];
-  joiners: string[];
-}
 
 
 // A lowered constraint, ready to run inside the action's transaction.
@@ -114,20 +91,19 @@ export type LoweringResult = {
 
 export interface LowerOptions {
   // The action parameters a constraint may read, by name. A constraint that
-  // reads one is a guard: it describes a proposed CALL rather than stored state,
-  // so it can only be evaluated in the context of an action that supplies the
-  // values. Absent or empty means no parameter is in scope, and a constraint
-  // mentioning one is refused rather than lowered against a name that will never
-  // be bound.
+  // reads one is a guard: it describes a proposed CALL rather than stored
+  // state, so it can only be evaluated by an action that supplies the values.
   parameters?: readonly string[];
   // Prefix for the bound parameter carrying an action argument. The runtime
   // binds `<prefix><name>`; keeping it distinct from the probe's own bindings
   // means an action parameter called `touchedKeys` cannot collide with them.
   parameterPrefix?: string;
   // The query parameter holding the touched key values (an ARRAY<STRING>), when
-  // the caller can scope the probe. Only usable on a single-key entity: a
-  // composite key needs a struct-array comparison, which the MVP does not emit,
-  // so a composite-key entity is probed unscoped.
+  // the caller can scope the probe. An action touches a handful of rows, so
+  // re-checking the whole table on every write would make the gate cost grow
+  // with the data. Only usable on a single-key entity: a composite key needs a
+  // struct-array comparison, which this does not emit, so a composite-key
+  // entity is probed unscoped.
   touchedKeysParam?: string;
   // Cap on the violating rows returned. A gate only needs enough to explain
   // itself, not the full violation set.
@@ -136,6 +112,45 @@ export interface LowerOptions {
 
 
 const DEFAULT_LIMIT = 5;
+
+// The aggregate functions that lower to a correlated subquery over a related
+// entity. Any other call is left alone, so `LOWER(Order.status)` reaches the
+// store as an ordinary function over the row's own column.
+const AGGREGATES = ['SUM', 'COUNT', 'MIN', 'MAX', 'AVG'];
+
+// `FN(Entity.field)`, the only shape that can reach across an edge.
+const CALL = /\b([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\)/g;
+
+// Any `Entity.field` qualifier, used to report one that resolved to nothing.
+const QUALIFIER = /\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)/g;
+
+
+// Applies a substitution to the parts of an expression outside string literals,
+// so a value such as 'Order.total' is treated as data rather than a reference.
+function rewrite(
+    expression: string, pattern: RegExp,
+    to: (...groups: string[]) => string): string {
+  return mapOutsideStringLiterals(
+      expression, segment => segment.replace(pattern, to as never));
+}
+
+
+// Emitted SQL is parked behind a placeholder as it is produced, so a later
+// substitution cannot rewrite what an earlier one wrote. Without this, an action
+// parameter named `total` would rewrite the `total` column that the field
+// substitution had just emitted. The sentinels are control characters, which no
+// model expression contains.
+class Parked {
+  private readonly sql: string[] = [];
+
+  park(text: string): string {
+    return `\u0001${this.sql.push(text) - 1}\u0001`;
+  }
+
+  expand(text: string): string {
+    return text.replace(/\u0001(\d+)\u0001/g, (_, i) => this.sql[Number(i)]);
+  }
+}
 
 
 // Lowers one constraint against `model`, or explains why it cannot.
@@ -147,44 +162,52 @@ export function lowerConstraint(
     reason: `constraint '${constraint.name}' cannot be evaluated: ${reason}`,
   });
 
-  const parsed = parseConstraint(constraint.expression, opts.parameters ?? []);
-  if ('error' in parsed) return fail(parsed.error);
+  if (!constraint.expression.trim()) return fail('the expression is empty');
 
-  const operands = parsed.comparisons.flatMap(c => [c.left, c.right]);
-  const readsParameter = operands.some(op => op.kind === 'param');
+  const parked = new Parked();
+  const expression = normalizeOperators(constraint.expression.trim());
 
-  // The entity the probe ranges over is the one whose fields the expression
-  // names directly. An aggregate's entity is NOT that entity: it is reached
-  // through a relationship and lands in a subquery, so it does not widen the
-  // row the probe walks.
-  const rowEntities = new Set(
-      operands.filter(op => op.kind === 'field')
-          .map(op => (op as {entity: string}).entity));
-  if (rowEntities.size > 1) {
+  // The entity the probe walks is the one whose fields the expression names
+  // directly. An entity named inside an aggregate is reached through a
+  // relationship and lands in a subquery, so it does not widen the row being
+  // probed and is blanked out before the search.
+  let aggregate: string|undefined;
+  const withoutAggregates = rewrite(expression, CALL, (whole, fn, entity) => {
+    if (!isAggregate(model, fn, entity)) return whole;
+    aggregate ??= whole;
+    return ' ';
+  });
+  const direct =
+      referencedEntityNames(
+          withoutAggregates, (model.entities ?? []).map(e => e.name))
+          .sort();
+  if (direct.length > 1) {
     return fail(
         `it reads fields of more than one entity (${
-            [...rowEntities].sort().join(', ')}) side by side; the probe walks ` +
-        `one entity's rows, so relate them with an aggregate ` +
-        `(SUM(Other.field)) or split it into one constraint per entity`);
+            direct.join(', ')}) side by side; the probe walks one entity's ` +
+        `rows, so relate them with an aggregate (SUM(Other.field)) or split ` +
+        `it into one constraint per entity`);
   }
-
-  const entityName: string|undefined = [...rowEntities][0];
 
   // No entity at all: every operand is a parameter or a literal, so the
   // constraint decides on the arguments alone and never reads the store. It is
   // still lowered to SQL rather than compared here, so that one code path
   // decides every rule and the store's own comparison semantics apply
   // throughout.
-  if (entityName === undefined) {
-    if (!readsParameter) {
+  if (!direct.length) {
+    if (aggregate) {
+      return fail(
+          `'${aggregate}' needs a row to correlate to, but the expression ` +
+          `names no entity field to probe`);
+    }
+    const bound = bindParameters(expression, opts);
+    if (!bound.parameters.length) {
       return fail(
           `it names no entity field and no action parameter, so there is ` +
           `nothing for it to range over`);
     }
-    const constant = renderPredicate(parsed, {model, columns: new Map(), opts});
-    if ('error' in constant) return fail(constant.error);
     const sql = `SELECT 1 AS violated FROM UNNEST([1]) WHERE ${
-        violatingTest(constant.sql)} LIMIT 1`;
+        violatingTest(bound.sql)} LIMIT 1`;
     return {
       ok: true,
       probe: {
@@ -196,51 +219,34 @@ export function lowerConstraint(
         unscopedSql: sql,
         scoped: false,
         readsParameter: true,
-        parameters: parameterNames(parsed),
+        parameters: bound.parameters,
       },
     };
   }
 
-  const entity = (model.entities ?? []).find(e => e.name === entityName);
-  if (!entity) {
-    return fail(`entity '${entityName}' is not declared in the model`);
-  }
+  const entity = findEntity(model, direct[0])!;
   if (entity.abstract) {
     return fail(
-        `entity '${entityName}' is abstract, so it has no table to probe`);
+        `entity '${entity.name}' is abstract, so it has no table to probe`);
   }
-
-  // Every field the expression mentions on the ROW entity has to resolve to a
-  // real column. An aggregate's fields resolve inside aggregateSubquery,
-  // against its own entity.
-  const columns = new Map<string, string>();
-  for (const op of operands) {
-    if (op.kind !== 'field' || columns.has(op.field)) continue;
-    const col = columnFor(entity, op.field);
-    if ('error' in col) return fail(col.error);
-    columns.set(op.field, col.column);
-  }
-
+  const table = tableFor(entity);
+  if ('error' in table) return fail(table.error);
   const keys = keyColumns(entity);
   if ('error' in keys) return fail(keys.error);
 
-  const warnings: string[] = [];
-  const table = spannerTable(
-      entity.dataSource, warnings, `entity '${entity.name}'`);
-  if (warnings.length) {
-    return fail(
-        `entity '${entityName}' has no usable table (${warnings.join('; ')})`);
-  }
+  const correlated =
+      substituteAggregates(expression, model, entity, table.table, parked);
+  if ('error' in correlated) return fail(correlated.error);
+  const resolved = substituteFields(correlated.sql, entity, parked);
+  if ('error' in resolved) return fail(resolved.error);
 
-  const rendered =
-      renderPredicate(parsed, {model, columns, opts, rowEntity: entity, table});
-  if ('error' in rendered) return fail(rendered.error);
+  const bound = bindParameters(resolved.sql, opts);
+  const violating = violatingTest(parked.expand(bound.sql));
 
-  const violating = violatingTest(rendered.sql);
   const limit = opts.limit ?? DEFAULT_LIMIT;
   const select = (where: string) =>
-      `SELECT ${keys.columns.join(', ')} FROM ${table} WHERE ${where} LIMIT ${
-          limit}`;
+      `SELECT ${keys.columns.join(', ')} FROM ${table.table} WHERE ${
+          where} LIMIT ${limit}`;
 
   const unscopedSql = select(violating);
   let sql = unscopedSql;
@@ -261,16 +267,30 @@ export function lowerConstraint(
     ok: true,
     probe: {
       constraint,
-      entity: entityName,
-      table,
+      entity: entity.name,
+      table: table.table,
       keyColumns: keys.columns,
       sql,
       unscopedSql,
       scoped,
-      readsParameter,
-      parameters: parameterNames(parsed),
+      readsParameter: bound.parameters.length > 0,
+      parameters: bound.parameters,
     },
   };
+}
+
+
+// Folds the spellings a model author reaches for into the ones the store
+// accepts. `==` is not SQL at all, and GoogleSQL rejects `= NULL` outright
+// rather than evaluating it to unknown, so an author writing `Order.ownerId !=
+// NULL` -- meaning the column must be populated -- gets the IS NOT NULL that
+// spells it.
+function normalizeOperators(expression: string): string {
+  return mapOutsideStringLiterals(
+      expression,
+      segment => segment.replace(/==/g, '=')
+                     .replace(/(!=|<>)\s*NULL\b/gi, 'IS NOT NULL')
+                     .replace(/(?<![<>!])=\s*NULL\b/gi, 'IS NULL'));
 }
 
 
@@ -280,19 +300,245 @@ export function lowerConstraint(
 // the invariant" makes the row a violation -- the fail-closed reading, and the
 // right one for a gate.
 function violatingTest(predicate: string): string {
-  return `NOT COALESCE(${predicate}, FALSE)`;
+  return `NOT COALESCE((${predicate}), FALSE)`;
 }
 
 
-// The action parameters an expression reads, in sorted order.
-function parameterNames(parsed: ParsedExpression): string[] {
-  const names = new Set<string>();
-  for (const c of parsed.comparisons) {
-    for (const op of [c.left, c.right]) {
-      if (op.kind === 'param') names.add(op.name);
+function findEntity(model: SemanticModel, name: string): Entity|undefined {
+  return (model.entities ?? []).find(e => e.name === name);
+}
+
+
+// Whether a matched call is an aggregate over a declared entity, and so reaches
+// across an edge rather than operating on the probed row.
+function isAggregate(
+    model: SemanticModel, fn: string, entity: string): boolean {
+  return AGGREGATES.includes(fn.toUpperCase()) && !!findEntity(model, entity);
+}
+
+
+// Rewrites each `AGG(Other.field)` to a subquery correlated to the row being
+// probed, parking the result so nothing downstream rewrites it.
+function substituteAggregates(
+    expression: string, model: SemanticModel, rowEntity: Entity, table: string,
+    parked: Parked): {sql: string}|{error: string} {
+  let error: string|undefined;
+  const sql = rewrite(expression, CALL, (whole, fn, entity, field) => {
+    if (!isAggregate(model, fn, entity)) return whole;
+    const sub = aggregateSubquery(
+        model, {fn: fn.toUpperCase(), entity, field}, rowEntity, table);
+    if ('error' in sub) {
+      error ??= sub.error;
+      return whole;
     }
+    return parked.park(sub.sql);
+  });
+  return error ? {error} : {sql};
+}
+
+
+// Rewrites every `<Entity>.<field>` on the probed row to the column the binding
+// profile gave it. A qualifier left standing afterwards named a field the entity
+// does not declare, which is a typo worth catching here rather than letting the
+// store report it as a missing column.
+function substituteFields(expression: string, entity: Entity, parked: Parked):
+    {sql: string}|{error: string} {
+  let out = expression;
+  for (const field of entity.fields) {
+    const bound = boundExpression(entity, field.name);
+    if ('error' in bound) continue;
+    const parkedSql = parked.park(bound.sql);
+    out = rewrite(
+        out, qualifierPattern(entity.name, field.name), () => parkedSql);
   }
-  return [...names].sort();
+
+  let unresolved: string|undefined;
+  rewrite(out, QUALIFIER, (whole, named, field) => {
+    if (named === entity.name) unresolved ??= field;
+    return whole;
+  });
+  if (unresolved === undefined) return {sql: out};
+  return {
+    error: entity.fields.some(f => f.name === unresolved) ?
+        `field '${entity.name}.${unresolved}' is unbound under the current ` +
+            `binding, so there is nothing to check it against` :
+        `entity '${entity.name}' declares no field '${unresolved}'`,
+  };
+}
+
+
+// Matches `Entity.field`, bare or backtick-quoted, and not as part of a longer
+// identifier: the trailing guard keeps `Order.total` from matching inside
+// `Order.total_tax`.
+function qualifierPattern(entity: string, field: string): RegExp {
+  return new RegExp(
+      `(?<![\\w\`])\`?${escapeRegExp(entity)}\`?\\s*\\.\\s*\`?${
+          escapeRegExp(field)}\`?(?!\\w)`,
+      'g');
+}
+
+
+// Rewrites each declared action parameter to a bound query parameter, and
+// reports which ones the expression actually read. The lookbehind keeps a
+// parameter name from matching the tail of a qualified reference; every field is
+// already parked behind a placeholder by this point, so a parameter and a column
+// may share a name without colliding.
+function bindParameters(expression: string, opts: LowerOptions):
+    {sql: string; parameters: string[]} {
+  const used = new Set<string>();
+  let out = expression;
+  for (const name of opts.parameters ?? []) {
+    const pattern = new RegExp(`(?<![\\w.\`])${escapeRegExp(name)}\\b`, 'g');
+    out = rewrite(out, pattern, () => {
+      used.add(name);
+      return `@${opts.parameterPrefix ?? ''}${name}`;
+    });
+  }
+  return {sql: out, parameters: [...used].sort()};
+}
+
+
+// The SQL a field resolves to under the binding in force. Usually a bare column;
+// an expression-bound field (`price * qty`) is inlined in parentheses, which is
+// safe because the probe already ranges over that field's own table.
+function boundExpression(entity: Entity, fieldName: string):
+    {sql: string}|{error: string} {
+  const field = entity.fields.find(f => f.name === fieldName);
+  if (!field) {
+    return {error: `entity '${entity.name}' declares no field '${fieldName}'`};
+  }
+  // No expression is what unbound means: the profile in force bound nothing to
+  // this field, so there is no column to check the invariant against.
+  const expr = (field.expression ?? '').trim();
+  if (!expr) {
+    return {
+      error: `field '${entity.name}.${fieldName}' is unbound under the ` +
+          `current binding, so there is nothing to check it against`,
+    };
+  }
+  return {sql: isBareColumn(expr) ? quoteIfReserved(expr) : `(${expr})`};
+}
+
+
+function isBareColumn(expression: string): boolean {
+  return /^[A-Za-z_]\w*$/.test(expression);
+}
+
+
+// The physical table backing an entity, or why there is none.
+function tableFor(entity: Entity): {table: string}|{error: string} {
+  const warnings: string[] = [];
+  const table =
+      spannerTable(entity.dataSource, warnings, `entity '${entity.name}'`);
+  if (warnings.length) {
+    return {
+      error: `entity '${entity.name}' has no usable table (${
+          warnings.join('; ')})`,
+    };
+  }
+  return {table};
+}
+
+
+// The entity's key columns, resolved through its fields. A key has to be a bare
+// column: the probe selects it and casts it to scope by it, so an expression
+// there would leave the caller's touched keys nothing to match.
+function keyColumns(entity: Entity): {columns: string[]}|{error: string} {
+  if (!entity.keys.length) {
+    return {
+      error: `entity '${entity.name}' declares no key, so a violation could ` +
+          `not be attributed to a row`,
+    };
+  }
+  const columns: string[] = [];
+  for (const key of entity.keys) {
+    const bound = boundExpression(entity, key);
+    if ('error' in bound) return {error: `key ${bound.error}`};
+    if (!isBareColumn(bound.sql.replace(/`/g, ''))) {
+      return {
+        error: `key '${entity.name}.${key}' is bound to an expression rather ` +
+            `than a bare column, so a violation could not be attributed to a ` +
+            `row`,
+      };
+    }
+    columns.push(bound.sql);
+  }
+  return {columns};
+}
+
+
+// Lowers `SUM(Other.field)` to a subquery correlated to the row being probed.
+//
+// The correlation comes from a DECLARED relationship, so the constraint author
+// writes `Order.total == SUM(LineItem.amount)` and the join columns are read out
+// of the model rather than guessed from the names. Exactly one relationship may
+// connect the two entities: with two, the expression is ambiguous about which
+// edge it means, and picking one would silently check a different rule than the
+// one written.
+function aggregateSubquery(
+    model: SemanticModel, op: {fn: string; entity: string; field: string},
+    rowEntity: Entity, table: string): {sql: string}|{error: string} {
+  const cited = `${op.fn}(${op.entity}.${op.field})`;
+  const inner = findEntity(model, op.entity)!;
+  if (inner.abstract) {
+    return {
+      error: `entity '${op.entity}' is abstract, so it has no table to ` +
+          `aggregate over`,
+    };
+  }
+
+  const edges = (model.relationships ?? []).filter(
+      r => !r.association &&
+          ((r.source.entity === op.entity &&
+            r.destination.entity === rowEntity.name) ||
+           (r.source.entity === rowEntity.name &&
+            r.destination.entity === op.entity)));
+  if (!edges.length) {
+    return {
+      error: `no relationship connects '${op.entity}' to '${rowEntity.name}', ` +
+          `so '${cited}' cannot be correlated to the row being checked; ` +
+          `declare one`,
+    };
+  }
+  if (edges.length > 1) {
+    return {
+      error: `${edges.length} relationships connect '${op.entity}' to '${
+          rowEntity.name}' (${edges.map(e => e.name).sort().join(', ')}), so '${
+          cited}' is ambiguous about which one it means`,
+    };
+  }
+  const edge = edges[0];
+  const [innerEnd, outerEnd] = edge.source.entity === op.entity ?
+      [edge.source, edge.destination] :
+      [edge.destination, edge.source];
+  if (innerEnd.columns.length !== outerEnd.columns.length ||
+      !innerEnd.columns.length) {
+    return {
+      error: `relationship '${edge.name}' does not pair its join columns, so '${
+          cited}' cannot be correlated`,
+    };
+  }
+
+  const measured = boundExpression(inner, op.field);
+  if ('error' in measured) return {error: measured.error};
+  const innerTable = tableFor(inner);
+  if ('error' in innerTable) return {error: innerTable.error};
+
+  // The outer table is unaliased, so its own name qualifies its columns.
+  const on = innerEnd.columns
+                 .map((c, i) => `${innerTable.table}.${quoteIfReserved(c)} = ${
+                          table}.${quoteIfReserved(outerEnd.columns[i])}`)
+                 .join(' AND ');
+
+  // SUM and COUNT over no rows are 0, not NULL: an order with no line items has
+  // a line-item total of zero, and leaving it NULL would make the comparison
+  // unknown and so report a violation the data does not have. MIN, MAX and AVG
+  // have no such identity, so they stay NULL and the fail-closed reading
+  // applies.
+  const body =
+      `SELECT ${op.fn}(${measured.sql}) FROM ${innerTable.table} WHERE ${on}`;
+  const zeroed = op.fn === 'SUM' || op.fn === 'COUNT';
+  return {sql: zeroed ? `COALESCE((${body}), 0)` : `(${body})`};
 }
 
 
@@ -339,405 +585,6 @@ export function violationMessage(
   if (!violatingKeys.length || !probe.entity) return `${lead} ${cite}`;
   const rows = violatingKeys.map(k => k.join('/')).join(', ');
   return `${lead} ${cite} Violating ${probe.entity}: ${rows}.`;
-}
-
-
-// The physical column backing `fieldName` on `entity`, or why there is none.
-// The MVP requires a BARE column: an expression-bound field (`price * qty`)
-// would need the expression inlined and re-resolved, which the small grammar
-// here does not attempt.
-function columnFor(entity: Entity, fieldName: string):
-    {column: string}|{error: string} {
-  const field = entity.fields.find(f => f.name === fieldName);
-  if (!field) {
-    return {
-      error: `entity '${entity.name}' declares no field '${fieldName}'`,
-    };
-  }
-  // No expression is what unbound means: the profile in force bound nothing
-  // to this field, so there is no column to check the invariant against.
-  const expr = (field.expression ?? '').trim();
-  if (!expr) {
-    return {
-      error: `field '${entity.name}.${fieldName}' is unbound under the ` +
-          `current binding, so there is nothing to check it against`,
-    };
-  }
-  if (!/^[A-Za-z_]\w*$/.test(expr)) {
-    return {
-      error: `field '${entity.name}.${fieldName}' is bound to an expression (${
-          expr}) rather than a bare column; the evaluator lowers bare columns ` +
-          `only`,
-    };
-  }
-  return {column: quoteIfReserved(expr)};
-}
-
-
-// The entity's key columns, resolved through its fields.
-function keyColumns(entity: Entity): {columns: string[]}|{error: string} {
-  if (!entity.keys.length) {
-    return {
-      error: `entity '${entity.name}' declares no key, so a violation could ` +
-          `not be attributed to a row`,
-    };
-  }
-  const columns: string[] = [];
-  for (const key of entity.keys) {
-    const col = columnFor(entity, key);
-    if ('error' in col) {
-      return {error: `key ${col.error}`};
-    }
-    columns.push(col.column);
-  }
-  return {columns};
-}
-
-
-// What a predicate is rendered against: the row entity's column map plus what
-// an aggregate needs in order to correlate back to that row.
-interface RenderContext {
-  model: SemanticModel;
-  columns: Map<string, string>;
-  opts: LowerOptions;
-  // Absent for a constraint that reads no entity field at all.
-  rowEntity?: Entity;
-  table?: string;
-}
-
-
-// Renders the parsed expression into SQL. Each comparison is parenthesized, so
-// a mixed AND/OR expression keeps the precedence the SQL engine would give it
-// rather than one this module invents.
-function renderPredicate(parsed: ParsedExpression, ctx: RenderContext):
-    {sql: string}|{error: string} {
-  const parts: string[] = [];
-  for (const c of parsed.comparisons) {
-    const left = renderOperand(c.left, ctx);
-    if ('error' in left) return left;
-    const right = renderOperand(c.right, ctx);
-    if ('error' in right) return right;
-    parts.push(`(${left.sql} ${c.operator} ${right.sql})`);
-  }
-  let out = parts[0];
-  for (let i = 1; i < parts.length; i++) {
-    out = `${out} ${parsed.joiners[i - 1]} ${parts[i]}`;
-  }
-  return {sql: out};
-}
-
-
-// One operand as SQL.
-function renderOperand(op: Operand, ctx: RenderContext):
-    {sql: string}|{error: string} {
-  switch (op.kind) {
-    case 'literal':
-      return {sql: op.text};
-    case 'field':
-      return {sql: ctx.columns.get(op.field)!};
-    case 'param':
-      // Bound, never interpolated: the value is supplied by the caller, so it
-      // must reach the store as a parameter rather than as text.
-      return {sql: `@${ctx.opts.parameterPrefix ?? ''}${op.name}`};
-    case 'agg':
-      return aggregateSubquery(op, ctx);
-  }
-}
-
-
-// Lowers `SUM(Other.field)` to a subquery correlated to the row being probed.
-//
-// The correlation comes from a DECLARED relationship, so the constraint author
-// writes `Order.total == SUM(LineItem.amount)` and the join columns are read out
-// of the model rather than guessed from the names. Exactly one relationship may
-// connect the two entities: with two, the expression is ambiguous about which
-// edge it means, and picking one would silently check a different rule than the
-// one written.
-function aggregateSubquery(
-    op: {fn: string; entity: string; field: string},
-    ctx: RenderContext): {sql: string}|{error: string} {
-  if (!ctx.rowEntity || !ctx.table) {
-    return {
-      error: `'${op.fn}(${op.entity}.${op.field})' needs a row to correlate ` +
-          `to, but the expression names no entity field to probe`,
-    };
-  }
-  const rowEntity = ctx.rowEntity;
-  const inner = (ctx.model.entities ?? []).find(e => e.name === op.entity);
-  if (!inner) {
-    return {error: `entity '${op.entity}' is not declared in the model`};
-  }
-  if (inner.abstract) {
-    return {
-      error: `entity '${op.entity}' is abstract, so it has no table to ` +
-          `aggregate over`,
-    };
-  }
-
-  const edges = (ctx.model.relationships ?? []).filter(
-      r => !r.association &&
-          ((r.source.entity === op.entity &&
-            r.destination.entity === rowEntity.name) ||
-           (r.source.entity === rowEntity.name &&
-            r.destination.entity === op.entity)));
-  if (!edges.length) {
-    return {
-      error: `no relationship connects '${op.entity}' to '${
-          rowEntity.name}', so '${op.fn}(${op.entity}.${op.field})' cannot be ` +
-          `correlated to the row being checked; declare one`,
-    };
-  }
-  if (edges.length > 1) {
-    return {
-      error: `${edges.length} relationships connect '${op.entity}' to '${
-          rowEntity.name}' (${
-          edges.map(e => e.name).sort().join(', ')}), so '${op.fn}(${
-          op.entity}.${op.field})' is ambiguous about which one it means`,
-    };
-  }
-  const edge = edges[0];
-  const [innerEnd, outerEnd] = edge.source.entity === op.entity ?
-      [edge.source, edge.destination] :
-      [edge.destination, edge.source];
-  if (innerEnd.columns.length !== outerEnd.columns.length ||
-      !innerEnd.columns.length) {
-    return {
-      error: `relationship '${edge.name}' does not pair its join columns, so ` +
-          `'${op.fn}(${op.entity}.${op.field})' cannot be correlated`,
-    };
-  }
-
-  const measured = columnFor(inner, op.field);
-  if ('error' in measured) return {error: measured.error};
-
-  const warnings: string[] = [];
-  const innerTable =
-      spannerTable(inner.dataSource, warnings, `entity '${inner.name}'`);
-  if (warnings.length) {
-    return {
-      error: `entity '${op.entity}' has no usable table (${
-          warnings.join('; ')})`,
-    };
-  }
-
-  // The outer table is unaliased, so its own name qualifies its columns. That
-  // keeps the emitted SQL for every existing (non-aggregate) constraint byte for
-  // byte what it was.
-  const on = innerEnd.columns
-                 .map((c, i) => `${innerTable}.${quoteIfReserved(c)} = ${
-                          ctx.table}.${quoteIfReserved(outerEnd.columns[i])}`)
-                 .join(' AND ');
-
-  // SUM and COUNT over no rows are 0, not NULL: an order with no line items has
-  // a line-item total of zero, and leaving it NULL would make the comparison
-  // unknown and so report a violation the data does not have. MIN, MAX and AVG
-  // have no such identity, so they stay NULL and the fail-closed reading applies.
-  const body = `SELECT ${op.fn}(${measured.column}) FROM ${innerTable} WHERE ${on}`;
-  const zeroed = op.fn === 'SUM' || op.fn === 'COUNT';
-  return {sql: zeroed ? `COALESCE((${body}), 0)` : `(${body})`};
-}
-
-
-// The aggregate functions an expression may apply to a related entity.
-const AGGREGATES = ['SUM', 'COUNT', 'MIN', 'MAX', 'AVG'] as const;
-
-
-// Parses a constraint expression into comparisons and the AND/OR between them.
-//
-// The grammar:
-//
-//   expression := comparison (('AND'|'OR') comparison)*
-//   comparison := operand <op> operand
-//   operand    := <Entity>.<field>            a column on the row being probed
-//               | <parameter>                 an argument of the action
-//               | <AGG>(<Entity>.<field>)     an aggregate over a related entity
-//               | literal
-//   op         := >= | <= | != | <> | == | = | > | <
-//   literal    := a number, a single-quoted string, TRUE, FALSE, or NULL
-//
-// `= NULL` and `!= NULL` are read as null tests and lowered to IS NULL /
-// IS NOT NULL; NULL with an ordering operator is refused. See parseComparison.
-//
-// Arbitrary parentheses, IN/BETWEEN/LIKE, arithmetic, and metric references are
-// all outside the grammar -- on purpose. Each is a real thing a constraint might
-// want, and each needs a decision that this evaluator does not make. They are
-// rejected with a reason rather than partially handled, because a gate that
-// approximates a rule is worse than one that admits it cannot check it.
-function parseConstraint(expression: string, parameters: readonly string[]):
-    ParsedExpression|{error: string} {
-  const expr = expression.trim();
-  if (!expr) return {error: 'the expression is empty'};
-
-  const segments = splitOnLogicalOperators(expr);
-  const comparisons: Comparison[] = [];
-  for (const segment of segments.parts) {
-    const comparison = parseComparison(segment, parameters);
-    if ('error' in comparison) return comparison;
-    comparisons.push(comparison);
-  }
-  return {comparisons, joiners: segments.joiners};
-}
-
-
-function parseComparison(segment: string, parameters: readonly string[]):
-    Comparison|{error: string} {
-  const text = segment.trim();
-  const found = findOperator(text);
-  if (!found) {
-    return {
-      error: `'${text}' is not a comparison (expected ${
-          OPERATORS.join(', ')})`,
-    };
-  }
-  const lhs = text.slice(0, found.index).trim();
-  const rhs = text.slice(found.index + found.operator.length).trim();
-  if (!rhs) return {error: `'${text}' has nothing on the right of the operator`};
-
-  const left = parseOperand(lhs, parameters);
-  if ('error' in left) {
-    return {error: `the left side of '${text}' ${left.error}`};
-  }
-  if (left.operand.kind === 'literal') {
-    return {
-      error: `the left side of '${text}' is a literal, so the comparison ` +
-          `does not range over anything`,
-    };
-  }
-  const right = parseOperand(rhs, parameters);
-  if ('error' in right) {
-    return {error: `the right side of '${text}' ${right.error}`};
-  }
-
-  const operator = normalizeOperator(found.operator);
-
-  // NULL is not an operand any comparison operator accepts -- GoogleSQL rejects
-  // `col = NULL` outright rather than evaluating it to unknown, so lowering it
-  // verbatim would emit a probe that can never run. An author writing
-  // `Account.ownerId != NULL` means the column must be populated, which SQL
-  // spells IS NOT NULL, so translate the two operators that have a null-test
-  // reading and refuse the four that do not: an ordering comparison against
-  // NULL has no meaning to preserve.
-  if (right.operand.kind === 'literal' && /^NULL$/i.test(right.operand.text)) {
-    if (operator !== '=' && operator !== '!=') {
-      return {
-        error: `'${text}' compares with NULL using '${operator}', which has no ` +
-            `meaning; write '= NULL' or '!= NULL' to test whether the field is ` +
-            `set`,
-      };
-    }
-    return {
-      left: left.operand,
-      operator: operator === '=' ? 'IS' : 'IS NOT',
-      right: {kind: 'literal', text: 'NULL'},
-    };
-  }
-
-  return {left: left.operand, operator, right: right.operand};
-}
-
-
-// One side of a comparison, or why it is not one this evaluator can lower.
-function parseOperand(text: string, parameters: readonly string[]):
-    {operand: Operand}|{error: string} {
-  const agg = text.match(/^([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\)$/);
-  if (agg) {
-    const fn = agg[1].toUpperCase();
-    if (!(AGGREGATES as readonly string[]).includes(fn)) {
-      return {
-        error: `calls '${agg[1]}', which is not one of the aggregates the ` +
-            `evaluator lowers (${AGGREGATES.join(', ')})`,
-      };
-    }
-    return {operand: {kind: 'agg', fn, entity: agg[2], field: agg[3]}};
-  }
-
-  const field = text.match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
-  if (field) {
-    return {operand: {kind: 'field', entity: field[1], field: field[2]}};
-  }
-
-  // A bare name is an action parameter or nothing. It is checked against the
-  // action's declared parameters rather than accepted on sight, so a mistyped
-  // field reference (`amout`) is refused here instead of lowering to a binding
-  // the runtime would never supply.
-  if (/^[A-Za-z_]\w*$/.test(text)) {
-    if (parameters.includes(text)) {
-      return {operand: {kind: 'param', name: text}};
-    }
-    return {
-      error: `reads '${text}', which is neither an <Entity>.<field> reference ` +
-          `nor a parameter of the action being checked${
-              parameters.length ?
-                  ` (declared: ${[...parameters].sort().join(', ')})` :
-                  ''}`,
-    };
-  }
-
-  if (isLiteral(text)) return {operand: {kind: 'literal', text}};
-
-  return {
-    error: `is '${text}', which is neither a literal, an <Entity>.<field> ` +
-        `reference, an action parameter, nor an aggregate over a related entity`,
-  };
-}
-
-
-// Splits an expression on top-level AND/OR, matching them as whole words so a
-// field named `brand` or `android_id` is not torn apart. There are no
-// parentheses to nest (parseConstraint rejects them), so every operator found
-// is top level.
-function splitOnLogicalOperators(expr: string):
-    {parts: string[]; joiners: string[]} {
-  const parts: string[] = [];
-  const joiners: string[] = [];
-  const pattern = /\s+(AND|OR)\s+/gi;
-  let last = 0;
-  let match: RegExpExecArray|null;
-  while ((match = pattern.exec(expr)) !== null) {
-    parts.push(expr.slice(last, match.index));
-    joiners.push(match[1].toUpperCase());
-    last = match.index + match[0].length;
-  }
-  parts.push(expr.slice(last));
-  return {parts, joiners};
-}
-
-// The first comparison operator in `text`, longest match first so `>=` is not
-// read as `>` followed by a stray `=`.
-function findOperator(text: string): {operator: string; index: number}|null {
-  let best: {operator: string; index: number}|null = null;
-  for (const operator of OPERATORS) {
-    const index = text.indexOf(operator);
-    if (index < 0) continue;
-    if (!best || index < best.index ||
-        (index === best.index && operator.length > best.operator.length)) {
-      best = {operator, index};
-    }
-  }
-  return best;
-}
-
-
-// Several spellings mean the same comparison. `!=` and `<>` are both SQL, and
-// `==` is not SQL at all but is what a model author reaches for; each is folded
-// to the one form the probe emits.
-function normalizeOperator(operator: string): string {
-  if (operator === '<>') return '!=';
-  if (operator === '==') return '=';
-  return operator;
-}
-
-
-
-// A literal the probe can embed verbatim. Restricted to shapes with no quoting
-// hazard: a number, a single-quoted string with no embedded quote or backslash,
-// or one of the three keywords. Anything else is rejected rather than escaped,
-// because a constraint expression is model text, not user input, and a
-// surprising escape is harder to notice than a refusal.
-function isLiteral(text: string): boolean {
-  if (/^-?\d+(\.\d+)?$/.test(text)) return true;
-  if (/^'[^'\\]*'$/.test(text)) return true;
-  return /^(TRUE|FALSE|NULL)$/i.test(text);
 }
 
 
