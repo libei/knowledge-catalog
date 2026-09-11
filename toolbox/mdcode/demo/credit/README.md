@@ -35,7 +35,10 @@ something anyone gets to waive.
 - Application-default credentials: `gcloud auth application-default login`. The
   demo talks to Spanner over REST and does not shell out to `gcloud`.
 - `bun` and the toolbox's dependencies: `npm install` in `toolbox/mdcode`.
-- For the agent only: access to Gemini on Vertex AI in the same project.
+- For `agent.ts` only: access to Gemini on Vertex AI in the same project, and
+  the ADK, which the toolbox itself does not depend on. Install it beside the
+  toolbox without adding it to the manifest:
+  `npm install --no-save @google/adk` in `toolbox/mdcode`.
 
 The project, instance and database default to the ones the demo was developed
 against, and are overridable:
