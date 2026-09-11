@@ -12,11 +12,16 @@
 // Dropping a constraint from the model deletes its entry, so the catalog never
 // advertises a rule the model stopped requiring.
 //
-// The three authored fields land in two places. `expression` and `ai_context`
-// go on the aspect, the latter whole -- aiContextField in kc_custom_types.ts
-// says why. `description` goes on the entry source, where a pull of an action
-// already reads it, and because a violation quotes that sentence back to the
-// caller as the error, which makes it the entry's summary.
+// The four authored fields land in two places. `expression`, `severity` and
+// `ai_context` go on the aspect, the last whole -- aiContextField in
+// kc_custom_types.ts says why. `description` goes on the entry source, where a
+// pull of an action already reads it, and because a violation quotes that
+// sentence back to the caller as the error, which makes it the entry's summary.
+//
+// Severity is on the aspect because it decides what a violation does, and a
+// reader that cannot see it cannot tell a rule a supervisor may override from
+// one nobody can. A constraint that does not state one is published without the
+// field and reads back the same way, so the default stays the IR's to define.
 //
 // Call sites: knowledge_catalog.ts emits the entries, kc_converter.ts reads
 // them back, pull_kc.ts hydrates the aspect.
@@ -31,7 +36,7 @@
 
 import {Entry} from '../gcp/dataplex';
 
-import {Constraint, SemanticModel} from './ir';
+import {Constraint, CONSTRAINT_SEVERITIES, ConstraintSeverity, SemanticModel} from './ir';
 import {aiContextAspectValue, aiContextFromAspect, CONSTRAINT_TYPE_ID, customAspectKey, customAspectTypeName, customEntryTypeName} from './kc_custom_types';
 
 // Full resource name of the constraint entry type for a destination.
@@ -127,12 +132,13 @@ export function constraintEntries(
   return entries;
 }
 
-// The aspect payload for one constraint: the invariant, and the whole of any
-// `ai_context` declared on it.
+// The aspect payload for one constraint: the invariant, what a violation of it
+// does, and the whole of any `ai_context` declared on it.
 function constraintAspectData(constraint: Constraint): Record<string, any> {
   return compact({
     expression: constraint.expression,
     aiContext: aiContextAspectValue(constraint.aiContext),
+    severity: constraint.severity,
   });
 }
 
@@ -182,9 +188,32 @@ export function readConstraint(entry: Entry, warnings: string[]): Constraint|
   const description = entry.entrySource?.description;
   if (description !== undefined && description !== '')
     constraint.description = description;
+  const severity = readSeverity(name, data.severity, warnings);
+  if (severity) constraint.severity = severity;
   const aiContext = aiContextFromAspect(data.aiContext);
   if (aiContext) constraint.aiContext = aiContext;
   return constraint;
+}
+
+// The severity an aspect states, or undefined when it states none.
+//
+// A value outside the three the IR defines is dropped with a warning rather
+// than kept, because an unrecognized word would fail the pulled model's own
+// push-side validation. Dropping it falls back to `reject`, which refuses more
+// than the catalog asked for and never less.
+function readSeverity(
+    name: string, value: unknown,
+    warnings: string[]): ConstraintSeverity|undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const text = String(value).trim();
+  if ((CONSTRAINT_SEVERITIES as readonly string[]).includes(text))
+    return text as ConstraintSeverity;
+  warnings.push(
+      `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect states ` +
+      `severity '${text}', which is not one of ` +
+      `${CONSTRAINT_SEVERITIES.join(', ')}; the constraint reads back ` +
+      `without one`);
+  return undefined;
 }
 
 

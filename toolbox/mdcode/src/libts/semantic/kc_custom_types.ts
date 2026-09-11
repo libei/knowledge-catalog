@@ -387,6 +387,12 @@ export const CONSTRAINT_TYPE_ID = 'semantic-constraint';
 // the error, which makes it the entry's summary rather than part of the rule.
 // `ai_context` rides this aspect whole
 // (see aiContextField).
+//
+// `severity` rides the aspect rather than the entry source because it is
+// machine-readable routing and not prose: it is what tells a reader whether a
+// violation refuses the write outright or holds it for a human. Published
+// without it, a rule a supervisor may override reads the same as one nobody
+// can.
 const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   displayName: 'Semantic Constraint',
   description:
@@ -410,6 +416,19 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         },
       },
       aiContextField(2),
+      {
+        index: 3,
+        name: 'severity',
+        type: 'string',
+        annotations: {
+          displayName: 'Severity',
+          description:
+              'What a violation does to the action that tripped it: ' +
+              '`reject` refuses the write and nobody may approve it, ' +
+              '`escalate` holds the write for a human decision, `warn` lets ' +
+              'it proceed and reports it. Absent means `reject`.',
+        },
+      },
     ],
   },
 };

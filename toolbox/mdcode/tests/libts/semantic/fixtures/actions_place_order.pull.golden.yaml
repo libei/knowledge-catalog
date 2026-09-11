@@ -76,6 +76,11 @@ semantic_model:
       - name: PositiveQuantity
         expression: OrderedAs.quantity > 0
         description: An order line must be for at least one unit.
+      - name: OrderWithinStandingLimit
+        expression: orders.o_totalprice <= 100000
+        description: An order this large is above the standing limit and needs a sales
+          manager to sign off. Ask for approval, or split the order.
+        severity: escalate
       - name: RequestedQuantityIsPositive
         expression: quantity > 0
         description: A request must be for at least one unit. Ask the caller for the

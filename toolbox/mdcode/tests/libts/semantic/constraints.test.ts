@@ -261,7 +261,7 @@ describe('validatePushRequirements gates constraints', () => {
 describe('OSI round trip', () => {
   test('constraints survive serialize -> reload', () => {
     const model = loadFixtureModel('actions_place_order.yaml');
-    expect(model.constraints).toHaveLength(3);
+    expect(model.constraints).toHaveLength(4);
     const {yaml} = serializeModel(model);
     expect(yaml).toContain('constraints:');
     const reloaded = loadModels(yaml).models[0];
@@ -294,6 +294,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
          expect(constraints.map(e => e.name.split('/entries/')[1])).toEqual([
            'sales.constraints.NonNegativeOrderTotal',
            'sales.constraints.PositiveQuantity',
+           'sales.constraints.OrderWithinStandingLimit',
            'sales.constraints.RequestedQuantityIsPositive',
          ]);
          for (const e of constraints) expect(e.parentEntry).toBe(entries[0].name);
@@ -405,6 +406,41 @@ describe('Knowledge Catalog publish/pull round trip', () => {
         .toEqual(constraintsOf(first.entries));
   });
 
+  test('severity survives publish and pull', () => {
+    // Without this the catalog states every rule the same way, and a credit a
+    // supervisor may approve reads as one nobody can.
+    const {entries} = generateCatalogResources(model, OPTS);
+    const held = entries.find(
+        e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
+    expect(held.aspects![CONSTRAINT_ASPECT].data!.severity).toBe('escalate');
+
+    const {models} = modelsFromCatalogResources(entries);
+    const byName = new Map(models[0].constraints!.map(c => [c.name, c]));
+    expect(byName.get('OrderWithinStandingLimit')!.severity).toBe('escalate');
+    // A constraint that states no severity publishes without the field and
+    // reads back without one, so the default stays the IR's to define.
+    expect(byName.get('PositiveQuantity')!.severity).toBeUndefined();
+  });
+
+  test('an unrecognized severity is dropped with a warning', () => {
+    // A hand-edited aspect can say anything. Keeping the word would fail the
+    // pulled model's own push-side validation; dropping it falls back to
+    // `reject`, which refuses more than the catalog asked for and never less.
+    const {entries} = generateCatalogResources(model, OPTS);
+    const held = entries.find(
+        e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
+    held.aspects![CONSTRAINT_ASPECT].data!.severity = 'maybe';
+
+    const {models, warnings} = modelsFromCatalogResources(entries);
+    const held2 = models[0].constraints!.find(
+        c => c.name === 'OrderWithinStandingLimit')!;
+    expect(held2.severity).toBeUndefined();
+    expect(warnings.some(
+               w => w.includes("constraint 'OrderWithinStandingLimit'") &&
+                   w.includes("severity 'maybe'")))
+        .toBe(true);
+  });
+
   test('an entry whose expression is blank is skipped and warned', () => {
     // A hand-edited aspect can carry a blank expression. Such a constraint
     // states no invariant, so it degrades itself rather than the pull.
@@ -415,6 +451,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].constraints!.map(c => c.name)).toEqual([
       'NonNegativeOrderTotal',
+      'OrderWithinStandingLimit',
       'RequestedQuantityIsPositive',
     ]);
     expect(warnings.some(
@@ -440,12 +477,12 @@ describe('a graph leg says what it dropped', () => {
   ] as const) {
     test(`the ${backend} leg warns about actions and constraints`, () => {
       const {warnings} = generate(model());
-      // The fixture declares one action and three constraints.
+      // The fixture declares one action and four constraints.
       expect(warnings.some(
                  w => /1 action\(s\) reach Knowledge Catalog only/.test(w)))
           .toBe(true);
       expect(warnings.some(
-                 w => /3 constraint\(s\) reach Knowledge Catalog only/.test(w)))
+                 w => /4 constraint\(s\) reach Knowledge Catalog only/.test(w)))
           .toBe(true);
       // Named the system it does reach, and the one that drops it.
       expect(warnings.some(w => w.includes(`the ${backend} push deploys none`)))

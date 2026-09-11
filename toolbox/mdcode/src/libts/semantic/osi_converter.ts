@@ -326,6 +326,7 @@ function constraintDoc(constraint: Constraint): Record<string, any> {
     name: constraint.name,
     expression: constraint.expression,
     description: constraint.description,
+    severity: constraint.severity,
     ai_context: aiContextDoc(constraint.aiContext),
   });
 }
