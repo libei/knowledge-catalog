@@ -15,7 +15,10 @@ export const instance =
 export const database =
     process.env.DEMO_SPANNER_DATABASE ?? 'semantic_credit_demo';
 
-export const modelPath = path.join(import.meta.dir, 'ecommerce.yaml');
+// Point this at another model to watch the checks change. Nothing downstream
+// knows which file it got: the probes are lowered from whatever it declares.
+export const modelPath = process.env.DEMO_MODEL_PATH ??
+    path.join(import.meta.dir, 'ecommerce.yaml');
 
 
 export function dataClient(): spanner.SpannerDataClient {
