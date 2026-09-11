@@ -142,6 +142,31 @@ describe('withSession', () => {
          expect(deleted).toEqual([SESSION]);
        });
 
+  test('a delete that fails does not become the caller\'s result', async () => {
+    // The session delete runs after the body has already decided the outcome,
+    // including after a commit. If its failure escaped, a caller reading the
+    // rejection as "the write did not happen" would apply it a second time.
+    const c = new SpannerDataClient(CTX, 'test-project', 'i', 'd');
+    spyOn(c, '_post').mockImplementation(
+        async () => ({status: 200, result: {name: SESSION}}) as never);
+    spyOn(c, '_delete').mockImplementation(async () => {
+      throw new Error('network reset');
+    });
+    expect(await c.withSession(async () => 'committed')).toBe('committed');
+  });
+
+  test('a delete that fails does not hide why the body threw', async () => {
+    const c = new SpannerDataClient(CTX, 'test-project', 'i', 'd');
+    spyOn(c, '_post').mockImplementation(
+        async () => ({status: 200, result: {name: SESSION}}) as never);
+    spyOn(c, '_delete').mockImplementation(async () => {
+      throw new Error('network reset');
+    });
+    await expect(c.withSession(async () => {
+      throw new Error('boom');
+    })).rejects.toThrow('boom');
+  });
+
   test('reports a session that could not be created, naming the database',
        async () => {
          const c = new SpannerDataClient(CTX, 'test-project', 'i', 'd');

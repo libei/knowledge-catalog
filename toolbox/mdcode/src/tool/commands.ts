@@ -1189,7 +1189,9 @@ export interface ActionOptions {
   // `--arg <name>=<value>`, repeatable. cac hands back a bare string for one
   // occurrence and an array for several.
   arg?: string|string[];
-  profile?: string;
+  // `string|boolean` for the same reason push's is: cac yields `true` for a
+  // bare `--profile` and `false` for `--no-profile`.
+  profile?: string|boolean;
 }
 
 
@@ -1223,8 +1225,13 @@ export async function action(
   }
   const layout = snapshot.layout as SemanticModelLayout;
   const source = snapshot.manifest.source as SemanticModelSource;
+  // cac hands back `true` for a bare `--profile` and mri `false` for
+  // `--no-profile`; neither names a profile, and `??` would let both through
+  // to be looked up as one. Same guard push uses.
+  const named =
+      typeof options.profile === 'string' ? options.profile : undefined;
   const profile =
-      options.profile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+      named ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
 
   const loaded = loadForProfile(layout, source, ctx, profile);
   if ('error' in loaded) {
@@ -1399,7 +1406,10 @@ async function runOneAction(
 function parseActionArgs(raw: string|string[]|undefined):
     {args: Record<string, unknown>}|{error: string} {
   const pairs = raw === undefined ? [] : (Array.isArray(raw) ? raw : [raw]);
-  const args: Record<string, unknown> = {};
+  // Null-prototype, because these names come off the command line: on a plain
+  // object `--arg toString=x` would report itself as given twice, and
+  // `--arg __proto__=x` would set the prototype instead of an argument.
+  const args: Record<string, unknown> = Object.create(null);
   for (const pair of pairs) {
     const eq = pair.indexOf('=');
     // An `=` at position 0 is a nameless argument, and none at all is a bare
@@ -1408,7 +1418,9 @@ function parseActionArgs(raw: string|string[]|undefined):
       return {error: `--arg expects <name>=<value>, but got '${pair}'.`};
     }
     const name = pair.slice(0, eq).trim();
-    if (name in args) return {error: `--arg ${name} was given twice.`};
+    if (Object.hasOwn(args, name)) {
+      return {error: `--arg ${name} was given twice.`};
+    }
     args[name] = pair.slice(eq + 1);
   }
   return {args};
@@ -1454,14 +1466,29 @@ function spannerClientFor(model: SemanticModel, ctx: context.ApiContext):
   const target = spanner[0];
   const database = `projects/${target.project}/instances/${
       target.instance}/databases/${target.database}`;
-  const strays: string[] = [];
+  // Every table the model binds, not just its entities: a many-to-many
+  // relationship is backed by a junction table of its own, and an action that
+  // creates the edge writes to exactly that one. No loader produces an
+  // association yet, so this leg is dormant -- but the day one does, the
+  // failure it prevents is a write landing in a different database silently,
+  // which is not the kind of thing to notice afterwards.
+  const bindings: Array<{name: string; source: string}> = [];
   for (const entity of model.entities ?? []) {
-    const bound = (entity.dataSource ?? '').trim().match(SPANNER_TABLE_SOURCE);
+    bindings.push({name: entity.name, source: entity.dataSource ?? ''});
+  }
+  for (const relationship of model.relationships ?? []) {
+    const source = relationship.association?.dataSource;
+    if (source) bindings.push({name: relationship.name, source});
+  }
+
+  const strays: string[] = [];
+  for (const binding of bindings) {
+    const bound = binding.source.trim().match(SPANNER_TABLE_SOURCE);
     if (!bound) continue;
     const boundDatabase =
         `projects/${bound[1]}/instances/${bound[2]}/databases/${bound[3]}`;
     if (boundDatabase !== database) {
-      strays.push(`'${entity.name}' to ${boundDatabase}`);
+      strays.push(`'${binding.name}' to ${boundDatabase}`);
     }
   }
   if (strays.length) {

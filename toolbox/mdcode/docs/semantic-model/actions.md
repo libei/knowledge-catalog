@@ -740,8 +740,11 @@ Model 'payments' (payments_eg), profile 'operational':
   rather than as text, which is the difference between `9` being less than `10`
   and not. Nothing is interpolated into a statement.
 - **Apply.** A read-write transaction is opened, the action's statements run
-  inside it in order, and it commits. Any failure rolls back, so no partial
-  write survives.
+  inside it in order, and it commits. Any failure before the commit rolls back,
+  so no partial write survives. A failure *of* the commit is the one thing
+  `kcmd` cannot resolve for you — the store may have applied the write and lost
+  the response — and it says so rather than claiming a rollback, because a
+  caller told "nothing happened" would retry a write that did.
 
 Where the write goes is the model's Spanner deployment target under the selected
 profile. The command line never names a database: `--profile` changes the store,

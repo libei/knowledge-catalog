@@ -207,7 +207,15 @@ export class SpannerDataClient extends api.ApiClient {
     try {
       return await fn(sessionName);
     } finally {
-      await this.deleteSession(sessionName);
+      // Cleaning up must not become the caller's result. A delete that fails
+      // after a successful commit would otherwise replace the outcome with an
+      // error, and a caller reading that as "the write did not happen" would
+      // apply it twice; a delete that fails after `fn` threw would hide the
+      // real reason. A leaked session ages out on its own.
+      try {
+        await this.deleteSession(sessionName);
+      } catch {
+      }
     }
   }
 }

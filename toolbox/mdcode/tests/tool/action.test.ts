@@ -322,3 +322,56 @@ describe('kcmd action run: where the write would go', () => {
          expect(out).toContain('address a table by name alone');
        });
 });
+
+
+// cac and mri hand back values a flag's name does not suggest, and the shell
+// hands back names an object literal already has. Both look like a nuisance
+// and both change which model runs, or whether the run happens at all.
+describe('kcmd action: what the command line can actually contain', () => {
+  test('a bare --profile falls back to the default rather than looking up ' +
+           "a profile called 'true'",
+       async () => {
+         // cac yields `true` for `--profile` with no value. Reading it as a
+         // name would fail the command with a profile the user never typed.
+         writeWorkspace();
+         const code = await action('list', undefined, {profile: true});
+         expect(code).toBe(0);
+         expect(logs.join('\n')).toContain("profile 'default'");
+       });
+
+  test('--no-profile does not become a profile name either', async () => {
+    // mri yields `false`, which `??` would pass straight through.
+    writeWorkspace();
+    const code = await action('list', undefined, {profile: false});
+    expect(code).toBe(0);
+    expect(logs.join('\n')).toContain("profile 'default'");
+  });
+
+  test('a named profile still selects that profile', async () => {
+    writeWorkspace();
+    await action('list', undefined, {profile: 'analytical'});
+    expect(logs.join('\n')).toContain("profile 'analytical'");
+  });
+
+  test('an argument named after an Object member is an ordinary argument',
+       async () => {
+         // On a plain object `'toString' in args` is true before anything is
+         // parsed, so this would report a duplicate the caller never gave.
+         writeWorkspace();
+         await action(
+             'run', 'IssueCredit',
+             {arg: ['toString=x', 'order=1', 'amount=5']});
+         const out = logs.join('\n');
+         expect(out).not.toContain('given twice');
+         // It gets as far as the refusal, which is where this model stops.
+         expect(out).toContain('CreditIsPositive');
+       });
+
+  test('a genuinely repeated argument is still reported', async () => {
+    writeWorkspace();
+    const code = await action(
+        'run', 'IssueCredit', {arg: ['order=1', 'order=2', 'amount=5']});
+    expect(code).toBe(1);
+    expect(logs.join('\n')).toContain('--arg order was given twice');
+  });
+});

@@ -11,8 +11,11 @@
 //   2. BIND. Every argument becomes a query parameter of the store type its
 //      declared ontology type implies. Nothing is interpolated into SQL.
 //   3. APPLY. A read-write transaction is opened, the action's writes are run
-//      inside it, and it is committed. Any failure rolls back, so no partial
-//      write survives.
+//      inside it, and it is committed. Any failure before the commit rolls
+//      back, so no partial write survives. A failure OF the commit is the one
+//      case nothing here can resolve -- the store may have applied it and lost
+//      the response -- and it is reported as the unknown it is rather than as
+//      a rollback.
 //
 // Where the write comes from. An action with a `sql` executor carries its own
 // DML, and the runtime runs those statements itself. An action with an `mcp`,
@@ -84,8 +87,15 @@ export type ActionOutcome = {
   status: 'error';
   // A failure that stopped the write: an argument that resolved to nothing, an
   // action this runtime will not run unchecked, a store-level error. The
-  // transaction is rolled back in every case, so no partial write survives.
+  // transaction is rolled back, so no partial write survives -- except in the
+  // one case `indeterminate` marks.
   message: string;
+  // Set when the write may in fact have landed: the statements ran and the
+  // COMMIT itself failed. Spanner reports a deadline or a 5xx on commit for a
+  // commit that succeeded as well as for one that did not, and nothing can
+  // undo it from here. A caller must not read this as "nothing happened" and
+  // retry.
+  indeterminate?: boolean;
 };
 
 
@@ -156,8 +166,14 @@ export async function runAction(opts: RunActionOptions):
       // Everything from here on is inside the transaction, so any failure must
       // roll back rather than leave it open.
       try {
+        // A rollback that itself fails must not replace the reason the action
+        // stopped -- that reason is what the caller acts on, and the server
+        // aborts an abandoned transaction on its own.
         const rollback = async (outcome: ActionOutcome) => {
-          await client.rollback(sessionName, transactionId);
+          try {
+            await client.rollback(sessionName, transactionId);
+          } catch {
+          }
           return outcome;
         };
 
@@ -167,14 +183,20 @@ export async function runAction(opts: RunActionOptions):
         }
         const refs = resolved.refs;
 
-        const bound = bindArguments(model, action, args, refs);
-        if ('error' in bound) {
-          return await rollback({status: 'error', message: bound.error});
+        // The bindings exist to fill the model's OWN statements, so they are
+        // built only when the model is what supplies them. A handler is given
+        // `refs` whole and may write a composite key, which this pass refuses
+        // because a single statement parameter cannot carry one.
+        let plan: ActionPlan|{error: string};
+        if (opts.handler) {
+          plan = await opts.handler({model, action, args, refs, query});
+        } else {
+          const bound = bindArguments(model, action, args, refs);
+          if ('error' in bound) {
+            return await rollback({status: 'error', message: bound.error});
+          }
+          plan = planFromExecutor(model, action, bound, generatedKeys(action));
         }
-
-        const plan = opts.handler ?
-            await opts.handler({model, action, args, refs, query}) :
-            planFromExecutor(action, bound, generatedKeys(action));
         if ('error' in plan) {
           return await rollback({status: 'error', message: plan.error});
         }
@@ -184,10 +206,20 @@ export async function runAction(opts: RunActionOptions):
 
         const committed = await client.commit(sessionName, transactionId);
         if (committed.status < 200 || committed.status >= 300) {
+          // Deliberately NOT rolled back. Once commit has been called the
+          // transaction's fate is the server's, and a deadline or a 5xx is
+          // exactly the shape of failure Spanner returns for a commit that
+          // landed and lost its response. Reporting "rolled back" here would
+          // be a guess, and the caller acting on it would retry a write that
+          // already happened.
           return {
             status: 'error',
-            message: `The write ran but the commit failed: ${
-                committed.message ?? committed.status}.`,
+            indeterminate: true,
+            message: `Action '${action.name}' ran, but committing it failed ` +
+                `on ${client.database}: ${
+                    committed.message ?? committed.status}. Whether the write ` +
+                `landed is unknown -- the store may have applied it and lost ` +
+                `the response -- so read the affected data before retrying.`,
           } as ActionOutcome;
         }
         return {
@@ -196,7 +228,10 @@ export async function runAction(opts: RunActionOptions):
           refs,
         } as ActionOutcome;
       } catch (err) {
-        await client.rollback(sessionName, transactionId);
+        try {
+          await client.rollback(sessionName, transactionId);
+        } catch {
+        }
         throw err;
       }
     });
@@ -258,27 +293,48 @@ function unsafeToRunUnchecked(
   const bearing = constraintsOverAffected(model, action);
   if (bearing.length) {
     return `Action '${action.name}' writes data that ${quoteList(bearing)} ` +
-        `constrains, and this runtime does not evaluate constraints yet. The ` +
-        `write could leave the store violating a rule the model states, so ` +
-        `it is refused rather than run unchecked.`;
+        `could constrain, and this runtime does not evaluate constraints ` +
+        `yet. The write could leave the store violating a rule the model ` +
+        `states, so it is refused rather than run unchecked.`;
   }
   return null;
 }
 
 
-// The names of constraints whose expression reads an entity this action
+// The names of constraints whose expression may read a concept this action
 // affects, sorted so a message is stable.
+//
+// This is the one place the refusal rule could fail open, so it errs the other
+// way twice. A constraint's expression is a logical invariant this module does
+// not parse, and `affects` names an entity OR a relationship, so:
+//
+//   * The scan covers relationships as well as entities. Validation
+//     deliberately permits a relationship-qualified name like
+//     `OrderedAs.quantity`, and an M:N `create` writes exactly the junction
+//     table such a constraint is about.
+//   * A constraint matching no known concept counts as bearing on all of them.
+//     An unqualified expression (`amount > 0`) names nothing this can compare,
+//     and "it mentions no entity, so it constrains none" is the reading that
+//     runs an unchecked write.
+//
+// The cost of both is refusing an action that would have been fine, which the
+// evaluator will then let through. That is the direction to be wrong in.
 function constraintsOverAffected(
     model: SemanticModel, action: Action): string[] {
   const constraints = model.constraints ?? [];
   const affected = new Set((action.affects ?? []).map(a => a.concept));
   if (!constraints.length || !affected.size) return [];
 
-  const entityNames = (model.entities ?? []).map(e => e.name);
+  const conceptNames = [
+    ...(model.entities ?? []).map(e => e.name),
+    ...(model.relationships ?? []).map(r => r.name),
+  ];
   const names: string[] = [];
   for (const c of constraints) {
-    const read = referencedEntityNames(c.expression, entityNames);
-    if (read.some(name => affected.has(name))) names.push(c.name);
+    const read = referencedEntityNames(c.expression, conceptNames);
+    if (!read.length || read.some(name => affected.has(name))) {
+      names.push(c.name);
+    }
   }
   return names.sort();
 }
@@ -392,6 +448,10 @@ function bindScalar(param: ActionParameter, raw: unknown):
 // A key for every concept the action creates, named as the DML expects it. The
 // model's own statements bind `@new<Concept>Key`, so the value has to exist
 // before the statement runs -- which rules out letting the store assign it.
+//
+// The value is a UUID, so the key it fills has to be text. Whether that fits
+// is `unusableGeneratedKey`'s question, asked where a statement actually binds
+// one.
 function generatedKeys(action: Action): Record<string, string> {
   const keys: Record<string, string> = {};
   for (const affected of action.affects ?? []) {
@@ -402,20 +462,55 @@ function generatedKeys(action: Action): Record<string, string> {
 }
 
 
+// Why a UUID cannot fill the key the action's DML asks for, or null if it can.
+// The store would reject an INT64 key bound as text, but it reports that as a
+// rejected statement -- naming neither the entity nor the reason -- so this
+// answers first, from the model.
+function unusableGeneratedKey(
+    model: SemanticModel, action: Action, concept: string): string|null {
+  const entity = (model.entities ?? []).find(e => e.name === concept);
+  if (!entity) return null;
+  const declared = entity.keys ?? [];
+  if (declared.length > 1) {
+    return `Action '${action.name}' binds a generated key for the ${
+        concept} it creates, but ${concept}'s key has ${
+        declared.length} parts. A composite key has to be written by the ` +
+        `statement itself.`;
+  }
+  const keyField = entity.fields.find(f => f.name === declared[0]);
+  const type = keyField?.type ?? 'String';
+  if (type !== 'String') {
+    return `Action '${action.name}' binds a generated key for the ${
+        concept} it creates, but ${concept}'s key '${declared[0]}' has type ${
+        type}, and the runtime generates a UUID -- which is text. Key ${
+        concept} by a String, or have the statement supply the key itself.`;
+  }
+  return null;
+}
+
+
 // Builds the plan from the action's own DML. Every `@name` in a statement is
 // either a declared parameter or a key this call generates; validate.ts refuses
 // a model where it is neither, so an unbound reference cannot reach here.
 function planFromExecutor(
-    action: Action, bound: Bindings,
+    model: SemanticModel, action: Action, bound: Bindings,
     generated: Record<string, string>): ActionPlan|{error: string} {
   if (action.executor.kind !== 'sql') {
     return {error: `Action '${action.name}' has no 'sql' executor.`};
   }
-  const values: Record<string, unknown> = {...bound.params};
-  const types: Record<string, {code: string}> = {...bound.types};
+  // Null-prototype maps throughout. Parameter names come from the model, and
+  // `'toString' in {}` is true, so a plain object would let `@toString` pass
+  // the "declared or generated" check below and reach the store bound to
+  // Object.prototype's own member.
+  const values: Record<string, unknown> =
+      Object.assign(Object.create(null), bound.params);
+  const types: Record<string, {code: string}> =
+      Object.assign(Object.create(null), bound.types);
+  const conceptOfKey: Record<string, string> = Object.create(null);
   for (const [concept, key] of Object.entries(generated)) {
     values[generatedKeyParam(concept)] = key;
     types[generatedKeyParam(concept)] = {code: 'STRING'};
+    conceptOfKey[generatedKeyParam(concept)] = concept;
   }
 
   const statements: spanner.Statement[] = [];
@@ -423,11 +518,18 @@ function planFromExecutor(
     const params: Record<string, unknown> = {};
     const paramTypes: Record<string, {code: string}> = {};
     for (const name of referencedParameters(sql)) {
-      if (!(name in values)) {
+      if (!Object.hasOwn(values, name)) {
         return {
           error: `Action '${action.name}' binds '@${name}', which is neither ` +
               `a parameter it declares nor a key it generates.`,
         };
+      }
+      // Asked only where a statement actually binds a generated key: an
+      // INT64-keyed entity whose DML supplies its own key must not be refused
+      // over a value it never uses.
+      if (Object.hasOwn(conceptOfKey, name)) {
+        const unusable = unusableGeneratedKey(model, action, conceptOfKey[name]);
+        if (unusable) return {error: unusable};
       }
       params[name] = values[name];
       paramTypes[name] = types[name];
@@ -488,6 +590,7 @@ async function resolveEntityRef(
   }
 
   const keyColumns: string[] = [];
+  const keyTypes: string[] = [];
   for (const key of entity.keys) {
     const field = entity.fields.find(f => f.name === key);
     const expr = (field?.expression ?? '').trim();
@@ -498,22 +601,50 @@ async function resolveEntityRef(
       };
     }
     keyColumns.push(quoteIfReserved(expr));
+    keyTypes.push(field?.type ?? 'String');
   }
   if (!keyColumns.length) {
     return {error: `Cannot resolve a ${entity.name}: it declares no key.`};
   }
 
-  const predicates = keyColumns.map(c => `CAST(${c} AS STRING) = @ref`);
+  // Each column is compared as ITSELF, against the input parsed to the type
+  // that column's field declares. Casting them all to STRING would let one
+  // predicate shape serve every key type, but no index can answer it -- and
+  // this SELECT runs inside the action's read-write transaction, so a scan
+  // would hold read locks over the whole table for the length of the write.
+  // Input that is not a value of a key's type cannot name that key, so its
+  // predicate is dropped rather than made to match by casting.
+  const predicates: string[] = [];
+  const params: Record<string, unknown> = {};
+  const paramTypes: Record<string, {code: string}> = {};
+  keyColumns.forEach((column, i) => {
+    const bound = bindScalar({name: 'ref', type: keyTypes[i]}, input);
+    if ('error' in bound) return;
+    predicates.push(`${column} = @ref${i}`);
+    params[`ref${i}`] = bound.value;
+    paramTypes[`ref${i}`] = {code: bound.code};
+  });
+  // An identifying column is a String field by construction, so the input is
+  // already a value of its type.
   const label = identifyingColumn(entity);
-  if (label) predicates.push(`CAST(${label} AS STRING) = @ref`);
+  if (label) {
+    predicates.push(`${label} = @ref`);
+    params['ref'] = input;
+    paramTypes['ref'] = {code: 'STRING'};
+  }
+  if (!predicates.length) {
+    // The input is not a value of any key's type and there is no text field to
+    // match it against, so no row in the table can be the one meant.
+    return {error: `No ${entity.name} matches '${input}'.`};
+  }
 
   // LIMIT 2 is enough to tell "one match" from "more than one", and avoids
   // dragging back a large candidate set just to reject it.
   const rows = await query({
     sql: `SELECT ${keyColumns.join(', ')} FROM ${table} WHERE ${
         predicates.join(' OR ')} LIMIT 2`,
-    params: {ref: input},
-    paramTypes: {ref: {code: 'STRING'}},
+    params,
+    paramTypes,
   });
 
   if (!rows.length) {
