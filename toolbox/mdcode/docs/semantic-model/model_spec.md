@@ -485,6 +485,20 @@ reads the document ([§6](#6-the-extension-mechanism)).
   nothing today rejects a write that would break one. Rules in
   [Reference → Validation](reference.md#validation).
 
+  A constraint MAY say two things about a violation, under two separate keys.
+  **`on_violation`** is what the engine does to the write that tripped it:
+  `reject` refuses it outright and nobody may approve it, `escalate` holds it
+  for a human decision, `warn` lets it proceed and reports it. Absent means
+  `reject`, the safe reading of an author who did not say. **`severity`** is how
+  grave the violation is — `critical`, `high`, `medium` or `low` — for ranking
+  and reporting. It carries no default, and nothing ranks or routes on it yet.
+
+  They are two keys because they answer different questions, and neither one
+  implies the other. A `low` rule can still be an absolute refusal, and a
+  `critical` one can be a warning because the organization is not yet ready to
+  block on it. `escalate` states that an approver exists; it does not state who,
+  because an approver role is not modeled yet.
+
 - **Binding profiles.** A separate document that supplies only the physical
   bindings, so one logical model serves several stores. Not part of the Ossie
   document; a `kcmd`-specific file alongside it ([§7](#7-the-binding-layer)).

@@ -173,9 +173,10 @@ on a model that is perfectly well-formed. It comes back untouched instead.
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry
 under the model entry, with the expression and any `instructions` in a
 `semantic-constraint` aspect and the `description` as the entry's own summary.
-Name, expression, description, and instructions round-trip losslessly through
-`pull`. That entry type is custom too, and a model that declares no constraint
-never needs it.
+Name, expression, description, `on_violation`, `severity`, and instructions
+round-trip losslessly through `pull`. A constraint that declares neither routing
+word comes back without them rather than with a default filled in. That entry
+type is custom too, and a model that declares no constraint never needs it.
 
 ¹⁰ What you author is the `expression.dialects[]` list; the graph builds from the canonical (BigQuery/ANSI) variant. `importedExpression` / `importedDialect` are not authored keys — the loader *derives* them from a non-canonical dialect entry (e.g. the MAQL or Snowflake form a metric was imported from) and uses that verbatim as the fallback when no canonical variant exists. See [Model spec §2.5](model_spec.md#25-expressions).
 

@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, CONSTRAINT_SEVERITIES, Constraint, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface LoadOptions {
@@ -270,6 +270,11 @@ const constraintSchema = z.object({
   name: z.string(),
   expression: z.string(),
   description: z.string().optional(),
+  // What the engine does; absent means `reject`. See VIOLATION_EFFECTS.
+  on_violation: z.enum(VIOLATION_EFFECTS).optional(),
+  // How grave it is; no default, and nothing reads it yet. See
+  // CONSTRAINT_SEVERITIES.
+  severity: z.enum(CONSTRAINT_SEVERITIES).optional(),
   ai_context: aiContextSchema.optional(),
   // No `custom_extensions`: it is a vanilla-Ossie surface, and `constraints` is
   // an extended-profile-only key, so the two never co-occur. See Constraint.
@@ -445,6 +450,12 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                         name: z.string(),
                         expression: z.string(),
                         description: z.string().optional(),
+                        // What the engine does; absent means `reject`. See
+                        // VIOLATION_EFFECTS.
+                        on_violation: z.enum(VIOLATION_EFFECTS).optional(),
+                        // How grave it is; no default. See
+                        // CONSTRAINT_SEVERITIES.
+                        severity: z.enum(CONSTRAINT_SEVERITIES).optional(),
                         ai_context: aiContextSchema.optional(),
                         ...ce,
                       }).strict();
@@ -920,6 +931,8 @@ function convertMetric(
 // evaluates it. Description and AI context round-trip like everywhere else.
 function convertConstraint(c: ConstraintDoc): Constraint {
   const constraint: Constraint = { name: c.name, expression: c.expression };
+  if (c.on_violation) constraint.onViolation = c.on_violation;
+  if (c.severity) constraint.severity = c.severity;
   const description = composeDescription(c.description);
   if (description) constraint.description = description;
   const ai = aiContextOrUndefined(c.ai_context);

@@ -387,6 +387,15 @@ export const CONSTRAINT_TYPE_ID = 'semantic-constraint';
 // the error, which makes it the entry's summary rather than part of the rule.
 // `ai_context` rides this aspect whole
 // (see aiContextField).
+//
+// `onViolation` and `severity` ride the aspect rather than the entry source
+// because they are machine-readable routing and not prose. They answer
+// different questions and are separate fields for that reason: `onViolation` is
+// what the engine does about a breach, `severity` is how grave the breach is.
+// A `low` rule can still be an absolute refusal, and a `critical` one can be a
+// warning because the organization is not ready to block on it. Published
+// without `onViolation`, a rule a supervisor may override reads the same as one
+// nobody can.
 const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   displayName: 'Semantic Constraint',
   description:
@@ -410,6 +419,33 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         },
       },
       aiContextField(2),
+      {
+        index: 3,
+        name: 'onViolation',
+        type: 'string',
+        annotations: {
+          displayName: 'On Violation',
+          description:
+              'What a violation does to the write that tripped it: ' +
+              '`reject` refuses the write and nobody may approve it, ' +
+              '`escalate` holds the write for a human decision, `warn` lets ' +
+              'it proceed and reports it. Absent means `reject`. `escalate` ' +
+              'states that an approver exists, not who they are.',
+        },
+      },
+      {
+        index: 4,
+        name: 'severity',
+        type: 'string',
+        annotations: {
+          displayName: 'Severity',
+          description:
+              'How grave a violation is, for ranking and reporting: ' +
+              '`critical`, `high`, `medium` or `low`. Independent of what ' +
+              'the engine does about it, which is `onViolation`. Absent ' +
+              'means the model did not say; there is no default.',
+        },
+      },
     ],
   },
 };

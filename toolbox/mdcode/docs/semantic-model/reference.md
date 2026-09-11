@@ -307,6 +307,16 @@ routed to the built-in `guidelines` aspect, which has a home for `instructions`
 alone: `kcmd` defines the constraint aspect itself, so it has no reason to keep
 that limit.
 
+The aspect also carries the constraint's two routing words: `onViolation` (what
+the engine does to the write — `reject`, `escalate` or `warn`) and `severity`
+(how grave the breach is — `critical`, `high`, `medium` or `low`). They ride the
+aspect rather than the entry source because they are machine-readable and not
+prose. A constraint that declares neither is published without both fields and
+reads back without them, so the defaults stay the model's to define. Each is
+read on its own, so an unrecognized word in one is dropped on pull with a
+warning without costing the reader the other: an unreadable `onViolation` falls
+back to `reject`, and an unreadable `severity` leaves the rule unranked.
+
 Push to Knowledge Catalog is lossy — the catalog holds metadata, not a full copy
 of your model. For exactly what is stored, what is gated behind
 `--emit-expressions`, and what is never stored, see

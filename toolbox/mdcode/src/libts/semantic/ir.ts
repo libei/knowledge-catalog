@@ -423,6 +423,54 @@ export interface GrpcExecutor {
 }
 
 /**
+ * What a violated constraint does to the write that tripped it.
+ *
+ *   - `reject`   the write is refused. Nobody is allowed to approve it, which
+ *                is what makes the rule an invariant rather than a policy.
+ *   - `escalate` the write is held and a human decides. The rule is a business
+ *                threshold, so somebody is allowed to say yes.
+ *   - `warn`     the write proceeds and the violation is reported.
+ *
+ * An engine reading the catalog needs this in order to route. Without it every
+ * rule publishes with the same shape, and a $30 credit that needs a supervisor
+ * is indistinguishable from one that is simply forbidden.
+ *
+ * This is a disposition, not a magnitude, and the two are deliberately separate
+ * keys. `escalate` is not "between" reject and warn on a scale of badness: it is
+ * a different control flow, and what it really states is that an approver
+ * exists. Two rules can be equally grave -- both guarding a million-dollar write
+ * -- and differ only in whether anyone in the organization is entitled to say
+ * yes. See CONSTRAINT_SEVERITIES for the magnitude.
+ *
+ * `escalate` names that an approver exists. It does not name who: an approver
+ * role is not modeled yet.
+ */
+export const VIOLATION_EFFECTS = ['reject', 'escalate', 'warn'] as const;
+
+export type ViolationEffect = (typeof VIOLATION_EFFECTS)[number];
+
+/**
+ * How grave a violation of a constraint is, independent of what the engine does
+ * about it.
+ *
+ * Ranking and reporting want this: which of forty violations in a batch to show
+ * a human first, which to page on. Enforcement does not -- that is
+ * `onViolation`, and the split is the point. A `low` rule may still be an
+ * absolute `reject`, and a `critical` one may be a `warn` because the
+ * organization is not ready to block on it yet.
+ *
+ * The scale is the ordinary four-point one, and it avoids `warning` on purpose:
+ * a severity called `warning` sitting beside an effect called `warn` would read
+ * as the same statement made twice.
+ *
+ * STATUS: authored, published and read back. Nothing ranks or routes on it yet.
+ */
+export const CONSTRAINT_SEVERITIES =
+    ['critical', 'high', 'medium', 'low'] as const;
+
+export type ConstraintSeverity = (typeof CONSTRAINT_SEVERITIES)[number];
+
+/**
  * A constraint: a model-level, named invariant over the ontology -- a boolean
  * `expression` that must hold for every instance. It is written in the same
  * expression language as a metric (`Customer.accountBalance >= 0`,
@@ -444,6 +492,14 @@ export interface Constraint {
   name: string;
   expression: string;     // boolean invariant in the model's expression language
   description?: string;   // human-readable summary; also the violation error
+  // What the engine does when this constraint does not hold. Defaults to
+  // `reject`: an unmarked rule refuses the write, which is the safe reading of
+  // an author who did not say. See VIOLATION_EFFECTS.
+  onViolation?: ViolationEffect;
+  // How grave a violation is, for ranking and reporting. Orthogonal to
+  // `onViolation` and carries no default -- an author who did not say has not
+  // said, and nothing reads it yet. See CONSTRAINT_SEVERITIES.
+  severity?: ConstraintSeverity;
   aiContext?: AiContext;
   // No `customExtensions`. Every other IR object has one because vanilla Ossie
   // accepts `custom_extensions` on it. A constraint is unreachable that way:

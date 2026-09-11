@@ -12,11 +12,19 @@
 // Dropping a constraint from the model deletes its entry, so the catalog never
 // advertises a rule the model stopped requiring.
 //
-// The three authored fields land in two places. `expression` and `ai_context`
-// go on the aspect, the latter whole -- aiContextField in kc_custom_types.ts
-// says why. `description` goes on the entry source, where a pull of an action
-// already reads it, and because a violation quotes that sentence back to the
-// caller as the error, which makes it the entry's summary.
+// The five authored fields land in two places. `expression`, `on_violation`,
+// `severity` and `ai_context` go on the aspect, the last whole --
+// aiContextField in kc_custom_types.ts says why. `description` goes on the
+// entry source, where a pull of an action already reads it, and because a
+// violation quotes that sentence back to the caller as the error, which makes
+// it the entry's summary.
+//
+// Both routing words are on the aspect because they are machine-readable, and
+// they are two fields because they answer different questions: what the engine
+// does about a breach, and how grave the breach is. A constraint that states
+// neither is published without them and reads back the same way, so a default
+// stays the IR's to define and a pull never invents a value the model never
+// stated.
 //
 // Call sites: knowledge_catalog.ts emits the entries, kc_converter.ts reads
 // them back, pull_kc.ts hydrates the aspect.
@@ -31,7 +39,7 @@
 
 import {Entry} from '../gcp/dataplex';
 
-import {Constraint, SemanticModel} from './ir';
+import {Constraint, CONSTRAINT_SEVERITIES, ConstraintSeverity, SemanticModel, VIOLATION_EFFECTS, ViolationEffect} from './ir';
 import {aiContextAspectValue, aiContextFromAspect, CONSTRAINT_TYPE_ID, customAspectKey, customAspectTypeName, customEntryTypeName} from './kc_custom_types';
 
 // Full resource name of the constraint entry type for a destination.
@@ -127,12 +135,14 @@ export function constraintEntries(
   return entries;
 }
 
-// The aspect payload for one constraint: the invariant, and the whole of any
-// `ai_context` declared on it.
+// The aspect payload for one constraint: the invariant, what a violation of it
+// does, how grave it is, and the whole of any `ai_context` declared on it.
 function constraintAspectData(constraint: Constraint): Record<string, any> {
   return compact({
     expression: constraint.expression,
     aiContext: aiContextAspectValue(constraint.aiContext),
+    onViolation: constraint.onViolation,
+    severity: constraint.severity,
   });
 }
 
@@ -182,9 +192,36 @@ export function readConstraint(entry: Entry, warnings: string[]): Constraint|
   const description = entry.entrySource?.description;
   if (description !== undefined && description !== '')
     constraint.description = description;
+  const onViolation = readEnum(
+      name, 'onViolation', data.onViolation, VIOLATION_EFFECTS, warnings);
+  if (onViolation) constraint.onViolation = onViolation as ViolationEffect;
+  const severity = readEnum(
+      name, 'severity', data.severity, CONSTRAINT_SEVERITIES, warnings);
+  if (severity) constraint.severity = severity as ConstraintSeverity;
   const aiContext = aiContextFromAspect(data.aiContext);
   if (aiContext) constraint.aiContext = aiContext;
   return constraint;
+}
+
+// The value an aspect field states, or undefined when it states none.
+//
+// A value outside the ones the IR defines is dropped with a warning rather than
+// kept, because an unrecognized word would fail the pulled model's own
+// push-side validation. What dropping costs differs by field and both are safe:
+// an unreadable `onViolation` falls back to `reject`, which refuses more than
+// the catalog asked for and never less, and an unreadable `severity` leaves a
+// rule unranked, which nothing reads yet.
+function readEnum(
+    name: string, field: string, value: unknown, allowed: readonly string[],
+    warnings: string[]): string|undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const text = String(value).trim();
+  if (allowed.includes(text)) return text;
+  warnings.push(
+      `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect states ` +
+      `${field} '${text}', which is not one of ${allowed.join(', ')}; the ` +
+      `constraint reads back without one`);
+  return undefined;
 }
 
 

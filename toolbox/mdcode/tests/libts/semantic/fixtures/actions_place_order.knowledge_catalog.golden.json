@@ -222,6 +222,25 @@
       }
     },
     {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.OrderWithinStandingLimit",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "OrderWithinStandingLimit",
+        "description": "An order this large is above the standing limit and needs a sales manager to sign off. Ask for approval, or split the order."
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-constraint": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
+          "data": {
+            "expression": "orders.o_totalprice <= 100000",
+            "onViolation": "escalate",
+            "severity": "high"
+          }
+        }
+      }
+    },
+    {
       "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.RequestedQuantityIsPositive",
       "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
@@ -283,7 +302,7 @@
   ],
   "warnings": [
     "model 'sales': 1 action(s) published as semantic-action entries (Knowledge Catalog is the only system an action reaches).",
-    "model 'sales': 3 constraint(s) published as semantic-constraint entries (Knowledge Catalog is the only system a constraint reaches).",
+    "model 'sales': 4 constraint(s) published as semantic-constraint entries (Knowledge Catalog is the only system a constraint reaches).",
     "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
   ]
 }
