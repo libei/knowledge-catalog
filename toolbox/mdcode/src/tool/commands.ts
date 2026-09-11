@@ -8,16 +8,19 @@ import * as kcmd from '../libts';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
+import {SpannerDataClient} from '../libts/gcp/spanner';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
+import {Action, ActionParameter, SemanticModel} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import {runAction} from '../libts/semantic/runtime';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 import {
@@ -1179,4 +1182,300 @@ export function catalogOnlyWarning(
   return `model '${model}' declares ${declared}, which deploy only to ` +
       `Knowledge Catalog; --no-kc excludes that leg, so they will not be ` +
       `deployed. Drop --no-kc to deploy them.`;
+}
+
+
+export interface ActionOptions {
+  // `--arg <name>=<value>`, repeatable. cac hands back a bare string for one
+  // occurrence and an array for several.
+  arg?: string|string[];
+  profile?: string;
+}
+
+
+// Lists or runs a semantic model's actions.
+//
+//   kcmd action list
+//   kcmd action run <name> --arg <name>=<value> ...
+//
+// `list` answers "what can I run, and how": each action's parameters, executor,
+// guards and blast radius, ending with the command line that runs it. `run`
+// executes one against the store the model's deployment target names -- the
+// command line never says where to write, the same rule push follows, so
+// changing stores is changing profiles rather than remembering a flag.
+//
+// Returns a process exit code (0 on success).
+export async function action(
+    command: string, name: string|undefined,
+    options: ActionOptions = {}): Promise<number> {
+  if (command !== 'list' && command !== 'run') {
+    console.error(
+        `Error: unknown action command '${command}'; expected 'list' or 'run'.`);
+    return 1;
+  }
+
+  const ctx = context.ApiContext.default();
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+    console.error(
+        'Error: `kcmd action` applies only to a semantic-model scope.');
+    return 1;
+  }
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+  const profile =
+      options.profile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+
+  const loaded = loadForProfile(layout, source, ctx, profile);
+  if ('error' in loaded) {
+    console.error(`Error: ${loaded.error}`);
+    return 1;
+  }
+
+  return command === 'list' ?
+      listActions(loaded.models, source.entryGroup, profile) :
+      await runOneAction(loaded.models, ctx, name, options);
+}
+
+
+// Loads every model document in the scope under one binding profile. A lighter
+// path than push's: nothing is transpiled, pruned or validated for deployment,
+// because running an action needs the model as authored rather than the subset
+// a deployed graph can answer. Bindings stay optional so `list` works on a
+// purely logical model; a `run` that needs a source the model does not bind
+// fails in the runtime, which names the entity.
+function loadForProfile(
+    layout: SemanticModelLayout, source: SemanticModelSource,
+    ctx: context.ApiContext,
+    profile: string): {models: LoadedModel[]}|{error: string} {
+  const docs = layout.modelDocuments();
+  if (!docs.length) return {error: 'no semantic model documents found.'};
+
+  const merged: Array<{name: string; text: string}> = [];
+  for (const doc of docs) {
+    if (profile === DEFAULT_PROFILE) {
+      merged.push({name: doc.name, text: doc.text});
+      continue;
+    }
+    const available = layout.profileDocuments(doc.name);
+    const chosen = available.find(p => p.name === profile);
+    if (!chosen) {
+      const names = available.map(p => p.name);
+      return {
+        error: `unknown binding profile '${profile}' for model '${doc.name}'; ` +
+            (names.length ? `defined profiles: ${names.join(', ')}.` :
+                            `no profiles are defined for this model.`),
+      };
+    }
+    const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
+    if ('error' in res) return {error: `[${doc.name}] ${res.error}`};
+    for (const w of res.warnings) console.warn(`Warning: [${doc.name}] ${w}`);
+    merged.push({name: doc.name, text: res.text});
+  }
+
+  const loaded = loadSemanticModels(
+      merged,
+      {defaultProject: source.project ?? ctx.project, bindingOptional: true});
+  if (loaded.error) return {error: loaded.error};
+  for (const w of loaded.warnings) console.warn(`Warning: ${w}`);
+  return {models: loaded.models};
+}
+
+
+// Prints what each model declares as runnable. The last line of every entry is
+// the command that runs it, filled in with the declared parameters, so reading
+// the listing is enough to make the call without going back to the YAML.
+function listActions(
+    models: LoadedModel[], entryGroup: string, profile: string): number {
+  for (const {model} of models) {
+    console.log(`Model '${model.name}' (${entryGroup}), profile '${profile}':`);
+    const actions = model.actions ?? [];
+    if (!actions.length) {
+      console.log('  declares no actions.');
+      continue;
+    }
+    for (const a of actions) {
+      console.log(`  ${a.name}${a.description ? `: ${a.description}` : ''}`);
+      console.log(`    parameters: ${
+          a.parameters.length ? a.parameters.map(describeParameter).join(', ') :
+                                '(none)'}`);
+      console.log(`    executor:   ${a.executor.kind}`);
+      if (a.guards?.length) {
+        console.log(`    guards:     ${a.guards.join(', ')}`);
+      }
+      if (a.affects?.length) {
+        console.log(`    affects:    ${
+            a.affects
+                .map(f => f.operation ? `${f.concept} (${f.operation})` :
+                                        f.concept)
+                .join(', ')}`);
+      }
+      console.log(`    run:        ${runLine(a)}`);
+    }
+  }
+  return 0;
+}
+
+
+// One parameter as `name (Type)`, marking an object reference as such: that is
+// the difference between passing a value and passing something the runtime has
+// to look up first.
+function describeParameter(p: ActionParameter): string {
+  return `${p.name} (${p.type}${p.isEntityRef ? ', reference' : ''})`;
+}
+
+
+// The command line that runs an action, with a placeholder per parameter.
+function runLine(a: Action): string {
+  const args = a.parameters.map(p => ` --arg ${p.name}=<${p.type}>`).join('');
+  return `kcmd action run ${a.name}${args}`;
+}
+
+
+// Runs one action against the store its model's deployment target names.
+async function runOneAction(
+    models: LoadedModel[], ctx: context.ApiContext, name: string|undefined,
+    options: ActionOptions): Promise<number> {
+  if (!name) {
+    console.error(
+        'Error: `kcmd action run` needs an action name; `kcmd action list` ' +
+        'shows what this scope declares.');
+    return 1;
+  }
+
+  const declaring =
+      models.filter(m => (m.model.actions ?? []).some(a => a.name === name));
+  if (!declaring.length) {
+    const known =
+        models.flatMap(m => (m.model.actions ?? []).map(a => a.name)).sort();
+    console.error(
+        `Error: no model in this scope declares an action '${name}'` +
+        (known.length ? `; declared: ${known.join(', ')}.` : '.'));
+    return 1;
+  }
+  if (declaring.length > 1) {
+    console.error(
+        `Error: '${name}' is declared by ${declaring.length} models (${
+            declaring.map(m => m.model.name).join(', ')}), so which one to ` +
+        `run is ambiguous.`);
+    return 1;
+  }
+  const model = declaring[0].model;
+
+  const parsed = parseActionArgs(options.arg);
+  if ('error' in parsed) {
+    console.error(`Error: ${parsed.error}`);
+    return 1;
+  }
+
+  const store = spannerClientFor(model, ctx);
+  if ('error' in store) {
+    console.error(`Error: ${store.error}`);
+    return 1;
+  }
+
+  console.log(`Running '${name}' on ${store.client.database}...`);
+  const outcome = await runAction(
+      {model, actionName: name, args: parsed.args, client: store.client});
+  if (outcome.status === 'error') {
+    console.error(`Error: ${outcome.message}`);
+    return 1;
+  }
+  // What each reference turned out to be. An agent said "Alice"; this is the
+  // row it wrote to, which is the part worth reading back.
+  for (const [param, ref] of Object.entries(outcome.refs)) {
+    console.log(
+        `  ${param}: '${ref.input}' -> ${ref.entity} ${ref.keys.join('/')}`);
+  }
+  console.log(`Committed${
+      outcome.commitTimestamp ? ` at ${outcome.commitTimestamp}` : ''}.`);
+  return 0;
+}
+
+
+// `--arg <name>=<value>` pairs. Values are kept as text: the runtime parses
+// every argument from text against its declared ontology type, so the command
+// line does not have to guess whether `30` is a number, an amount, or a string.
+function parseActionArgs(raw: string|string[]|undefined):
+    {args: Record<string, unknown>}|{error: string} {
+  const pairs = raw === undefined ? [] : (Array.isArray(raw) ? raw : [raw]);
+  const args: Record<string, unknown> = {};
+  for (const pair of pairs) {
+    const eq = pair.indexOf('=');
+    // An `=` at position 0 is a nameless argument, and none at all is a bare
+    // word; neither names a parameter.
+    if (eq <= 0) {
+      return {error: `--arg expects <name>=<value>, but got '${pair}'.`};
+    }
+    const name = pair.slice(0, eq).trim();
+    if (name in args) return {error: `--arg ${name} was given twice.`};
+    args[name] = pair.slice(eq + 1);
+  }
+  return {args};
+}
+
+
+// A Spanner table an entity is bound to.
+const SPANNER_TABLE_SOURCE =
+    /^\/\/spanner\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)\/tables\/.+$/;
+
+
+// The store an action runs against: the Spanner database this profile's
+// deployment target names. The command line never names it, so pointing a run
+// at another store is selecting another profile.
+//
+// Checking that the entity bindings agree with the target matters more here
+// than in any other leg. An action's statements address a table by its NAME,
+// with the project/instance/database qualifier dropped, so an entity bound to
+// another database still produces a statement that runs -- against whatever
+// table of that name the target database happens to hold. Nothing later would
+// report it.
+function spannerClientFor(model: SemanticModel, ctx: context.ApiContext):
+    {client: SpannerDataClient}|{error: string} {
+  const {spanner, bigQuery} = googleDeploymentTargets(model);
+  if (spanner.length > 1) {
+    return {
+      error: `Model '${model.name}' declares ${spanner.length} Spanner ` +
+          `deployment targets under this profile, so which database the ` +
+          `action writes to is ambiguous. Give each its own profile.`,
+    };
+  }
+  if (!spanner.length) {
+    return {
+      error: `Model '${model.name}' declares no Spanner deployment target ` +
+          `under this profile, and an action runs against Spanner` +
+          (bigQuery.length ?
+               ` (this profile deploys to BigQuery, which it cannot write to)` :
+               '') +
+          `. Select a profile whose deployment target is a Spanner database.`,
+    };
+  }
+
+  const target = spanner[0];
+  const database = `projects/${target.project}/instances/${
+      target.instance}/databases/${target.database}`;
+  const strays: string[] = [];
+  for (const entity of model.entities ?? []) {
+    const bound = (entity.dataSource ?? '').trim().match(SPANNER_TABLE_SOURCE);
+    if (!bound) continue;
+    const boundDatabase =
+        `projects/${bound[1]}/instances/${bound[2]}/databases/${bound[3]}`;
+    if (boundDatabase !== database) {
+      strays.push(`'${entity.name}' to ${boundDatabase}`);
+    }
+  }
+  if (strays.length) {
+    return {
+      error: `Model '${model.name}' binds ${strays.join(', ')}, but its ` +
+          `deployment target is ${database}. An action's statements address a ` +
+          `table by name alone, so the write would land in the target ` +
+          `database's table of that name rather than in the bound one. Bind ` +
+          `both to the same database.`,
+    };
+  }
+
+  return {
+    client: new SpannerDataClient(
+        ctx, target.project, target.instance, target.database),
+  };
 }

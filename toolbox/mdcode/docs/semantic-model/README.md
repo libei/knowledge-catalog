@@ -46,7 +46,7 @@ example that carries one model through the whole lifecycle, see the
 | [Binding profiles](profiles.md) | bind one logical model to several stores |
 | [Modeling class hierarchies](inheritance.md) | model subtypes with `extends` so a supertype query gathers them |
 | [Codelab: one semantic ontology, one data journey](codelab.md) | see the whole lifecycle: author, govern, hydrate, query |
-| [Modeling write operations](actions.md) | declare an action an agent can call, and publish it |
+| [Modeling write operations](actions.md) | declare an action an agent can call, publish it, and run it |
 | [Reference](reference.md) | look up a flag, what push creates, validation, or permissions |
 | [Model specification](model_spec.md) | the normative format: every YAML construct, what's OSI and what's a kcmd extension |
 | [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
@@ -124,14 +124,16 @@ push enforces.
 A model can also declare **actions**: model-level write operations, the
 write-side counterpart to a metric. An action names a business operation, points
 at the executor that carries it out (an MCP tool, a REST endpoint, a gRPC
-method, or DML), and types each parameter against the ontology, so an
-entity-typed parameter is an object reference rather than a bare string. The
-executor is a physical binding, so a [binding profile](profiles.md) can supply a
-different one per store. An action also
-names, in `guards`, the constraints that gate it, and in `affects`, the concepts
-the call changes — the executor is an opaque handle, so its blast radius is
-declared or it is unknown. Knowledge Catalog is the only system an action
-reaches, and the only place it is governed. See
+method, or the write itself as DML), and types each parameter against the
+ontology, so an entity-typed parameter is an object reference rather than a bare
+string. The executor is a physical binding, so a
+[binding profile](profiles.md) can supply a different one per store. An action
+also names, in `guards`, the constraints that gate it, and in `affects`, the
+concepts the call changes — an executor in another system is an opaque handle,
+so its blast radius is declared or it is unknown. Knowledge Catalog is the only
+system an action is published to, and the only place it is governed; an action
+that carries its own DML is also the one kind `kcmd` runs itself, with
+`kcmd action run`. See
 [Modeling write operations](actions.md).
 
 A model can also state **constraints**: named invariants over the ontology that

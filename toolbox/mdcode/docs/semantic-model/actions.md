@@ -204,9 +204,9 @@ refer to the generated key as `@new<Concept>Key`:
           - { concept: Transfer, operation: create }
 ```
 
-Nothing executes a statement yet. `kcmd` validates the statements, publishes
-them to the catalog and reads them back; what runs them is the action runtime,
-which lands separately.
+A `sql` executor is the only kind `kcmd` itself runs — see
+[Run it](#7-run-it). The other three are published and dispatched by whoever
+reads the model.
 
 ## 2. Gate it with a constraint
 
@@ -523,7 +523,10 @@ read of that parameter.
 
 **Status: nothing evaluates a guard yet.** `kcmd` parses `guards`, resolves each
 name, publishes the list, and reads it back. No component checks a guard against
-live data, so a guard states what must hold before the call and blocks no call.
+live data, so a guard states what must hold before the call and stops no call by
+itself. What it does stop is the call running unchecked:
+[`kcmd action run`](#7-run-it) refuses a guarded action outright rather than
+apply a write the model says is checked first.
 
 ## 3. Say what it changes
 
@@ -700,16 +703,93 @@ each action, so a name, a description, an executor, typed parameters, its
 unchanged. What every part of a model does and does not survive is in
 [What push and pull preserve](fidelity.md).
 
+## 7. Run it
+
+An action with a `sql` executor is a write `kcmd` can perform. Two commands:
+
+```bash
+kcmd action list
+kcmd action run TransferFunds --arg source="Alice Checking" \
+    --arg target=ACC-2 --arg amount=250
+```
+
+`kcmd action list` is what the model declares as runnable — parameters,
+executor, guards, blast radius — and each entry ends with the command line that
+runs it, so reading the listing is enough to make the call:
+
+```
+Model 'payments' (payments_eg), profile 'operational':
+  TransferFunds: Move money from one account to another.
+    parameters: source (Account, reference), target (Account, reference), amount (Float)
+    executor:   sql
+    guards:     AmountIsPositive
+    affects:    Account (modify), Transfer (create)
+    run:        kcmd action run TransferFunds --arg source=<Account> --arg target=<Account> --arg amount=<Float>
+```
+
+`kcmd action run` does three things:
+
+- **Resolve.** An entity-typed parameter takes an object reference, not a value,
+  so `--arg source="Alice Checking"` is matched against `Account`'s key and,
+  when the entity has one, an identifying text field (`name`, `title`, `label`,
+  `display_name`). The account id and the account's name therefore find the same
+  row. Nothing matched and more than one matched are both reported as such, with
+  the candidates listed, because both are things the caller can act on.
+- **Bind.** Every argument becomes a query parameter of the store type its
+  declared ontology type implies — a `Decimal` amount is compared as a number
+  rather than as text, which is the difference between `9` being less than `10`
+  and not. Nothing is interpolated into a statement.
+- **Apply.** A read-write transaction is opened, the action's statements run
+  inside it in order, and it commits. Any failure rolls back, so no partial
+  write survives.
+
+Where the write goes is the model's Spanner deployment target under the selected
+profile. The command line never names a database: `--profile` changes the store,
+the same rule [push](profiles.md) follows.
+
+Only a `sql` executor runs. An `mcp`, `rest` or `grpc` executor names an
+operation in another system, which `kcmd` cannot call and could not roll back if
+the commit failed, so it refuses rather than half-perform the write:
+
+```
+Error: Action 'TransferFunds' is executed by MCP, which runs outside this
+transaction and could not be rolled back if the commit failed. Supply a handler
+that performs the write as DML, or declare the action with a 'sql' executor.
+```
+
+### An action a constraint should decide is refused, not run unchecked
+
+Nothing evaluates a constraint yet. A model that declares a rule and a runtime
+that quietly ignores it is worse than no runtime, because the model states the
+write is checked and nothing says otherwise — so `kcmd action run` refuses such
+a call instead. Three shapes say a constraint may bear on it:
+
+- the action names one in `guards`;
+- a constraint's expression reads an entity the action `affects`;
+- the model declares constraints and the action declares no `affects` at all,
+  which leaves nothing to compare. Reading that silence as "nothing is
+  constrained" is the one guess here that fails open.
+
+```
+Error: Action 'TransferFunds' is guarded by 'AmountIsPositive', and this runtime
+does not evaluate constraints yet. Running it would apply a write the model says
+must be checked first, so it is refused rather than run unchecked.
+```
+
+An action over data no constraint mentions runs today. Every refusal is decided
+before a session is opened, so a refused action leaves no transaction behind.
+
 ## What is not modeled yet
 
 This is a prototype. Three things a reader reasonably expects are absent.
 
-- **Nothing checks the write.** No component evaluates a constraint or a guard,
-  so an action is a declaration and the correctness of what the executor does
-  belongs to the executor.
-- **`kcmd` does not call the executor.** Push publishes the action. Dispatching
-  it is the job of whatever reads the model, which is why the executor names
-  coordinates rather than a statement.
-- **Parameter types are the whole type story.** An entity-typed parameter says
-  which entity an argument denotes. Resolving a caller's `"Alice Checking"` to
-  a row is left to the consumer.
+- **Nothing checks the write.** No component evaluates a constraint or a guard.
+  An action whose outcome a constraint is supposed to decide is refused rather
+  than run, so the gap is loud, but it is still a gap: the correctness of what a
+  statement does belongs to whoever wrote it.
+- **`kcmd` calls no executor but its own.** A `sql` action runs; an `mcp`,
+  `rest` or `grpc` one is published for whoever dispatches it, which is why
+  those three name coordinates rather than a statement.
+- **The store is Spanner.** `kcmd action run` resolves, binds and transacts
+  against the Spanner database the profile's deployment target names. A model
+  bound to BigQuery publishes its actions and runs none of them.

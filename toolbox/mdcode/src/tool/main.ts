@@ -132,6 +132,28 @@ cli.command(
     });
 
 
+cli.command(
+       'action <command> [name]',
+       'Semantic model actions (command: `list` what the model declares, or `run` one against its store)')
+    .option(
+        '--arg <name=value...>',
+        'Bind one action parameter; repeat the flag for each one (`run` only)')
+    .option(
+        '--profile [name]',
+        'Read the model under this binding profile; its deployment target names the database the action runs against; defaults to default_profile, else the inline bindings')
+    .action(async (command, name, options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.action(command, name, options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
     .option('--path <path>', 'Path to the catalog snapshot root directory')
     .action(async (options) => {

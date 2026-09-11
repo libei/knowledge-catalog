@@ -63,6 +63,24 @@ scope you authored under. See [Pull](README.md#pull) for behavior.
 | `--dry-run` | Reconstruct from the catalog and report what would be written, but write no files. |
 | `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. |
 
+### action
+
+```bash
+kcmd action list
+kcmd action run <name> --arg <name>=<value> ...
+```
+
+`list` prints every action the models in the scope declare, with the command
+line that runs each one. `run` executes one against the Spanner database the
+selected profile's deployment target names; only a `sql` executor runs, and an
+action a constraint may bear on is refused rather than run unchecked. See
+[Run it](actions.md#7-run-it).
+
+| Flag | Effect |
+|------|--------|
+| `--arg <name>=<value>` | Bind one action parameter. Repeat the flag for each one; the value is text, parsed against the parameter's declared ontology type. `run` only. |
+| `--profile [name]` | Read the model under this binding profile. Its deployment target names the database the action runs against, so this is how you change stores. Defaults to `default_profile`, else the model's inline bindings. |
+
 ## What gets created in BigQuery
 
 `push` executes a single `CREATE OR REPLACE PROPERTY GRAPH` per deployment
