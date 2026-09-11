@@ -14,6 +14,7 @@ import {googleDeploymentTargets} from './deploy_bigquery';
 import {Action, generatedKeyParam, SQL_EXECUTOR_VERBS, Executor, SemanticModel} from './ir';
 import {LoadedModel} from './loader';
 import {resolveInheritance} from './resolve_inheritance';
+import {referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -261,15 +262,6 @@ function affectsCreateHint(action: Action, name: string): string {
       ` (to have the runtime generate it, declare 'affects: [{concept: ${
           concept}, operation: create}]')` :
       '';
-}
-
-// The distinct `@name` references in a statement, ignoring the ones inside a
-// single-quoted string so a literal containing an '@' is not read as a binding.
-function referencedParameters(text: string): string[] {
-  const withoutStrings = text.replace(/'(?:[^'\\]|\\.)*'/g, "''");
-  const names = new Set<string>();
-  for (const m of withoutStrings.matchAll(/@([A-Za-z_]\w*)/g)) names.add(m[1]);
-  return [...names];
 }
 
 // The errors in one action's `affects`. Split out because the checks chain: a

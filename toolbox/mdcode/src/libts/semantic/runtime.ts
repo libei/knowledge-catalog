@@ -10,39 +10,54 @@
 //      (often an agent) supplies something human -- an account id, a person's
 //      name -- and the runtime turns it into the row that argument denotes,
 //      failing loudly on "no such thing" and on "more than one such thing".
-//   2. APPLY. A read-write transaction is opened and the action's writes are
+//   2. GUARD. A constraint that reads an action's parameters describes the
+//      proposed CALL, not the stored data, so it is checked BEFORE the write,
+//      with the arguments bound. "A credit may not exceed the order total" is
+//      about the number the caller asked for; once the write has happened there
+//      is no longer an `amount` for it to read.
+//   3. APPLY. A read-write transaction is opened and the action's writes are
 //      run inside it. Nothing is visible to anyone else yet.
-//   3. GATE. Every constraint is lowered to a probe and run IN THE SAME
-//      transaction, so it observes the uncommitted writes (read-your-writes).
-//      A probe returning rows means the write would leave the store violating
-//      an invariant.
-//   4. DECIDE. Any violation rolls the transaction back and returns the
-//      constraint's own `description` -- text the model author wrote to tell
-//      the caller what to do differently. No violation commits.
+//   4. GATE. Every constraint over stored state is lowered to a probe and run
+//      IN THE SAME transaction, so it observes the uncommitted writes
+//      (read-your-writes). A probe returning rows means the write would leave
+//      the store violating an invariant.
+//   5. DECIDE. A violation of a `reject` constraint rolls the transaction back
+//      and returns the constraint's own `description` -- text the model author
+//      wrote to tell the caller what to do differently. An `escalate` violation
+//      also rolls back, but comes back as a review request the caller can
+//      re-submit with an approval. A `warn` violation is reported and committed.
+//      No violation at all commits.
 //
 // The gate fails closed. If a constraint cannot be lowered, the action is
 // aborted rather than run unchecked: the runtime cannot tell an unevaluated
 // invariant from a satisfied one, and guessing in favour of the write is how
 // data gets corrupted.
 //
-// What the runtime does NOT do is invent the write itself. An action declares
-// an executor -- it names where the operation lives, not what SQL it runs -- so
-// the caller supplies a handler that produces the statements. The ontology
-// contributes typed resolution and the constraint gate; the mutation body comes
-// from the handler. That split is deliberate and is where a real executor
-// dispatch (MCP, REST, gRPC) would later slot in.
-//
+// Where the write comes from. An action with a `sql` executor carries its own
+// DML, and the runtime runs those statements itself: every value the caller
+// supplied is bound as a query parameter, never interpolated, and the touched
+// rows are known from the action's `affects`, so the probes can be scoped. An
+// action with an `mcp`, `rest` or `grpc` executor names an operation that lives
+// in another system, which this module cannot call and could not roll back if
+// it did; for those the caller supplies a handler that produces the statements.
 
 import * as spanner from '../gcp/spanner';
 
 import {
   ConstraintProbe,
-  lowerConstraints,
+  lowerConstraint,
   violationMessage,
 } from './constraint_eval';
-import {Action, Entity, SemanticModel} from './ir';
+import {
+  Action,
+  ActionParameter,
+  ConstraintSeverity,
+  Entity,
+  generatedKeyParam,
+  SemanticModel,
+} from './ir';
 import {spannerTable} from './spanner';
-import {quoteIfReserved} from './sql_identifiers';
+import {quoteIfReserved, referencedParameters} from './sql_identifiers';
 
 
 // An entity-typed argument, resolved to the row it denotes.
@@ -57,7 +72,8 @@ export interface EntityRef {
 }
 
 
-// The writes an action performs, produced by the caller's handler.
+// The writes an action performs: either built from its `sql` executor or
+// produced by the caller's handler.
 export interface ActionPlan {
   // DML to run inside the transaction, in order.
   statements: spanner.Statement[];
@@ -85,12 +101,18 @@ export interface ActionContext {
 export type ActionHandler = (ctx: ActionContext) => Promise<ActionPlan>;
 
 
-// A constraint that the post-state violated.
+// A constraint the call or the post-state violated.
 export interface Violation {
   constraint: string;
+  // The entity whose rows the probe walked, or '' for a constraint that reads
+  // only the action's arguments and so ranges over no table.
   entity: string;
   message: string;
   violatingKeys: string[][];
+  severity: ConstraintSeverity;
+  // Whether the violation was found before the write (a guard, reading the
+  // arguments) or after it (an invariant, reading the uncommitted rows).
+  stage: 'guard'|'invariant';
 }
 
 
@@ -100,12 +122,24 @@ export type ActionOutcome = {
   refs: Record<string, EntityRef>;
   // The constraints that were checked, so a caller can show its work.
   checked: string[];
+  // Violations of `warn` constraints. The write went through; these are what
+  // the caller should be told about anyway.
+  warnings: Violation[];
 }|{
   status: 'rejected';
   // Why the write was refused, assembled from the violated constraints'
   // descriptions. This is the text an agent reads to correct itself.
   message: string;
   violations: Violation[];
+}|{
+  status: 'escalated';
+  // Why the write needs a human. Same text as a rejection, but the caller has
+  // somewhere to go: re-submit the identical arguments with these constraint
+  // names in `approvals`.
+  message: string;
+  violations: Violation[];
+  // The constraint names an approver must sign off, sorted.
+  approvalRequired: string[];
 }|{
   status: 'error';
   // A failure that is not a constraint violation: an argument that resolved to
@@ -120,7 +154,13 @@ export interface RunActionOptions {
   actionName: string;
   args: Record<string, unknown>;
   client: spanner.SpannerDataClient;
-  handler: ActionHandler;
+  // Supplies the writes for an action whose executor lives in another system.
+  // Omit it for a `sql` executor, whose writes are in the model.
+  handler?: ActionHandler;
+  // Constraint names an approver has signed off. An `escalate` violation of a
+  // named constraint stops blocking the write; every other severity is
+  // unaffected, so an approval cannot wave through a `reject`.
+  approvals?: readonly string[];
   // Cap on the violating rows a probe reports. Defaults to the lowering
   // module's own cap.
   violationLimit?: number;
@@ -128,6 +168,12 @@ export interface RunActionOptions {
 
 
 const TOUCHED_PARAM = 'touchedKeys';
+
+// Action arguments reach a constraint probe under this prefix, so an action
+// parameter named `touchedKeys` cannot collide with the probe's own binding.
+// The DML in a `sql` executor binds the same values under their bare names,
+// because that is what the model author wrote.
+const PARAM_PREFIX = 'p_';
 
 
 // Runs one action end to end. Never throws for an expected failure -- an
@@ -145,20 +191,31 @@ export async function runAction(opts: RunActionOptions):
       message: `Model '${model.name}' declares no action '${opts.actionName}'.`,
     };
   }
+  if (!opts.handler && action.executor.kind !== 'sql') {
+    return {
+      status: 'error',
+      message: `Action '${action.name}' is executed by ${
+          action.executor.kind.toUpperCase()}, which runs outside this ` +
+          `transaction and could not be rolled back if a constraint failed. ` +
+          `Supply a handler that performs the write as DML, or declare the ` +
+          `action with a 'sql' executor.`,
+    };
+  }
 
   // Lower the constraints BEFORE touching the store. A model whose invariants
   // cannot be checked should fail without having opened a transaction at all.
-  const lowered = lowerConstraints(
-      model,
-      {touchedKeysParam: TOUCHED_PARAM, limit: opts.violationLimit});
-  if (lowered.errors.length) {
+  const lowered = lowerForAction(model, action, opts.violationLimit);
+  if ('error' in lowered) {
     return {
       status: 'error',
       message: `Action '${action.name}' was not run because the model's ` +
           `constraints cannot all be evaluated, and running an unchecked ` +
-          `write is not safe: ${lowered.errors.join('; ')}`,
+          `write is not safe: ${lowered.error}`,
     };
   }
+  const {guards, invariants} = lowered;
+  const approvals = new Set(opts.approvals ?? []);
+  const checked = [...guards, ...invariants].map(p => p.constraint.name);
 
   try {
     return await client.withSession(async sessionName => {
@@ -186,28 +243,60 @@ export async function runAction(opts: RunActionOptions):
       // Everything from here on is inside the transaction, so any failure must
       // roll back rather than leave it open.
       try {
-        const refs = await resolveArguments(model, action, args, query);
-        if ('error' in refs) {
+        const rollback = async(outcome: ActionOutcome) => {
           await client.rollback(sessionName, transactionId);
-          return {status: 'error', message: refs.error} as ActionOutcome;
+          return outcome;
+        };
+
+        const resolved = await resolveArguments(model, action, args, query);
+        if ('error' in resolved) {
+          return await rollback({status: 'error', message: resolved.error});
+        }
+        const refs = resolved.refs;
+
+        const bound = bindArguments(action, args, refs);
+        if ('error' in bound) {
+          return await rollback({status: 'error', message: bound.error});
         }
 
-        const plan = await opts.handler(
-            {model, action, args, refs: refs.refs, query});
+        // The rows the call already names. Enough to scope a guard, which runs
+        // before anything has been written.
+        const touched: Record<string, string[]> = {};
+        for (const ref of Object.values(refs)) {
+          if (ref.keys.length === 1) addTouched(touched, ref.entity, ref.keys[0]);
+        }
+
+        const guardViolations =
+            await checkConstraints(guards, touched, bound, 'guard', query);
+        const guardCall = decide(guardViolations, approvals);
+        if (guardCall) return await rollback(guardCall);
+
+        // Rows the action is about to create. Their keys are generated here
+        // rather than by the store, so the DML can bind them and the probes can
+        // be scoped to them.
+        const generated = generatedKeys(action);
+        for (const [concept, key] of Object.entries(generated)) {
+          addTouched(touched, concept, key);
+        }
+
+        const plan = opts.handler ?
+            await opts.handler({model, action, args, refs, query}) :
+            planFromExecutor(action, bound, generated, touched);
+        if ('error' in plan) {
+          return await rollback({status: 'error', message: plan.error});
+        }
         for (const stmt of plan.statements) {
           await run(stmt);
         }
 
-        const violations = await checkConstraints(
-            lowered.probes, plan.touched ?? {}, query);
-        if (violations.length) {
-          await client.rollback(sessionName, transactionId);
-          return {
-            status: 'rejected',
-            message: violations.map(v => v.message).join(' '),
-            violations,
-          } as ActionOutcome;
-        }
+        // A handler that reports no touched rows gets whole-table probes. The
+        // rows the ARGUMENTS name are not a safe substitute: a handler may have
+        // written rows the call never mentioned, and scoping to the mentioned
+        // ones would check a subset of what changed.
+        const postViolations = await checkConstraints(
+            invariants, plan.touched ?? {}, bound, 'invariant', query);
+        const postCall = decide(postViolations, approvals);
+        if (postCall) return await rollback(postCall);
 
         const committed = await client.commit(sessionName, transactionId);
         if (committed.status < 200 || committed.status >= 300) {
@@ -220,8 +309,10 @@ export async function runAction(opts: RunActionOptions):
         return {
           status: 'committed',
           commitTimestamp: committed.result?.commitTimestamp,
-          refs: refs.refs,
-          checked: lowered.probes.map(p => p.constraint.name),
+          refs,
+          checked,
+          warnings: [...guardViolations, ...postViolations].filter(
+              v => v.severity === 'warn'),
         } as ActionOutcome;
       } catch (err) {
         await client.rollback(sessionName, transactionId);
@@ -243,33 +334,242 @@ export async function runAction(opts: RunActionOptions):
 class StoreError extends Error {}
 
 
+// Splits the model's constraints into the ones checked before this action's
+// write and the ones checked after it.
+//
+// A constraint that reads an action parameter is a GUARD: it can only be
+// evaluated with the arguments in hand, which is before the write. Everything
+// else is an INVARIANT over stored state and is checked against the uncommitted
+// result. A constraint the author also NAMED in `guards` is checked at both
+// moments when it reads no parameter -- naming it buys an earlier failure, and
+// does not remove the later one.
+//
+// A constraint that cannot be lowered aborts the action, with one exception: if
+// it gates some OTHER action, its parameters are not in scope here and its
+// failure to lower says nothing about this call. Skipping it is not a hole,
+// because the action it does gate cannot run without it.
+function lowerForAction(
+    model: SemanticModel, action: Action, limit?: number):
+    {guards: ConstraintProbe[]; invariants: ConstraintProbe[]}|{error: string} {
+  const parameters = action.parameters.map(p => p.name);
+  const named = new Set(action.guards ?? []);
+  const gatesAnother = new Set<string>();
+  for (const other of model.actions ?? []) {
+    if (other.name === action.name) continue;
+    for (const name of other.guards ?? []) gatesAnother.add(name);
+  }
+
+  const guards: ConstraintProbe[] = [];
+  const invariants: ConstraintProbe[] = [];
+  const errors: string[] = [];
+  for (const constraint of model.constraints ?? []) {
+    const result = lowerConstraint(model, constraint, {
+      parameters,
+      parameterPrefix: PARAM_PREFIX,
+      touchedKeysParam: TOUCHED_PARAM,
+      limit,
+    });
+    if (!result.ok) {
+      if (!named.has(constraint.name) && gatesAnother.has(constraint.name)) {
+        continue;
+      }
+      errors.push(result.reason);
+      continue;
+    }
+    const probe = result.probe;
+    if (probe.readsParameter) {
+      guards.push(probe);
+    } else {
+      if (named.has(constraint.name)) guards.push(probe);
+      invariants.push(probe);
+    }
+  }
+  if (errors.length) return {error: errors.join('; ')};
+  return {guards, invariants};
+}
+
+
+// The action arguments, bound as query parameters.
+interface Bindings {
+  // Keyed by the bare parameter name; the probe prefix is applied on use.
+  params: Record<string, unknown>;
+  types: Record<string, {code: string}>;
+}
+
+
+// Turns each declared parameter into a bound value: an entity-typed one into
+// the key of the row it resolved to, a scalar into a value of the store's
+// matching type. Nothing is interpolated into SQL, so no argument can reach the
+// store as anything but data.
+function bindArguments(
+    action: Action, args: Record<string, unknown>,
+    refs: Record<string, EntityRef>): Bindings|{error: string} {
+  const params: Record<string, unknown> = {};
+  const types: Record<string, {code: string}> = {};
+  for (const param of action.parameters) {
+    if (param.isEntityRef) {
+      const ref = refs[param.name];
+      if (!ref) {
+        return {error: `Parameter '${param.name}' was not resolved.`};
+      }
+      if (ref.keys.length !== 1) {
+        return {
+          error: `Parameter '${param.name}' refers to a ${param.type}, whose ` +
+              `key has ${ref.keys.length} parts; the runtime binds an object ` +
+              `reference as a single value, so a composite key cannot be ` +
+              `passed to a constraint or a statement.`,
+        };
+      }
+      params[param.name] = ref.keys[0];
+      types[param.name] = {code: 'STRING'};
+      continue;
+    }
+    const bound = bindScalar(param, args[param.name]);
+    if ('error' in bound) return {error: bound.error};
+    params[param.name] = bound.value;
+    types[param.name] = {code: bound.code};
+  }
+  return {params, types};
+}
+
+
+// One scalar argument as a Spanner value. The declared ontology type picks the
+// store type, so a `Decimal` amount is compared as a number rather than as text
+// -- which is the difference between "9" being less than "10" and not.
+function bindScalar(param: ActionParameter, raw: unknown):
+    {value: unknown; code: string}|{error: string} {
+  if (raw === undefined || raw === null || `${raw}`.trim() === '') {
+    return {
+      error: `Action parameter '${param.name}' (${param.type}) was not given ` +
+          `a value.`,
+    };
+  }
+  const text = `${raw}`.trim();
+  switch (param.type) {
+    case 'Integer':
+      if (!/^[-+]?\d+$/.test(text)) {
+        return {error: `'${param.name}' is an Integer, but '${text}' is not.`};
+      }
+      // INT64 travels as a string over the REST surface; a JSON number would
+      // lose precision above 2^53.
+      return {value: text, code: 'INT64'};
+    case 'Float':
+      if (!Number.isFinite(Number(text))) {
+        return {error: `'${param.name}' is a Float, but '${text}' is not.`};
+      }
+      return {value: Number(text), code: 'FLOAT64'};
+    case 'Decimal':
+      if (!/^[-+]?\d+(\.\d+)?$/.test(text)) {
+        return {error: `'${param.name}' is a Decimal, but '${text}' is not.`};
+      }
+      // NUMERIC travels as a string, for the same reason: an exact decimal
+      // routed through a JSON number stops being exact.
+      return {value: text, code: 'NUMERIC'};
+    case 'Boolean':
+      if (!/^(true|false)$/i.test(text)) {
+        return {error: `'${param.name}' is a Boolean, but '${text}' is not.`};
+      }
+      return {value: /^true$/i.test(text), code: 'BOOL'};
+    case 'Date':
+      return {value: text, code: 'DATE'};
+    case 'DateTime':
+    case 'DateTimeTz':
+      return {value: text, code: 'TIMESTAMP'};
+    default:
+      return {value: text, code: 'STRING'};
+  }
+}
+
+
+// A key for every concept the action creates, named as the DML expects it.
+// Generated here rather than left to the store because the probes have to be
+// scoped to the new rows, and a server-assigned key is not known until after
+// the statement that would need it.
+function generatedKeys(action: Action): Record<string, string> {
+  const keys: Record<string, string> = {};
+  for (const affected of action.affects ?? []) {
+    if (affected.operation !== 'create') continue;
+    keys[affected.concept] = crypto.randomUUID();
+  }
+  return keys;
+}
+
+
+// Builds the plan from the action's own DML. Every `@name` in a statement is
+// either a declared parameter or a key this call generates; validate.ts refuses
+// a model where it is neither, so an unbound reference cannot reach here.
+function planFromExecutor(
+    action: Action, bound: Bindings, generated: Record<string, string>,
+    touched: Record<string, string[]>): ActionPlan|{error: string} {
+  if (action.executor.kind !== 'sql') {
+    return {error: `Action '${action.name}' has no 'sql' executor.`};
+  }
+  const values: Record<string, unknown> = {...bound.params};
+  const types: Record<string, {code: string}> = {...bound.types};
+  for (const [concept, key] of Object.entries(generated)) {
+    values[generatedKeyParam(concept)] = key;
+    types[generatedKeyParam(concept)] = {code: 'STRING'};
+  }
+
+  const statements: spanner.Statement[] = [];
+  for (const sql of action.executor.sql.statements) {
+    const params: Record<string, unknown> = {};
+    const paramTypes: Record<string, {code: string}> = {};
+    for (const name of referencedParameters(sql)) {
+      if (!(name in values)) {
+        return {
+          error: `Action '${action.name}' binds '@${name}', which is neither ` +
+              `a parameter it declares nor a key it generates.`,
+        };
+      }
+      params[name] = values[name];
+      paramTypes[name] = types[name];
+    }
+    statements.push({sql, params, paramTypes});
+  }
+  return {statements, touched};
+}
+
+
 // Runs every probe and collects the violations. A probe whose entity has no
 // touched keys runs unscoped; one whose entity was touched is restricted to
-// those rows.
+// those rows. A probe reading action parameters gets exactly the ones it reads,
+// bound under the prefix the lowering used.
 async function checkConstraints(
     probes: ConstraintProbe[], touched: Record<string, string[]>,
+    bound: Bindings, stage: 'guard'|'invariant',
     query: (stmt: spanner.Statement) => Promise<string[][]>):
     Promise<Violation[]> {
   const violations: Violation[] = [];
   for (const probe of probes) {
-    const keys = touched[probe.entity];
-    let stmt: spanner.Statement;
-    if (probe.scoped && keys && keys.length) {
-      stmt = {
-        sql: probe.sql,
-        params: {[TOUCHED_PARAM]: keys},
-        paramTypes: {
-          [TOUCHED_PARAM]:
-              {code: 'ARRAY', arrayElementType: {code: 'STRING'}},
-        },
-      };
-    } else {
-      // No touched keys for this entity, so check the whole table. Passing an
-      // empty array to the scoped probe instead would match nothing and the
-      // constraint would pass vacuously -- the exact silent-success failure the
-      // gate exists to prevent.
-      stmt = {sql: probe.unscopedSql};
+    const params: Record<string, unknown> = {};
+    const paramTypes: spanner.ParamTypes = {};
+    for (const name of probe.parameters) {
+      params[`${PARAM_PREFIX}${name}`] = bound.params[name];
+      paramTypes[`${PARAM_PREFIX}${name}`] = bound.types[name];
     }
+
+    const keys = touched[probe.entity];
+    let sql = probe.unscopedSql;
+    if (probe.scoped && keys && keys.length) {
+      // The key values arrive as strings, matching the cast the probe applies.
+      sql = probe.sql;
+      params[TOUCHED_PARAM] = keys;
+      paramTypes[TOUCHED_PARAM] = {
+        code: 'ARRAY',
+        arrayElementType: {code: 'STRING'},
+      };
+    }
+    // No touched keys for this entity, so check the whole table. Passing an
+    // empty array to the scoped probe instead would match nothing and the
+    // constraint would pass vacuously -- the exact silent-success failure the
+    // gate exists to prevent.
+
+    // Omitted rather than sent empty when the probe binds nothing, so a
+    // constraint over stored state produces the same request it always did.
+    const stmt: spanner.Statement = Object.keys(params).length ?
+        {sql, params, paramTypes} :
+        {sql};
     const rows = await query(stmt);
     if (rows.length) {
       violations.push({
@@ -277,10 +577,49 @@ async function checkConstraints(
         entity: probe.entity,
         message: violationMessage(probe, rows),
         violatingKeys: rows,
+        severity: probe.constraint.severity ?? 'reject',
+        stage,
       });
     }
   }
   return violations;
+}
+
+
+// The outcome a set of violations forces, or null to carry on.
+//
+// A `reject` always stops the write. An `escalate` stops it too, but names
+// itself so an approver can let the same call through; an approval is scoped to
+// one constraint and cannot lift a rejection. A `warn` never stops anything and
+// is reported on the committed outcome.
+function decide(violations: Violation[], approvals: Set<string>): ActionOutcome|
+    null {
+  const rejected = violations.filter(v => v.severity === 'reject');
+  if (rejected.length) {
+    return {
+      status: 'rejected',
+      message: rejected.map(v => v.message).join(' '),
+      violations: rejected,
+    };
+  }
+  const escalated = violations.filter(
+      v => v.severity === 'escalate' && !approvals.has(v.constraint));
+  if (escalated.length) {
+    return {
+      status: 'escalated',
+      message: escalated.map(v => v.message).join(' '),
+      violations: escalated,
+      approvalRequired: [...new Set(escalated.map(v => v.constraint))].sort(),
+    };
+  }
+  return null;
+}
+
+
+function addTouched(
+    touched: Record<string, string[]>, entity: string, key: string): void {
+  const keys = touched[entity] ?? (touched[entity] = []);
+  if (!keys.includes(key)) keys.push(key);
 }
 
 
