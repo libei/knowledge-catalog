@@ -8,7 +8,7 @@ Spanner database, with all three rules written in a semantic model and enforced
 by the runtime rather than by the caller.
 
 Nothing here is a simulation. The database is real, the transactions commit and
-roll back, and the agent is a Google ADK 2.0 agent talking to Gemini.
+roll back, and the agent is built with Google ADK 2.0 and talks to Gemini.
 
 ## The three rules
 
@@ -216,8 +216,8 @@ model. That buys three things an opaque executor cannot offer:
 
 - The blast radius is checkable. `affects` can be read against the statements
   instead of taken on trust.
-- A guard becomes a real gate. An MCP or REST call commits inside a system this
-  transaction does not control, so a check around it is advisory. `runAction`
+- A guard becomes a real gate. An MCP or REST call commits inside a system
+  the runtime does not control, so a check around it is advisory. `runAction`
   refuses such an action unless the caller supplies a handler that performs the
   write as DML in the open transaction.
 - The statements run where the probes run, so the gate observes the uncommitted
