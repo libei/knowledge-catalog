@@ -150,10 +150,11 @@ semantic_model:
           - {concept: Order, operation: modify, fields: [total]}
         ai_context:
           instructions: >-
-            Give the order as its number or the customer's name, the amount in
-            dollars, and a memo saying why. If the call comes back needing
-            review, do not retry it with a smaller amount: report the reason and
-            wait for a decision.
+            Give the order as its number, the amount in dollars, and a memo
+            saying why. Look the order up first if you were given a customer
+            rather than a number: an Order is identified by its key alone. If
+            the call comes back needing review, do not retry it with a smaller
+            amount: report the reason and wait for a decision.
 
     constraints:
       - name: CreditWithinOrderTotal

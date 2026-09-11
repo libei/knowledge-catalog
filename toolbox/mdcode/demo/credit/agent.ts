@@ -1,152 +1,107 @@
-// The same demo with an agent in front of it.
+// A Google ADK agent over whatever semantic model it is pointed at.
 //
 //   GOOGLE_API_KEY=... bun agent.ts "Andy Brook was charged shipping on order
 //                                    12345 by mistake. Credit him the $12."
 //
-// The agent is a Google ADK 2.0 LlmAgent with exactly two tools, both local
-// functions: one to look up orders, one to issue a credit. There is no MCP
-// server and no HTTP hop -- `issue_credit` calls runAction in this process,
-// which opens the Spanner transaction, checks the guards, runs the model's DML
-// and commits or rolls back.
+// Nothing below mentions credits, orders or Spanner tables. The tools are
+// derived from the model: one lookup tool per entity, one write tool per
+// action, with names, descriptions, parameter types and calling guidance all
+// taken from what the model declares. Point this at a different model and it
+// offers different tools.
 //
-// What the agent is NOT allowed to do is the point. It never writes SQL. It
-// supplies three values, and every rule in the model is decided inside the
-// transaction, by the runtime, against the uncommitted rows. An agent that
-// hallucinates an amount gets a rejection it has to report; an agent that is
-// talked into a large credit gets a review request it cannot approve itself.
+// AGENT.md walks through building this file step by step, and reports which
+// parts are the model's and which are the developer's.
+//
+// What the agent cannot do is the point. It never writes SQL, and it has no
+// way to approve anything: `approvals` is not reachable from a tool, by
+// construction. Every rule is decided by the runtime inside the Spanner
+// transaction, against the uncommitted rows. An agent that invents an amount
+// gets a refusal it has to report; an agent that is talked into a large credit
+// gets a review request it cannot grant itself.
 //
 // ADK has its own confirmation hook (`requireConfirmation` on a FunctionTool),
-// and this demo deliberately does not use it. That gate lives in the agent
-// process, so it stops a well-behaved agent and nothing else. `severity:
-// escalate` in the model stops every caller, including the ones that never went
-// near an agent.
+// and this demo does not use it. That gate lives in the agent process, so it
+// stops a well-behaved agent and nothing else. `severity: escalate` in the
+// model stops every caller, including the ones that never went near an agent.
+
+import {readFileSync} from 'node:fs';
 
 import {FunctionTool, InMemoryRunner, LlmAgent} from '@google/adk';
 import {z} from 'zod';
 
-import {ActionOutcome, runAction} from '../../src/libts/semantic/runtime';
+import {actionTools, entityTools, ToolParameter} from '../../src/libts/semantic/agent_tools';
+import {loadModels} from '../../src/libts/semantic/loader';
 
-import {dataClient} from './config';
-import {creditModel} from './model';
+import {dataClient, modelPath} from './config';
 
 
-const model = creditModel();
+// Step 1. Load the model. In the pipeline this is the workspace `kcmd init
+// --pull` built, so what the agent reads is what the catalog gave back.
+const loaded = loadModels(readFileSync(modelPath, 'utf8'));
+if (!loaded.models.length) throw new Error(`${modelPath} declares no model.`);
+const model = loaded.models[0];
 const client = dataClient();
 
-const findOrders = new FunctionTool({
-  name: 'find_orders',
-  description:
-      'List orders with their customer, current total, and line items. Use ' +
-      'this to find the order number and check what is on it before issuing ' +
-      'a credit.',
-  parameters: z.object({
-    customer: z.string().describe(
-        'Part of a customer name or email to filter by; empty for all.'),
-  }),
-  async execute({customer}) {
-    return await query(
-        `SELECT CAST(o.order_id AS STRING), c.name, c.email,
-                CAST(o.total AS STRING), li.type, CAST(li.amount AS STRING),
-                li.memo
-         FROM Orders o
-         JOIN Customer c ON c.customer_id = o.customer_id
-         LEFT JOIN LineItem li ON li.order_id = o.order_id
-         WHERE @customer = '' OR LOWER(c.name) LIKE LOWER('%' || @customer || '%')
-            OR LOWER(c.email) LIKE LOWER('%' || @customer || '%')
-         ORDER BY o.order_id, li.line_item_id`,
-        {customer});
-  },
-});
 
-const issueCredit = new FunctionTool({
-  name: 'issue_credit',
-  description:
-      'Credit a customer against one order. The order may be given as its ' +
-      'number or as the customer name. The credit is added as a line and the ' +
-      'order total is recomputed; you do not compute the new total yourself. ' +
-      'The call may come back needing a supervisor decision, in which case ' +
-      'report the reason and stop.',
-  parameters: z.object({
-    order: z.string().describe('The order number, e.g. "12345".'),
-    amount: z.string().describe('The credit in dollars, e.g. "12.00".'),
-    memo: z.string().describe('Why the credit is being issued.'),
-  }),
-  async execute({order, amount, memo}) {
-    const outcome = await runAction({
-      model,
-      actionName: 'IssueCredit',
-      args: {order, amount, memo},
-      client,
-    });
-    return summarize(outcome);
-  },
-});
+// Step 2. Derive the tools. Reads first, then writes, which is also the order
+// the agent needs them in: find the object, then act on it.
+const derived = [
+  ...entityTools({model, client}),
+  ...actionTools({model, client}),
+];
 
 
-// What the agent is told about an outcome. A rejection and an escalation read
-// differently on purpose: one is something to fix and retry, the other is
-// something to report and stop. Neither leaves the agent an approval to grant.
-function summarize(outcome: ActionOutcome): Record<string, unknown> {
-  switch (outcome.status) {
-    case 'committed':
-      return {
-        applied: true,
-        at: outcome.commitTimestamp,
-        rulesChecked: outcome.checked,
-      };
-    case 'escalated':
-      return {
-        applied: false,
-        needsSupervisorDecision: outcome.approvalRequired,
-        reason: outcome.message,
-        whatToDo:
-            'Report this to the customer-service supervisor. Do not retry ' +
-            'with a smaller amount unless the customer asked for one.',
-      };
-    case 'rejected':
-      return {
-        applied: false,
-        ruleBroken: outcome.violations.map(v => v.constraint),
-        reason: outcome.message,
-      };
-    case 'error':
-      return {applied: false, error: outcome.message};
+// Step 3. Adapt each one to ADK. This is the only framework-specific code in
+// the file, and it is the same eight lines for any model.
+const tools = derived.map(
+    tool => new FunctionTool({
+      name: tool.name,
+      description: tool.description,
+      parameters: schemaFor(tool.parameters),
+      execute: (args: Record<string, unknown>) => tool.invoke(args),
+    }));
+
+
+// ADK takes its parameter schema as Zod. A tool parameter carries a JSON type
+// and a description, which is exactly what a Zod field needs.
+function schemaFor(params: ToolParameter[]): z.ZodTypeAny {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const param of params) {
+    const base = param.type === 'boolean' ? z.boolean() :
+        param.type === 'string'          ? z.string() :
+                                           z.number();
+    const described = base.describe(param.description);
+    shape[param.name] = param.required ? described : described.optional();
   }
+  return z.object(shape);
 }
 
 
-async function query(
-    sql: string, params: Record<string, string>): Promise<string[][]> {
-  return await client.withSession(async sessionName => {
-    const paramTypes = Object.fromEntries(
-        Object.keys(params).map(k => [k, {code: 'STRING'}]));
-    const res =
-        await client.executeQuery(sessionName, {sql, params, paramTypes});
-    if (res.status < 200 || res.status >= 300) {
-      throw new Error(`${res.message ?? res.status}`);
-    }
-    return res.result?.rows ?? [];
-  });
-}
-
-
+// Step 4. Give it a persona. This is the developer's to write, and it is the
+// only part of the agent that knows what business it is in. Everything it says
+// about rules is generic: the model supplies which rules exist and what they
+// mean, and the runtime decides them.
 const agent = new LlmAgent({
-  name: 'credit_desk',
+  name: 'model_agent',
   model: process.env.DEMO_MODEL ?? 'gemini-2.5-flash',
-  description: 'Issues customer credits against orders.',
+  description: model.description ?? `Acts on the ${model.name} model.`,
   instruction:
-      'You work the customer-service credit desk. Find the order the ' +
-      'customer means, then issue the credit with issue_credit. Never ' +
-      'invent an order number: look it up. Never compute a new order total: ' +
-      'the tool does that. If the tool says a supervisor decision is needed, ' +
-      'say so plainly and stop -- you cannot approve it yourself.',
-  tools: [findOrders, issueCredit],
+      'You work a customer-service desk. Look things up before you act, and ' +
+      'never invent an identifier. When a tool reports that a write did not ' +
+      'happen, read the reason it gives and repeat it plainly; if it says a ' +
+      'human has to decide, say so and stop, because you cannot approve it ' +
+      'yourself. Never compute a total or a balance yourself: the tools do ' +
+      'that.',
+  tools,
 });
 
 
+// Step 5. Run it.
 const prompt = process.argv.slice(2).join(' ');
 if (!prompt) {
   console.error('Give the agent something to do, in quotes.');
+  console.error(`Tools derived from ${model.name}: ${
+      derived.map(t => t.name).join(', ')}`);
   process.exit(2);
 }
 

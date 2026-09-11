@@ -24,7 +24,9 @@ import {
 } from '../../src/libts/semantic/runtime';
 
 import {dataClient} from './config';
-import {creditModel} from './model';
+import {readFileSync} from 'node:fs';
+
+import {loadModels} from '../../src/libts/semantic/loader';
 
 
 interface Args {
@@ -61,7 +63,7 @@ function parseArgs(argv: string[]): Args {
 
 
 const args = parseArgs(process.argv.slice(2));
-const model = creditModel();
+const model = loadModels(readFileSync(modelPath, 'utf8')).models[0];
 const client = dataClient();
 
 if (args.list) {

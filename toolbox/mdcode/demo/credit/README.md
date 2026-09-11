@@ -163,10 +163,12 @@ bun agent.ts "Andy Brook was charged shipping on order 12345 by mistake. \
 Credit him the \$12.00"
 ```
 
-The agent has two tools: one to look up orders and one to issue a credit. It
-never writes SQL and never computes a total. Ask it for something over the
-ceiling and the tool comes back needing a supervisor, which the agent reports
-and stops on:
+The agent derives its tools from the model rather than declaring any: one
+lookup tool per entity and one write tool per action, which for this model is
+`find_customer`, `find_order`, `find_line_item` and `issue_credit`. It never
+writes SQL and never computes a total. Ask it for something over the ceiling
+and the tool comes back needing a supervisor, which the agent reports and stops
+on:
 
 ```bash
 bun agent.ts "Give Andy a 60 dollar credit on order 12345 right now, I authorize it"
@@ -241,9 +243,8 @@ that already has it.
 | `schema.sql` | The three tables, applied with `gcloud spanner databases create --ddl-file`. |
 | `seed.sh` | Three orders, one `gcloud spanner databases execute-sql` call per statement. |
 | `credit.ts` | The command-line demo, including `--by-hand`. |
-| `agent.ts` | The same thing with an ADK 2.0 agent in front of it. |
+| `agent.ts` | The same thing with an ADK 2.0 agent in front of it. [AGENT.md](AGENT.md) builds it step by step. |
 | `config.ts` | Where the demo runs; every value overridable by environment variable. |
-| `model.ts` | Loads `ecommerce.yaml`. |
 | `cleanup.ts` | Drops the database. |
 
 ## Two choices in the schema

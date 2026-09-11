@@ -15,7 +15,8 @@ Catalog gets the meaning and the rules, and everything after step 5 runs out of
 a workspace whose whole contents came back from the catalog.
 
 The last two sections list what the demo itself owns, and say which steps ship
-today and which are being built.
+today and which are being built. [AGENT.md](AGENT.md) covers step 8 on its own,
+building the agent line by line.
 
 ## What you need
 
@@ -233,10 +234,16 @@ of, and a caller that never opens its own transaction cannot get around it.
 bun ../demo/credit/agent.ts
 ```
 
-The agent reads the model from the workspace at startup and builds one tool per
-action it finds, with the tool's arguments taken from that action's declared
-parameters. It has no credit logic of its own; publish a second action to the
-same scope, pull, and it offers a second tool.
+The agent reads the model from the workspace at startup and derives its tools
+from it: one lookup tool per entity, one write tool per action, with names,
+descriptions and parameter types taken from what the model declares. For this
+model that is `find_customer`, `find_order`, `find_line_item` and
+`issue_credit`. It has no credit logic of its own; publish a second action to
+the same scope, pull, and it offers a second tool.
+
+[AGENT.md](AGENT.md) builds this agent from nothing in five steps and reports
+what each one cost. The short version is 68 lines of code, of which 8 are about
+this model and none name a credit, an order or a table.
 
 Ask it for the credit from step 6 in words:
 
@@ -301,7 +308,7 @@ Five files, all of them readable end to end:
 | `ecommerce.profiles/operational.yaml` | the Spanner tables and columns it binds to |
 | `schema.sql` | three `CREATE TABLE` statements |
 | `seed.sh` | two customers, three orders, six line items, one `gcloud` call each |
-| `agent.ts` | an ADK agent that turns each action into a tool |
+| `agent.ts` | an ADK agent that derives its tools from the model, 68 lines |
 
 Everything else on this page is `kcmd` or `gcloud`. An earlier draft of the demo
 carried five TypeScript files standing in for those commands. Each one moves
@@ -313,7 +320,8 @@ into the product or onto the command line:
 | `credit.ts`, 247 lines | `kcmd action run`, a command over the same runtime |
 | `credit.ts --list` | a `SELECT` run with `gcloud spanner databases execute-sql` |
 | `credit.ts --by-hand` | an `INSERT` run with `gcloud`, which shows the unguarded path more honestly |
-| `config.ts` and `model.ts`, 47 lines | the workspace `kcmd init --pull` creates |
+| `model.ts`, 20 lines | four lines in `agent.ts`, so loading the model is visible where it happens |
+| `config.ts`, 27 lines | the workspace `kcmd init --pull` creates |
 | `cleanup.ts`, 19 lines | `gcloud spanner databases delete` |
 
 ## What runs today
@@ -327,7 +335,7 @@ into the product or onto the command line:
 | 5. `kcmd init --pull` into a fresh workspace | Ships today. |
 | 6. `kcmd action run` | The runtime ships in this pull request. The command is being built, and replaces the demo's own driver. |
 | 7. Direct writes with `gcloud` | Nothing to build. |
-| 8. `agent.ts` | The agent exists with hand-written tools. Deriving its tools from the model's actions is being built. |
+| 8. `agent.ts` | Ships in this pull request. Tools derive from the model's entities and actions; the hand-written ones are gone. |
 | 9. Change a rule, push, rerun | Works already: the probes are generated from whatever expression the model states. |
 
 Two library gaps sat under step 5 and are fixed in this pull request. Constraint
