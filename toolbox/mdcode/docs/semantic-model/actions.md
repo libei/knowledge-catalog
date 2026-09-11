@@ -223,22 +223,23 @@ block on still gets checked at the moment of the call and reported back.
 
 ### When no expression decides it
 
-Some rules a business enforces cannot be written as a boolean. Whether a
-discount is justified by the reason given, whether a refund note explains the
-exception it claims — a query can read the text but cannot settle the question.
+Some rules a business enforces cannot be written as a boolean. Whether a credit
+memo explains the failure it claims to refund, whether a discount is justified
+by the reason given — a query can read the text and cannot settle the question.
 Such a rule goes in `judgment` instead of `expression`:
 
 ```yaml
     constraints:
-      - name: DiscountIsJustified
+      - name: CreditMemoNamesAServiceFailure
         judgment: >-
-          A discount over 30% must be justified by the reason given in
-          Order.discount_reason. A reason that only restates the discount, such
-          as "competitive pricing", is not a justification.
+          LineItem.memo must name a specific, verifiable service failure on the
+          order: a late delivery, a damaged item, a shipping charge applied in
+          error. A memo that states only that the customer requested a credit
+          does not satisfy this rule.
         description: >-
-          Say what makes this discount necessary, then resubmit for approval.
-        on_violation: escalate
-        severity: high
+          Say what went wrong with the order in the credit memo.
+        on_violation: warn
+        severity: low
 ```
 
 A constraint declares one body or the other, never both and never neither. A
@@ -251,131 +252,196 @@ rejects, and that is too strong a consequence to inherit by silence.
 A language model reads the sentence at review time with the proposed write in
 front of it. Five habits make that reading consistent.
 
-**State what must be true of the data.** Write the condition — *the reason must
-name a specific problem with the order* — rather than the procedure — *check
-whether the reason is specific*. The sentence describes a clean write, and
-everything about handling a breach lives elsewhere.
+**State what must be true of the data.** Write the condition — *the memo must
+name a specific service failure* — rather than the procedure — *check whether
+the memo is specific*. The sentence describes a clean write, and everything
+about handling a breach lives elsewhere.
 
-**Name fields model-qualified.** Write `Order.discount_reason` rather than "the
-reason". `kcmd` resolves every `Entity.field` token in the text against the
-model and fails the push when the entity declares no such field, so a rename
-cannot leave the sentence pointing at nothing. The qualified name also tells the
-judge exactly which value to read.
+**Name fields model-qualified.** Write `LineItem.memo` rather than "the memo".
+`kcmd` resolves every `Entity.field` token in the text against the model and
+fails the push when the entity declares no such field, so a rename cannot leave
+the sentence pointing at nothing. The qualified name also tells the judge
+exactly which value to read.
 
 **Say what does not count.** A rule with no negative example is graded against
-whatever the model guesses the author had in mind. "A reason that only restates
-the discount, such as 'competitive pricing', is not a justification" buys more
-consistency than any further description of what a good reason is.
+whatever the model guesses the author had in mind. "A memo that states only that
+the customer requested a credit does not satisfy this rule" buys more
+consistency than any further description of what a good memo is.
 
 **Leave the consequence out of the prose.** What happens on a breach is
-`on_violation`. A judgment ending "…otherwise escalate to a director" states a
+`on_violation`. A judgment ending "…otherwise escalate to a supervisor" states a
 routing nothing reads, and the engine routes by the field regardless.
 
 **Keep it to one condition.** When the sentence needs "and also", the second
 half is a second constraint. One `on_violation` cannot carry two consequences,
 so two conditions that end differently cannot share a constraint.
 
-### A policy whose branches end differently
+### A policy whose rules end differently
 
-Written policies branch, and the branches rarely end the same way. A refund
-policy might say: a refund over $10,000 needs a director's approval; the stated
-reason has to be a real problem with the order; and a refund that looks like a
-larger one split into pieces is refused outright. Three conditions, three
-different outcomes.
+Real policies have several rules, and the rules rarely end the same way. Take
+the policy governing a customer-service credit, stated the way a business states
+it:
 
-Each condition becomes its own constraint, carrying its own outcome in its own
-`on_violation`:
+1. a credit may not exceed the total of the order it credits;
+2. a credit over 25 dollars needs a supervisor's decision;
+3. an order's total always equals the sum of its line items;
+4. the memo on a credit must name a specific service failure;
+5. a credit must not be one larger credit split up to stay under the 25-dollar
+   limit.
+
+Five rules, three different outcomes, and two of them that no query settles. The
+model has an `Order` with a `total`, a `LineItem` with an `amount` and a `memo`,
+and an `IssueCredit` action taking the order, the amount and the memo. Each rule
+becomes one constraint, carrying its own outcome in its own `on_violation`:
 
 ```yaml
     constraints:
-      - name: LargeRefundHasDirectorApproval
-        expression: >-
-          Refund.amount <= 10000 OR Refund.director_approval IS NOT NULL
+      # Rules a query can compute.
+      - name: CreditWithinOrderTotal              # rule 1
+        expression: amount <= Order.total
         description: >-
-          Refunds over $10,000 need a director's approval. Attach one and
-          resubmit.
+          A credit cannot exceed the total of the order it credits. Lower the
+          amount, or split it across the orders it actually covers.
         on_violation: escalate
         severity: high
 
-      - name: RefundReasonIsSpecific
-        judgment: >-
-          Refund.reason must name a specific, verifiable problem with the order
-          — a late delivery, a damaged item, an incorrect charge. A reason that
-          only restates that the customer asked for a refund does not satisfy
-          this rule.
+      - name: CreditUnderSelfServiceLimit         # rule 2
+        expression: amount <= 25
         description: >-
-          Say what went wrong with the order in the refund reason.
+          A credit over 25 dollars is above the self-service limit. A
+          supervisor decides it.
+        on_violation: escalate
+        severity: medium
+
+      - name: OrderTotalMatchesLineItems          # rule 3
+        expression: Order.total == SUM(LineItem.amount)
+        description: >-
+          An order's total must equal the sum of its line items, with credits
+          subtracted.
+        on_violation: reject
+        severity: critical
+
+      # Rules no query can compute.
+      - name: CreditMemoNamesAServiceFailure      # rule 4
+        judgment: >-
+          LineItem.memo must name a specific, verifiable service failure on the
+          order: a late delivery, a damaged item, a shipping charge applied in
+          error. A memo that states only that the customer requested a credit
+          does not satisfy this rule.
+        description: >-
+          Say what went wrong with the order in the credit memo.
         on_violation: warn
         severity: low
 
-      - name: RefundIsNotStructured
+      - name: CreditIsNotSplitToAvoidReview       # rule 5
         judgment: >-
-          A refund must not appear to be one larger refund split into parts to
-          stay under an approval limit. Read Refund.amount together with the
-          other refunds on the same Order in the same week: several near-limit
-          refunds for related reasons are structuring, whatever each one says
-          on its own.
+          A credit must not appear to be one larger credit divided into parts
+          that each stay under the 25-dollar self-service limit. Read the
+          proposed amount together with the other credits already on the same
+          Order: several near-limit credits raised close together for related
+          reasons are one credit, whatever each memo says on its own.
         description: >-
-          Issue this as a single refund at its full amount and route it for
-          approval.
+          Raise this as a single credit for the full amount and send it for
+          supervisor review.
         on_violation: reject
         severity: critical
 
     actions:
-      - name: IssueRefund
+      - name: IssueCredit
+        executor:
+          mcp:
+            server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce
+            tool: issue_credit
         parameters:
-          - { name: order, type: Order }
-          - { name: amount, type: Float }
+          - { name: order,  type: Order }
+          - { name: amount, type: Decimal }
+          - { name: memo,   type: String }
         guards:
-          - LargeRefundHasDirectorApproval
-          - RefundReasonIsSpecific
-          - RefundIsNotStructured
+          - CreditWithinOrderTotal
+          - CreditUnderSelfServiceLimit
+          - CreditMemoNamesAServiceFailure
+          - CreditIsNotSplitToAvoidReview
 ```
 
 Reading down the `on_violation` column gives the branching that the policy
-describes in prose. A structured refund is refused. A large refund with no
-director's approval is held until one arrives. A vague reason is reported and
-the refund proceeds.
+describes in prose, in a column a search can read.
 
-Three properties come from writing it this way. The words stay in fields, so a
-search for the rules that can stop a refund finds them without reading prose.
-The first condition stays an expression, so a query settles it and no model call
-is spent on arithmetic. And each branch has its own name, owner and history, so
-raising the approval limit is an edit to one constraint rather than to a
-paragraph that also governs two other things.
+**Rule 3 is not a guard, and that is what `reject` means.** The other four rules
+are about one proposed call, so they can be checked only before that call and
+the action names them in `guards`. Rule 3 quantifies over stored data. It holds
+for every write from every source, whether or not an action mentions it, so it
+is declared and left unguarded. It is also the only rule here that nobody in the
+business may approve: an order whose total disagrees with its line items is
+broken rather than unusual. When a rule tempts you toward `reject`, check first
+whether it is really an invariant, which belongs outside `guards`.
 
-A judgment may declare `reject`, as `RefundIsNotStructured` does. Structuring is
-a rule an organization means as unappealable, and no expression detects it, so
-the alternative to representing the pairing is leaving the rule out of the model
-entirely. What the pairing costs is real: a language model can decide two
-identical refunds differently, and `reject` leaves nobody to appeal to. It is
-made visible rather than forbidden. Every published constraint carries a derived
-`evaluation` field, so "unappealable rules settled by a model" is one query
-against the catalog.
+**Rules 4 and 5 are why the second body exists.** Neither reduces to arithmetic
+over `Order` and `LineItem`, and before `judgment` they had nowhere to go but a
+policy document nothing links to. Note what stays computable alongside them: the
+threshold in rule 2 is arithmetic, so it remains an expression a query settles
+and no model call is spent on. Folding rules 2, 4 and 5 into one paragraph of
+prose, on the grounds that a model could read all three, would throw that away.
 
-### When several guards fire at once
+**Rule 5 is a judgment that declares `reject`.** Splitting a credit to evade
+review is a rule the business means as unappealable, and no expression detects
+it, so the alternative to writing it this way is leaving it out of the model.
+The pairing carries a real cost, because a language model can decide two
+identical credits differently and `reject` leaves nobody to appeal to. It is
+published rather than forbidden, and made findable: every constraint carries a
+derived `evaluation` field, which reads `judged` here, so an auditor asking
+which unappealable rules a model settles gets an answer from one query.
 
-An action's `guards` names all the constraints checked before the call, and more
-than one can be violated by the same write. The strictest outcome wins: any
+### Two calls through that policy
+
+A 30-dollar credit for a shipping charge billed in error, against an order
+totalling 142 dollars:
+
+```
+IssueCredit(order=12345, amount=30.00,
+            memo="refund of the shipping charge applied in error during the Labor Day sale")
+```
+
+Rule 1 holds, since 30 is within the order. Rule 2 is violated, since 30 is over
+the self-service limit, and its word is `escalate`. Rules 4 and 5 hold: the memo
+names a specific failure, and a single credit is not a split one. One violation,
+so the call is held for a supervisor, who reviews it as a credit against an
+order rather than as a SQL diff.
+
+Now three 9-dollar credits raised against the same order within the hour, each
+memo reading some version of "customer asked":
+
+```
+IssueCredit(order=12345, amount=9.00, memo="customer asked")
+```
+
+Rules 1 and 2 both hold — 9 is inside the order and inside the limit — so every
+gate a query can compute lets this through. Rule 4 is violated and warns. Rule 5
+is violated and rejects. This is the case the judged rules were added for: the
+policy is being evaded precisely by staying inside the arithmetic.
+
+When one call violates several guards, the strictest outcome applies: any
 `reject` refuses the call; failing that, any `escalate` holds it; failing that,
-any `warn` lets it through with the violations reported. A refund that is both
-vaguely justified and structured is refused.
+any `warn` lets it through with the violations reported. So the first call is
+held, and the second is refused with the memo warning reported alongside the
+refusal.
 
-That rule is fixed, and no part of the model states it. It is why an action can
-name any number of guards without the author writing how to combine them. It is
-also how `forbid` overrides `permit` in Cedar and how a deny wins in Open Policy
-Agent, so a model written this way lowers into either.
+That combination is fixed, and no part of the model states it. It is why an
+action can name any number of guards without the author writing how to combine
+them. It is also how `forbid` overrides `permit` in Cedar and how a deny wins in
+Open Policy Agent, so a policy written this way lowers into either.
 
 An action whose guards are *all* judged loads with a warning. Every gate then
 costs a model call, none can lower to a store-level check, and each may decide
-two identical calls differently. One expression guard among them settles it.
+two identical calls differently. `IssueCredit` is clear of it: two of its four
+guards are expressions.
 
 **Status: nothing calls a judge.** `kcmd` parses `judgment`, validates it,
 publishes it and reads it back, and publishes a derived `evaluation` field
 saying whether the rule is `deterministic` or `judged` so a consumer can select
 on it. No component asks a model to settle a judgment, and nothing combines
-guard outcomes. The rule above says what an engine is expected to do, and `kcmd`
-publishes the fields it needs to do it.
+guard outcomes. The two calls above are what the published policy says should
+happen, and `kcmd` publishes the fields an engine needs in order to make it
+happen.
 
 `kcmd` reports a mismatch from either side. A guard that names no constraint
 fails the push. A constraint over parameters that no action names loads with a

@@ -503,9 +503,9 @@ reads the document ([§6](#6-the-extension-mechanism)).
   branch, each with its own name, `on_violation` and `severity`, which `guards`
   on the action lists together. That keeps each branch independently searchable,
   revisable and owned, and it keeps the branches an expression *can* decide out
-  of prose that no query can read. [Actions → A policy whose branches end
-  differently](actions.md#a-policy-whose-branches-end-differently) works one
-  through.
+  of prose that no query can read. [Actions → A policy whose rules end
+  differently](actions.md#a-policy-whose-rules-end-differently) works a
+  five-rule credit policy through end to end.
 
   A constraint that quantifies over stored data applies to every write without
   being referenced anywhere. A constraint that reads an action's parameters can
