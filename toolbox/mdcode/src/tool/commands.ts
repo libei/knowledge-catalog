@@ -22,7 +22,7 @@ import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {runAction} from '../libts/semantic/runtime';
 import {transpileModels} from '../libts/semantic/transpile';
-import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
+import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
 import {
   AvailabilityReport,
   DEFAULT_PROFILE,
@@ -1237,6 +1237,20 @@ export async function action(
   if ('error' in loaded) {
     console.error(`Error: ${loaded.error}`);
     return 1;
+  }
+
+  // `list` reads the model as authored and is happy with whatever it finds.
+  // `run` executes it, and the runtime's refusal gate trusts what validation
+  // checks: a push would reject an `affects` entry naming an undeclared
+  // concept, and running one would find no constraint over that name and go
+  // ahead unchecked. Only the run-relevant checks, not the deployment ones --
+  // an action needs no deployed graph.
+  if (command === 'run') {
+    const errors = validateRunnable(loaded.models);
+    if (errors.length) {
+      for (const e of errors) console.error(`Error: ${e}`);
+      return 1;
+    }
   }
 
   return command === 'list' ?

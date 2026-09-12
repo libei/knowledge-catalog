@@ -155,8 +155,8 @@ that list against reality. The fourth kind, `sql`, contains the write instead.
         executor:
           sql:
             statements:
-              - UPDATE Account SET balance = balance - @amount WHERE accountId = @source
-              - UPDATE Account SET balance = balance + @amount WHERE accountId = @target
+              - UPDATE account SET balance = balance - @amount WHERE account_id = @source
+              - UPDATE account SET balance = balance + @amount WHERE account_id = @target
         parameters:
           - { name: source, type: Account }
           - { name: target, type: Account }
@@ -164,6 +164,34 @@ that list against reality. The fourth kind, `sql`, contains the write instead.
         affects:
           - { concept: Account, operation: modify, fields: [balance] }
 ```
+
+#### The statements are written in database names
+
+Look closely at what those statements say. The entity is `Account` and its field
+is `accountId`, but the statement writes `account` and `account_id` — the table
+and the column that entity is *bound* to, back in `source` and `expression`.
+
+A model gives everything two names, and a metric is written in the first of them:
+you write `Account.balance`, and `kcmd` translates it to `account.balance` before
+any SQL reaches the store. **An action's statements are not translated.** They
+are handed to the store exactly as written, so every table and column in one
+must be the database's own name. The only model names in a statement are the
+`@parameter` references, which name the action's declared parameters.
+
+That is the price of carrying the write verbatim: a rewrite is a place where
+what runs and what was reviewed could come apart.
+
+Nothing catches a model name before the call. Validation checks that each
+statement is one DML verb, contains no `;`, and binds only declared parameters —
+it never asks the store whether a table exists. A model name therefore fails at
+run time, from the store, and the message is not always legible: an entity named
+`Order` bound to a table named `Orders` produces
+
+```
+Syntax error: Unexpected keyword ORDER [at 1:8]
+```
+
+rather than "no such table", because `ORDER` is a reserved word.
 
 Containing the write buys three things a pointer cannot:
 
@@ -198,7 +226,7 @@ refer to the generated key as `@new<Concept>Key`:
           sql:
             statements:
               - >-
-                INSERT INTO Transfer (transferId, amount, debitedId)
+                INSERT INTO transfer (transfer_id, amount, debited_account_id)
                 VALUES (@newTransferKey, @amount, @source)
         affects:
           - { concept: Transfer, operation: create }
@@ -713,6 +741,12 @@ kcmd action run TransferFunds --arg source="Alice Checking" \
     --arg target=ACC-2 --arg amount=250
 ```
 
+That second command does not succeed against the model built up on this page,
+and the reason is worth knowing before the mechanics: `TransferFunds` is guarded
+by `AmountIsPositive`, nothing evaluates a constraint yet, and `kcmd` refuses a
+call rather than apply a write the model says must be checked first. What
+follows describes an action no constraint bears on, which is what runs today.
+
 `kcmd action list` is what the model declares as runnable — parameters,
 executor, guards, blast radius — and each entry ends with the command line that
 runs it, so reading the listing is enough to make the call:
@@ -727,14 +761,72 @@ Model 'payments' (payments_eg), profile 'operational':
     run:        kcmd action run TransferFunds --arg source=<Account> --arg target=<Account> --arg amount=<Float>
 ```
 
+### How a row is identified
+
+An entity-typed parameter takes an object reference rather than a value, so
+`--arg source="Alice Checking"` has to become one specific row before anything
+can run. Two separate things decide which rows an action touches, and conflating
+them is the easiest way to misread what an action does.
+
+**Resolving an argument — one row, chosen by `kcmd`.** For each entity-typed
+parameter, `kcmd` runs one lookup against that entity's table before the write:
+
+```sql
+SELECT account_id FROM account
+WHERE account_id = @ref0 OR name = @ref LIMIT 2
+```
+
+The `WHERE` is built from two things the entity declares:
+
+- **its `primary_key`.** `Account` declares `primary_key: [accountId]`, and
+  `accountId` is bound to the column `account_id`, so the input is compared
+  against that column. This is the answer to "how does it know which column is
+  the key" — the model says so; nothing is inferred from the database. One
+  argument cannot name a key of several columns, so an entity keyed that way is
+  reachable only through the identifying field below.
+- **an identifying text field, if the entity has one.** A `String` field that is
+  not part of the key, bound to a plain column, and *named* `name`, `full_name`,
+  `title`, `label` or `display_name`. `Account` declares `name`, so
+  `"Alice Checking"` and the account id both find the same row. The match is on
+  the field's name in the model, not the column's name in the store.
+
+The input is compared against each column as that column's own type, so a key
+declared `Integer` is only compared when the input is a number — `"Alice
+Checking"` is not, so that predicate is dropped rather than cast. If nothing is
+left to compare, no query is sent at all.
+
+Exactly one row must come back. Zero is `No Account matches 'Alice Checking'.`
+Two or more is ambiguous, and the candidates are listed by key so the caller can
+pick one — a name is not required to be unique, and if two accounts carried this
+one:
+
+```
+Error: 'Alice Checking' matches more than one Account (7, 12); use a key to
+disambiguate.
+```
+
+Both are reported rather than guessed at, because both are things the caller can
+act on.
+
+**Targeting the write — however many rows the statement says.** Resolution
+produces a *value*, which the statement then uses. Which rows the write lands on
+is decided entirely by the statement's own `WHERE`, and `kcmd` does not
+constrain it:
+
+```sql
+UPDATE account SET balance = balance - @amount WHERE account_id = @source
+```
+
+This one updates a single row because it filters on the key. A statement reading
+`WHERE status = 'dormant'` would update every dormant account, and nothing would
+stop it. `affects` does not limit the blast radius either — it *declares* it, so
+that a reader and the refusal gate know what the write is about. The statement
+is what decides.
+
 `kcmd action run` does three things:
 
-- **Resolve.** An entity-typed parameter takes an object reference, not a value,
-  so `--arg source="Alice Checking"` is matched against `Account`'s key and,
-  when the entity has one, an identifying text field (`name`, `title`, `label`,
-  `display_name`). The account id and the account's name therefore find the same
-  row. Nothing matched and more than one matched are both reported as such, with
-  the candidates listed, because both are things the caller can act on.
+- **Resolve.** Each entity-typed argument becomes the one row it denotes, as
+  above.
 - **Bind.** Every argument becomes a query parameter of the store type its
   declared ontology type implies — a `Decimal` amount is compared as a number
   rather than as text, which is the difference between `9` being less than `10`
@@ -768,10 +860,19 @@ write is checked and nothing says otherwise — so `kcmd action run` refuses suc
 a call instead. Three shapes say a constraint may bear on it:
 
 - the action names one in `guards`;
-- a constraint's expression reads an entity the action `affects`;
+- a constraint's expression reads a concept the action writes — either one it
+  declares in `affects`, or one its statements turn out to write. `affects` is a
+  declaration, so for a `sql` executor the statements are read too, and an
+  action that changes more than it declared is caught by what it does rather
+  than by what it said;
 - the model declares constraints and the action declares no `affects` at all,
   which leaves nothing to compare. Reading that silence as "nothing is
   constrained" is the one guess here that fails open.
+
+A constraint whose `onViolation` is `warn` is left out of all three. Such a rule
+reports a violation rather than rejecting one, so it could never refuse the
+write, and gating on it would leave a model that states advisory rules
+permanently unrunnable.
 
 ```
 Error: Action 'TransferFunds' is guarded by 'AmountIsPositive', and this runtime

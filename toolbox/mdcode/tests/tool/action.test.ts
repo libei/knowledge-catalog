@@ -375,3 +375,32 @@ describe('kcmd action: what the command line can actually contain', () => {
     expect(logs.join('\n')).toContain('--arg order was given twice');
   });
 });
+
+
+// `run` skips the deployment checks on purpose -- it deploys nothing -- but
+// not the ones the runtime's refusal gate depends on.
+describe('kcmd action run: the model has to be valid to run', () => {
+  const TYPO = MODEL.replace(
+      '- {concept: Entry, operation: create}',
+      '- {concept: Etnry, operation: create}');
+
+  test(
+      'an affects entry naming a concept the model does not declare is ' +
+          'refused rather than run',
+      async () => {
+        // A push rejects this outright. Left to run, the overlap test would
+        // look for constraints over 'Etnry', find none, and the gate that
+        // exists to stop an unchecked write would quietly turn off -- the one
+        // failure it is there to prevent, arriving as a typo.
+        writeWorkspace(TYPO);
+        const code =
+            await action('run', 'IssueCredit', {arg: ['order=A1', 'amount=5']});
+        expect(code).toBe(1);
+        expect(logs.join('\n')).toContain('\'Etnry\'');
+      });
+
+  test('but listing it still works, because listing runs nothing', async () => {
+    writeWorkspace(TYPO);
+    expect(await action('list', undefined)).toBe(0);
+  });
+});

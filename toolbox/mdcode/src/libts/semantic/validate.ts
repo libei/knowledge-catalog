@@ -170,6 +170,27 @@ export function validatePushRequirements(
 // entry that names nothing real leaves a reader believing the blast radius is
 // described when it is not, and a consumer routing on it would route on a
 // concept that does not exist.
+// The subset of the push checks that bear on RUNNING an action rather than on
+// deploying a model. `kcmd action run` skips the deployment checks on purpose
+// -- it deploys nothing -- but it must not skip these, because the runtime's
+// refusal gate reads exactly what they verify.
+//
+// The `affects` check is the one that matters most. An entry naming a concept
+// the model does not declare is a hard error on push; at run time it would
+// instead make the overlap test find no constraint over that name, and the
+// gate would quietly turn off -- which is the single failure the gate exists
+// to prevent. Nothing has pruned fields on this path, so the field checks that
+// stand down for a profile push apply in full.
+export function validateRunnable(models: LoadedModel[]): string[] {
+  const errors: string[] = [];
+  for (const {document, model} of models) {
+    errors.push(...validateActions(model, document, false));
+    errors.push(...validateConstraints(model, document, false));
+  }
+  return errors;
+}
+
+
 function validateActions(
     model: SemanticModel, document: string, fieldsPruned: boolean): string[] {
   const errors: string[] = [];

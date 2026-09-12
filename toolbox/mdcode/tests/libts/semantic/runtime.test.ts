@@ -33,6 +33,11 @@ class FakeSpanner {
   sessionsOpened = 0;
   beginFails = false;
   commitFails = false;
+  // A commit that REJECTS rather than returning a status, and a session that
+  // cannot be created: the two failures that reach the runtime as a thrown
+  // error rather than as a response, which is what makes them interesting.
+  commitThrows = false;
+  sessionFails = false;
   // Statements whose SQL contains one of these fragments fail, so a store-level
   // error can be provoked at a chosen point.
   failOn: string[] = [];
@@ -40,6 +45,9 @@ class FakeSpanner {
   constructor(private readonly answers: Answer[] = []) {}
 
   async withSession<T>(fn: (s: string) => Promise<T>): Promise<T> {
+    if (this.sessionFails) {
+      throw new Error('Spanner: could not create a session on d (503).');
+    }
     this.sessionsOpen++;
     this.sessionsOpened++;
     try {
@@ -64,6 +72,8 @@ class FakeSpanner {
   }
 
   async commit() {
+    // What a socket hang-up, a DNS failure or an abort looks like from here.
+    if (this.commitThrows) throw new TypeError('fetch failed');
     if (this.commitFails) return {status: 500, message: 'commit failed'};
     this.committed = true;
     return {status: 200, result: {commitTimestamp: '2026-09-06T00:00:00Z'}};
@@ -706,6 +716,10 @@ describe('an action whose write comes from a handler', () => {
     // The bindings exist to fill the model's OWN statements. A handler is
     // handed the resolved refs whole, so a two-part key it can write perfectly
     // well must not be refused on the way in.
+    //
+    // The entity carries an identifying column because that is the only way a
+    // composite-keyed row can be named by one value at all -- see the
+    // resolution tests below.
     const fake = new FakeSpanner([{match: 'FROM Account', rows: [['eu', '1']]}]);
     const outcome = await run(fake, {
       model: model({
@@ -716,6 +730,7 @@ describe('an action whose write comes from a handler', () => {
           fields: [
             {name: 'region', expression: 'region', type: 'String'},
             {name: 'accountId', expression: 'account_id', type: 'String'},
+            {name: 'name', expression: 'name', type: 'String'},
           ],
         }],
       }),
@@ -740,6 +755,7 @@ describe('an action whose write comes from a handler', () => {
                  fields: [
                    {name: 'region', expression: 'region', type: 'String'},
                    {name: 'accountId', expression: 'account_id', type: 'String'},
+                   {name: 'name', expression: 'name', type: 'String'},
                  ],
                },
                {
@@ -825,5 +841,275 @@ describe('the key generated for a created row', () => {
     if (outcome.status !== 'committed') throw new Error(outcome.message);
     const insert = fake.statements.find(s => s.sql.startsWith('INSERT'));
     expect(insert?.paramTypes?.newEntryKey).toEqual({code: 'STRING'});
+  });
+});
+
+
+// A commit is the one step whose failure cannot be undone from here, so what
+// the runtime SAYS about it is the whole of what a caller has to go on.
+describe('a commit whose outcome the runtime cannot know', () => {
+  test('a commit that rejects is indeterminate, not a rollback', async () => {
+    // The request throws rather than returning a status -- a socket hang-up, a
+    // DNS failure, an abort. That is exactly the shape a commit deadline takes
+    // from the client, and the case where the write is likeliest to have
+    // landed anyway. Reporting a rollback would invite the retry that applies
+    // it twice.
+    const fake = resolvingFake();
+    fake.commitThrows = true;
+    const outcome = await runCredit(fake);
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.indeterminate).toBe(true);
+    expect(outcome.message).toContain('Whether the write landed is unknown');
+    expect(outcome.message).not.toContain('rolled back');
+    expect(fake.rolledBack).toBe(false);
+  });
+});
+
+
+describe('a failure before any transaction exists', () => {
+  test('is not reported as a rollback', async () => {
+    // Nothing was opened, so nothing was rolled back. Saying otherwise tells
+    // the caller a transaction was undone that never began.
+    const fake = resolvingFake();
+    fake.sessionFails = true;
+    const outcome = await runCredit(fake);
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('could not start');
+    expect(outcome.message).not.toContain('rolled back');
+  });
+});
+
+
+// `onViolation` says what a violation DOES. A rule that only reports one can
+// never refuse a write, so it cannot be the reason a write is refused.
+describe('a constraint that only warns', () => {
+  const advisory: Constraint = {
+    name: 'BalanceIsLow',
+    expression: 'Account.balance >= 0',
+    description: 'Flag an account that has gone negative.',
+    onViolation: 'warn',
+  };
+
+  test(
+      'does not gate the action, because it could never refuse it',
+      async () => {
+        // Gating on it would leave a model that states advisory rules
+        // permanently unrunnable, with nothing the author could change short
+        // of deleting the rule.
+        const outcome = await runAction({
+          model: creditModel({constraints: [advisory]}),
+          actionName: 'Credit',
+          args: {account: 'A1', amount: 100},
+          client: resolvingFake().client,
+        });
+        if (outcome.status !== 'committed') throw new Error(outcome.message);
+      });
+
+  test('does not gate it as a guard either', async () => {
+    const outcome = await runAction({
+      model: creditModel({
+        actions: [{...credit, guards: ['BalanceIsLow']}],
+        constraints: [advisory],
+      }),
+      actionName: 'Credit',
+      args: {account: 'A1', amount: 100},
+      client: resolvingFake().client,
+    });
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+  });
+
+  test(
+      'but a guard naming nothing the model declares still refuses',
+      async () => {
+        // Validation makes that a hard error and `kcmd action run` now runs
+        // validation -- but a library caller reaching runAction directly gets
+        // no such pass, and a guard this cannot account for is not something
+        // to wave through on the grounds that it was not found.
+        const outcome = await runAction({
+          model: creditModel({
+            actions: [{...credit, guards: ['NoSuchRule']}],
+            constraints: [advisory],
+          }),
+          actionName: 'Credit',
+          args: {account: 'A1', amount: 100},
+          client: resolvingFake().client,
+        });
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message).toContain('\'NoSuchRule\'');
+      });
+});
+
+
+// For a `sql` executor the write is in the model, so what it touches is a fact
+// to be read rather than a claim to be believed.
+describe('the blast radius read off the statements', () => {
+  const nonNegative: Constraint = {
+    name: 'NonNegativeBalance',
+    expression: 'Account.balance >= 0',
+    description: 'An account cannot go negative.',
+  };
+
+  test(
+      'an action that writes more than it declares is still caught',
+      async () => {
+        // This `affects` omits Account, whose balance the second statement
+        // changes, and the constraint reads exactly that. Trusting the
+        // declaration would run the write with the rule unevaluated -- and an
+        // author who under-declares is the likeliest one to have missed it.
+        const outcome = await runAction({
+          model: creditModel({
+            actions: [{
+              ...credit,
+              affects: [{concept: 'Entry', operation: 'create'}],
+            }],
+            constraints: [nonNegative],
+          }),
+          actionName: 'Credit',
+          args: {account: 'A1', amount: 100},
+          client: resolvingFake().client,
+        });
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message)
+            .toContain('\'NonNegativeBalance\' could constrain');
+      });
+
+  test(
+      'a statement writing a table no concept binds is not vouched for',
+      async () => {
+        // An audit table is not something a constraint can be stated over,
+        // but it is also not something this can attribute to a concept -- and
+        // what it would be vouching for is running the write unchecked.
+        const outcome = await runAction({
+          model: creditModel({
+            actions: [{
+              ...credit,
+              executor: {
+                kind: 'sql',
+                sql: {
+                  statements: ['INSERT INTO audit_log (note) VALUES (@amount)'],
+                },
+              },
+              affects: [{concept: 'Entry', operation: 'create'}],
+            }],
+            constraints: [nonNegative],
+          }),
+          actionName: 'Credit',
+          args: {account: 'A1', amount: 100},
+          client: resolvingFake().client,
+        });
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message).toContain('could constrain');
+      });
+
+  test(
+      'an action whose statements stay inside what it declares runs',
+      async () => {
+        // The point of reading the statements is to catch the one that
+        // reaches further, not to refuse everything.
+        const fake = resolvingFake();
+        const outcome = await runAction({
+          model: creditModel({
+            constraints: [{
+              name: 'EntryHasAmount',
+              expression: 'Entry.amount >= 0',
+              description: 'A ledger entry records an amount.',
+            }],
+            actions: [{
+              ...credit,
+              executor: {
+                kind: 'sql',
+                sql: {
+                  statements: [
+                    'UPDATE Account SET balance = balance - @amount ' +
+                        'WHERE account_id = @account',
+                  ],
+                },
+              },
+              affects: [{
+                concept: 'Account',
+                operation: 'modify',
+                fields: ['balance'],
+              }],
+            }],
+          }),
+          actionName: 'Credit',
+          args: {account: 'A1', amount: 100},
+          client: fake.client,
+        });
+        if (outcome.status !== 'committed') throw new Error(outcome.message);
+      });
+});
+
+
+describe('an entity whose key has more than one column', () => {
+  test('is not resolved by matching one part of the key', async () => {
+    // `region = @ref OR account_id = @ref` accepts a row matching one PART of
+    // the key as though it were the row meant, and can match several rows that
+    // agree on that part and differ in the rest. One value cannot name a
+    // two-column key, and guessing which column it names is not resolution.
+    const fake =
+        new FakeSpanner([{match: 'FROM Account', rows: [['eu', '1']]}]);
+    const outcome = await run(fake, {
+      model: model({
+        entities: [{
+          name: 'Account',
+          dataSource: 'demo.payments.Account',
+          keys: ['region', 'accountId'],
+          fields: [
+            {name: 'region', expression: 'region', type: 'String'},
+            {name: 'accountId', expression: 'account_id', type: 'String'},
+          ],
+        }],
+      }),
+    });
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('its key has 2 columns');
+    // Nothing was asked of the store: there was no question to ask.
+    expect(fake.statements).toEqual([]);
+  });
+});
+
+
+describe('an argument given as empty text', () => {
+  test('is a value for a String parameter', async () => {
+    // `--arg memo=` says the memo is blank, which is a different statement
+    // from not passing one.
+    const fake = resolvingFake();
+    const outcome = await runAction({
+      model: creditModel({
+        actions: [{
+          ...credit,
+          executor: {
+            kind: 'sql',
+            sql: {
+              statements: [
+                'UPDATE Account SET memo = @memo WHERE account_id = @account',
+              ],
+            },
+          },
+          parameters: [
+            {name: 'account', type: 'Account', isEntityRef: true},
+            {name: 'memo', type: 'String', isEntityRef: false},
+          ],
+          affects: [{
+            concept: 'Account',
+            operation: 'modify',
+            fields: ['balance'],
+          }],
+        }],
+      }),
+      actionName: 'Credit',
+      args: {account: 'A1', memo: ''},
+      client: fake.client,
+    });
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+  });
+
+  test('is still not a value for a numeric one', async () => {
+    // There is no Float that empty text could be.
+    const outcome =
+        await runCredit(resolvingFake(), {args: {account: 'A1', amount: ''}});
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('was not given a value');
   });
 });

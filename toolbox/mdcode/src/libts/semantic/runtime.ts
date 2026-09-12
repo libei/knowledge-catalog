@@ -35,6 +35,7 @@ import * as spanner from '../gcp/spanner';
 import {
   Action,
   ActionParameter,
+  Constraint,
   Entity,
   generatedKeyParam,
   SemanticModel,
@@ -140,6 +141,10 @@ export async function runAction(opts: RunActionOptions):
   const unsafe = unsafeToRunUnchecked(model, action);
   if (unsafe) return {status: 'error', message: unsafe};
 
+  // Whether a transaction was ever opened. A session that could not be
+  // created, or a `beginReadWrite` that threw, fails with nothing to roll
+  // back -- and the outer catch must not claim it rolled one back.
+  let opened = false;
   try {
     return await client.withSession(async sessionName => {
       const begun = await client.beginReadWrite(sessionName);
@@ -151,6 +156,7 @@ export async function runAction(opts: RunActionOptions):
               begun.status}${begun.message ? `: ${begun.message}` : ''}).`,
         } as ActionOutcome;
       }
+      opened = true;
 
       const run = async (stmt: spanner.Statement) => {
         const res = await client.executeSql(sessionName, transactionId, stmt);
@@ -204,23 +210,36 @@ export async function runAction(opts: RunActionOptions):
           await run(stmt);
         }
 
-        const committed = await client.commit(sessionName, transactionId);
+        // Deliberately NOT rolled back. Once commit has been called the
+        // transaction's fate is the server's, and a deadline or a 5xx is
+        // exactly the shape of failure Spanner returns for a commit that
+        // landed and lost its response. Reporting "rolled back" here would be
+        // a guess, and the caller acting on it would retry a write that
+        // already happened.
+        const indeterminate = (reason: string): ActionOutcome => ({
+          status: 'error',
+          indeterminate: true,
+          message: `Action '${action.name}' ran, but committing it failed ` +
+              `on ${client.database}: ${reason}. Whether the write landed is ` +
+              `unknown -- the store may have applied it and lost the ` +
+              `response -- so read the affected data before retrying.`,
+        });
+
+        // A commit fails in two shapes, and they mean the same thing here. It
+        // can RETURN a non-2xx, or it can REJECT outright: the request throws
+        // on a socket hang-up, a DNS failure or an abort, and reading the
+        // response body can throw too. That second shape is precisely what a
+        // commit deadline looks like from the client -- so letting it fall
+        // through to the catch below, which rolls back and says so, would
+        // state the exact opposite of what this branch exists to say.
+        let committed;
+        try {
+          committed = await client.commit(sessionName, transactionId);
+        } catch (err) {
+          return indeterminate(err instanceof Error ? err.message : `${err}`);
+        }
         if (committed.status < 200 || committed.status >= 300) {
-          // Deliberately NOT rolled back. Once commit has been called the
-          // transaction's fate is the server's, and a deadline or a 5xx is
-          // exactly the shape of failure Spanner returns for a commit that
-          // landed and lost its response. Reporting "rolled back" here would
-          // be a guess, and the caller acting on it would retry a write that
-          // already happened.
-          return {
-            status: 'error',
-            indeterminate: true,
-            message: `Action '${action.name}' ran, but committing it failed ` +
-                `on ${client.database}: ${
-                    committed.message ?? committed.status}. Whether the write ` +
-                `landed is unknown -- the store may have applied it and lost ` +
-                `the response -- so read the affected data before retrying.`,
-          } as ActionOutcome;
+          return indeterminate(`${committed.message ?? committed.status}`);
         }
         return {
           status: 'committed',
@@ -236,10 +255,13 @@ export async function runAction(opts: RunActionOptions):
       }
     });
   } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
     return {
       status: 'error',
-      message: `Action '${action.name}' failed and was rolled back: ${
-          err instanceof Error ? err.message : String(err)}`,
+      message: opened ?
+          `Action '${action.name}' failed and was rolled back: ${reason}` :
+          `Action '${action.name}' could not start on ${client.database}: ${
+              reason}`,
     };
   }
 }
@@ -273,7 +295,16 @@ class StoreError extends Error {}
 // makes this runtime useful before the evaluator exists.
 function unsafeToRunUnchecked(
     model: SemanticModel, action: Action): string|null {
-  const guards = action.guards ?? [];
+  // A guard names a constraint the author says is checked before the call.
+  // One whose `onViolation` is `warn` reports rather than refuses, so an
+  // evaluator would let the write through, and refusing here would make a
+  // model that states advisory rules permanently unrunnable. Only a name the
+  // model declares AS advisory stands down -- a guard naming nothing this
+  // model declares still refuses, because it is not something to guess about.
+  const advisory = new Set((model.constraints ?? [])
+                               .filter(c => c.onViolation === 'warn')
+                               .map(c => c.name));
+  const guards = (action.guards ?? []).filter(g => !advisory.has(g));
   if (guards.length) {
     return `Action '${action.name}' is guarded by ${quoteList(guards)}, and ` +
         `this runtime does not evaluate constraints yet. Running it would ` +
@@ -281,7 +312,7 @@ function unsafeToRunUnchecked(
         `refused rather than run unchecked.`;
   }
 
-  const constraints = model.constraints ?? [];
+  const constraints = gatingConstraints(model);
   if (constraints.length && !(action.affects ?? []).length) {
     return `Action '${action.name}' declares no 'affects', so there is no ` +
         `way to tell whether the ${constraints.length} constraint(s) this ` +
@@ -319,11 +350,82 @@ function unsafeToRunUnchecked(
 //
 // The cost of both is refusing an action that would have been fine, which the
 // evaluator will then let through. That is the direction to be wrong in.
+// The constraints that could REFUSE a write. `onViolation: warn` says a
+// violation is reported rather than rejected, so such a rule cannot decide
+// whether an action may run -- and gating on it would make a model that states
+// advisory rules permanently unrunnable, with nothing the author could change.
+// An absent `onViolation` carries no default (see VIOLATION_EFFECTS), so it is
+// NOT read as advisory here: only the explicit `warn` stands down.
+function gatingConstraints(model: SemanticModel): Constraint[] {
+  return (model.constraints ?? []).filter(c => c.onViolation !== 'warn');
+}
+
+
+// The concepts an action's own statements write, or null for "cannot tell".
+//
+// Only a `sql` executor has statements to read. For any other kind this
+// returns an empty set, which leaves the declared `affects` as the only
+// evidence there is -- the write lives in a system this cannot see. Null is
+// different and stronger: a statement names a table this cannot attribute to a
+// concept, so nothing here supports the claim that some constraint does not
+// bear on the write, and the caller must read it as every concept rather than
+// as none.
+//
+// The statements are validated to be one DML verb each with no `;`
+// (sqlExecutorErrors), so the target is the identifier after the verb.
+function conceptsWrittenBy(
+    model: SemanticModel, action: Action): Set<string>|null {
+  if (action.executor.kind !== 'sql') return new Set();
+  const statements = action.executor.sql?.statements ?? [];
+
+  // An action's statements address a table by its final name segment -- the
+  // same reading `spannerTable` produces for the resolver -- so the map is
+  // keyed that way, and case-insensitively, because SQL identifiers are.
+  const ignored: string[] = [];
+  const byTable = new Map<string, string>();
+  const add = (source: string|undefined, concept: string) => {
+    if (!source) return;
+    const table =
+        spannerTable(source, ignored, concept).replace(/`/g, '').toLowerCase();
+    if (table) byTable.set(table, concept);
+  };
+  for (const entity of model.entities ?? []) add(entity.dataSource, entity.name);
+  for (const rel of model.relationships ?? []) {
+    add(rel.association?.dataSource, rel.name);
+  }
+
+  const written = new Set<string>();
+  for (const sql of statements) {
+    const target =
+        /\b(?:insert\s+into|update|delete\s+from)\s+(`[^`]+`|[\w$]+)/i.exec(sql);
+    if (!target) return null;
+    const concept = byTable.get(target[1].replace(/`/g, '').toLowerCase());
+    // A table no concept binds is not something a constraint can be stated
+    // over -- but it is also not something this can vouch for, and what it
+    // would be vouching for is running the write unchecked.
+    if (!concept) return null;
+    written.add(concept);
+  }
+  return written;
+}
+
+
 function constraintsOverAffected(
     model: SemanticModel, action: Action): string[] {
-  const constraints = model.constraints ?? [];
+  const constraints = gatingConstraints(model);
+  if (!constraints.length) return [];
+
+  // What the author DECLARED, widened by what the statements actually write.
+  // `affects` is a declaration, and an action declaring `affects: [Transfer
+  // create]` whose second statement is `UPDATE Account SET ...` would
+  // otherwise pass a test that never read the write it is about to run. For a
+  // `sql` executor the statements are in hand, so the blast radius is checked
+  // rather than taken on trust.
   const affected = new Set((action.affects ?? []).map(a => a.concept));
-  if (!constraints.length || !affected.size) return [];
+  const written = conceptsWrittenBy(model, action);
+  if (!written) return constraints.map(c => c.name).sort();
+  for (const name of written) affected.add(name);
+  if (!affected.size) return [];
 
   const conceptNames = [
     ...(model.entities ?? []).map(e => e.name),
@@ -402,7 +504,11 @@ function bindReference(
 // -- which is the difference between "9" being less than "10" and not.
 function bindScalar(param: ActionParameter, raw: unknown):
     {value: unknown; code: string}|{error: string} {
-  if (raw === undefined || raw === null || `${raw}`.trim() === '') {
+  // An empty String IS a value: `--arg memo=` is the caller saying the memo is
+  // blank, which is a different statement from not passing one. For every
+  // other type there is no value empty text could be, so it stays an error.
+  if (raw === undefined || raw === null ||
+      (`${raw}`.trim() === '' && param.type !== 'String')) {
     return {
       error: `Action parameter '${param.name}' (${param.type}) was not given ` +
           `a value.`,
@@ -614,16 +720,24 @@ async function resolveEntityRef(
   // would hold read locks over the whole table for the length of the write.
   // Input that is not a value of a key's type cannot name that key, so its
   // predicate is dropped rather than made to match by casting.
+  //
+  // Only a SINGLE-column key is matched this way. One input value cannot name
+  // a composite key, and `k1 = @ref OR k2 = @ref` would accept a row matching
+  // one PART of the key as though it were the row meant -- worse, it can match
+  // several rows that agree on that part and differ in the rest. A
+  // composite-keyed entity is reachable here only through its identifying
+  // text column.
   const predicates: string[] = [];
   const params: Record<string, unknown> = {};
   const paramTypes: Record<string, {code: string}> = {};
-  keyColumns.forEach((column, i) => {
-    const bound = bindScalar({name: 'ref', type: keyTypes[i]}, input);
-    if ('error' in bound) return;
-    predicates.push(`${column} = @ref${i}`);
-    params[`ref${i}`] = bound.value;
-    paramTypes[`ref${i}`] = {code: bound.code};
-  });
+  if (keyColumns.length === 1) {
+    const bound = bindScalar({name: 'ref', type: keyTypes[0]}, input);
+    if (!('error' in bound)) {
+      predicates.push(`${keyColumns[0]} = @ref0`);
+      params['ref0'] = bound.value;
+      paramTypes['ref0'] = {code: bound.code};
+    }
+  }
   // An identifying column is a String field by construction, so the input is
   // already a value of its type.
   const label = identifyingColumn(entity);
@@ -633,7 +747,14 @@ async function resolveEntityRef(
     paramTypes['ref'] = {code: 'STRING'};
   }
   if (!predicates.length) {
-    // The input is not a value of any key's type and there is no text field to
+    if (keyColumns.length > 1) {
+      return {
+        error: `Cannot resolve a ${entity.name} from a single value: its key ` +
+            `has ${keyColumns.length} columns, and it declares no ` +
+            `identifying text field to match instead.`,
+      };
+    }
+    // The input is not a value of the key's type and there is no text field to
     // match it against, so no row in the table can be the one meant.
     return {error: `No ${entity.name} matches '${input}'.`};
   }
