@@ -617,6 +617,42 @@ describe('one name space for everything a model offers', () => {
 });
 
 
+describe('the instruction an agent is given comes from the model', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+
+  test('the model\'s own words come first, verbatim', () => {
+    const stated = {
+      ...model,
+      aiContext: {instructions: 'You work a returns desk for this business.'},
+    };
+    const {instruction} = modelTools({model: stated, client: NO_CLIENT});
+    expect(instruction.startsWith('You work a returns desk for this business.'))
+        .toBe(true);
+  });
+
+  test('how to use the tools is supplied whether or not the model speaks',
+       () => {
+         // The half that describes the tools is the derivation's to state: it
+         // is a contract this module defines, and a model that says nothing
+         // has not thereby withdrawn it.
+         const {instruction} = modelTools({model, client: NO_CLIENT});
+         expect(model.aiContext?.instructions).toBeUndefined();
+         expect(instruction).toContain('Never invent an identifier');
+         expect(instruction).toContain('lookup tools');
+         expect(instruction).toContain('did not happen');
+       });
+
+  test('the two parts are separated, not run together', () => {
+    const stated = {
+      ...model,
+      aiContext: {instructions: 'You work a returns desk.'},
+    };
+    const {instruction} = modelTools({model: stated, client: NO_CLIENT});
+    expect(instruction).toContain('You work a returns desk.\n\nNever invent');
+  });
+});
+
+
 describe('what a caller is told about an outcome', () => {
   test('a commit reports when, and what it acted on', () => {
     // The rows, not the arguments: an agent that said "Alice" should report

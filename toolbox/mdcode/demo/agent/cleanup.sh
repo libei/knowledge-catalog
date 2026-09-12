@@ -9,8 +9,10 @@
 set -euo pipefail
 
 # The same question setup.sh asks, so the database dropped is the one created.
-HERE=$(dirname "$0")
-read -r PROJECT INSTANCE DATABASE <<<"$(bun "$HERE/target.ts")"
+HERE=$(cd "$(dirname "$0")" && pwd)
+KCMD=${KCMD:-$HERE/../../dist/kcmd}
+IFS=/ read -r PROJECT INSTANCE DATABASE \
+  <<<"$(cd "$HERE" && "$KCMD" action list --store)"
 
 gcloud spanner databases delete "$DATABASE" \
   --instance="$INSTANCE" --project="$PROJECT"

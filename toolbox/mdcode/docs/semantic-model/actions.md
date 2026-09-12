@@ -895,8 +895,11 @@ rather than inventing a tool schema.
 ```ts
 import {modelTools} from './src/libts/semantic/agent_tools';
 
-const {lookups, actions} = modelTools({model, client});
+const {lookups, actions, instruction} = modelTools({model, client});
 ```
+
+`kcmd agent tools` prints all three, so what an agent will be handed can be read
+before an agent exists.
 
 `actions` holds one write tool per action. Its name is the action's, snake-cased;
 its description is the action's description followed by its
@@ -918,6 +921,27 @@ entity `Account` and an action `FindAccount` both want to be called
 action keeps the name, because it is the author's own, and the lookup takes
 `lookup_account`. `actionTools` and `entityTools` are also exported for a caller
 that wants one half, and each names its own tools without seeing the other.
+
+### The instruction is not the agent's to write
+
+`instruction` is what to tell an agent holding these tools, and it has two parts
+because two different people own them.
+
+The first is the model's own `ai_context.instructions` — what this business asks
+of anything that acts on it. It belongs to the model because it is true of every
+agent that acts on the model, including the ones nobody has written yet, and
+because a rule an agent keeps in its own source can be changed without the
+people who own the model finding out. Agents are replaced when frameworks
+change; the model is not.
+
+The second is about the tools rather than the business: what a lookup is for,
+and what a refused write means. That half is owed by the derivation, because it
+describes a contract this module defines and the model never stated. Written
+into each agent instead, it is the same paragraph copied into every adapter,
+drifting in each one.
+
+So an agent that appends a persona of its own is saying something the model did
+not. The place to put it is the model.
 
 ### A tool says whether it can be called
 
@@ -960,9 +984,15 @@ that what runs is what the catalog published, and one handler serves the whole
 model, so passing it through would retract that claim for every such action at
 once.
 
-[`demo/agent`](../../demo/agent/README.md) runs all of this against a live
-Spanner database — a model, a binding profile, the derived tools printed and
-called by hand, and the same tools bound to a Gemini agent.
+[`demo/agent`](../../demo/agent/README.md) is a recipe for all of this against a
+live Spanner database: a model, a binding profile, `kcmd action run` and `kcmd
+agent tools` to check both halves before any agent exists, and then 68 lines of
+ADK that mention nothing about the business.
+
+Opening the workspace is `openWorkspace` and `spannerStore` from
+`semantic/workspace`, the same pair `kcmd action` uses — so an agent reads the
+model the CLI reads, under the same profile, with the same merge and the same
+warnings.
 
 ## What is not modeled yet
 

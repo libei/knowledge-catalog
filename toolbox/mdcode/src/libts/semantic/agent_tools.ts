@@ -416,6 +416,11 @@ export interface ModelTools {
   lookups: EntityTool[];
   /** One write per action. */
   actions: ActionTool[];
+  /**
+   * What to tell an agent holding these tools: the model's own
+   * `ai_context.instructions` followed by how the tools are meant to be used.
+   */
+  instruction: string;
 }
 
 
@@ -450,7 +455,40 @@ export function modelTools(opts: ActionToolOptions&EntityToolOptions):
         distinct(`lookup_${snakeCase(tool.entityName)}`, taken) :
         distinct(tool.name, taken);
   }
-  return {lookups, actions};
+  return {lookups, actions, instruction: instructionFor(opts.model)};
+}
+
+
+// What to tell an agent that holds these tools, and the split is the point.
+//
+// The first part is the model's own `ai_context.instructions`: what this
+// business asks of anything that acts on it. It belongs to the model because
+// it outlives whichever agent is holding the tools this week, and because an
+// agent that carries it in its own source is a place the rule can be changed
+// without anyone who owns the model noticing.
+//
+// The second part is about the tools rather than the business -- what a lookup
+// is for, and what a refused write means. That half is owed by whoever derived
+// the tools, because it describes a contract this file defines and the model
+// never stated. Written into each agent instead, it is the same paragraph
+// copied into every adapter, drifting in each one.
+//
+// So neither half is the agent's to write, and an agent that appends its own
+// is saying something the model did not.
+function instructionFor(model: SemanticModel): string {
+  const parts: string[] = [];
+  const stated = model.aiContext?.instructions?.trim();
+  if (stated) parts.push(stated);
+  parts.push(
+      'Never invent an identifier. When you are given a name or a ' +
+      'description instead of one, find it with the lookup tools rather than ' +
+      'asking for it -- that is what they are for, and asking wastes the ' +
+      'caller\'s time. Never compute a total or a balance yourself; the ' +
+      'tools do that. When a tool reports that a write did not happen, read ' +
+      'the reason it gives and repeat it plainly; if it says a person has to ' +
+      'decide, say so and stop, because you cannot approve it yourself. ' +
+      'Finish by saying what you changed.');
+  return parts.join('\n\n');
 }
 
 

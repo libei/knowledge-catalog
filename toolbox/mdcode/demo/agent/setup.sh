@@ -25,8 +25,12 @@ set -euo pipefail
 
 # Where to seed is the binding profile's answer, not this script's. Asking it
 # is what keeps setup from creating one database while the demo reads another.
-HERE=$(dirname "$0")
-read -r PROJECT INSTANCE DATABASE <<<"$(bun "$HERE/target.ts")"
+# `kcmd action list --store` is the question, and it is the same question the
+# runtime asks before it writes.
+HERE=$(cd "$(dirname "$0")" && pwd)
+KCMD=${KCMD:-$HERE/../../dist/kcmd}
+IFS=/ read -r PROJECT INSTANCE DATABASE \
+  <<<"$(cd "$HERE" && "$KCMD" action list --store)"
 
 if ! gcloud spanner databases describe "$DATABASE" \
        --instance="$INSTANCE" --project="$PROJECT" >/dev/null 2>&1; then

@@ -9,14 +9,31 @@
 # until an action names it in `guards`, and today's runtime evaluates none of
 # them -- so naming one here would make the action unrunnable rather than
 # checked. They are written down now because the policy exists now; wiring them
-# up is the next step, not a forgotten one. `bun tools.ts --guarded` shows
-# exactly what happens when one is attached.
+# up is the next step, not a forgotten one. Add `guards: [CreditUnderReviewThreshold]`
+# to the action and re-run `kcmd agent tools` to see exactly what that costs today.
 
 version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: commerce
     description: Customers, their orders, and the lines that make up an order
+
+    # How this business wants to be acted on. It is here rather than in the
+    # agent's source because it is true of every agent that acts on this model,
+    # including the ones nobody has written yet -- and because a rule an agent
+    # keeps privately is a rule that can be changed without the people who own
+    # the model finding out. Agents come and go; the model stays.
+    #
+    # Only what is specific to this business belongs here. How to use a lookup
+    # tool, and what to do when a write is refused, are properties of the tools
+    # rather than of commerce, so the derivation supplies those and this does
+    # not repeat them.
+    ai_context:
+      instructions: >-
+        You are working a customer-service desk for this business. The person
+        in front of you has an order and describes it the way a customer does
+        -- a name, a product, what went wrong -- so expect to be given a
+        description where the model expects a number.
 
     entities:
       - name: Customer
