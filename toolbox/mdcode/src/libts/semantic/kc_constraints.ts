@@ -199,8 +199,8 @@ export function readConstraint(entry: Entry, warnings: string[]): Constraint|
     undefined {
   const name = entry.entrySource?.displayName || idOf(entry.name);
   const data = constraintAspectDataOf(entry);
-  const expression = text(data.expression);
-  const judgment = text(data.judgment);
+  const expression = aspectText(data.expression);
+  const judgment = aspectText(data.judgment);
   if (!expression && !judgment) {
     warnings.push(
         `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect has no ` +
@@ -302,7 +302,7 @@ function constraintAspectDataOf(entry: Entry): Record<string, any> {
 
 // The trimmed text an aspect field states, or '' when it states none. A blank
 // or whitespace-only value reads as unset, the same reading readEnum gives.
-function text(value: unknown): string {
+function aspectText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 

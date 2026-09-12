@@ -231,6 +231,25 @@ describe('validatePushRequirements gates constraints', () => {
     expect(errs[0]).toContain('customer.blance');
   });
 
+  test('an entity that declares no fields is not scanned', () => {
+    // Fields are optional, and a logical model bound to nothing but Knowledge
+    // Catalog routinely declares none. Reading an empty set as "this entity
+    // has no such field" would refuse every constraint such a model can write.
+    const m = loaded([{name: 'C', expression: 'orders.total >= 0'}]);
+    m.model.entities = [
+      {name: 'orders', dataSource: 'p.d.o', keys: ['id']} as any,
+    ];
+    expect(validatePushRequirements([m])).toEqual([]);
+  });
+
+  test('an extends naming an undeclared entity does not throw', () => {
+    // declaredFields resolves inheritance, and that throws on an unknown
+    // parent. A validation gate reports; it does not stack-trace.
+    const m = loaded([{name: 'C', expression: 'customer.balance >= 0'}]);
+    (m.model.entities[0] as any).extends = ['MissingParent'];
+    expect(() => validatePushRequirements([m])).not.toThrow();
+  });
+
   test('a quoted literal in an expression is not a field reference', () => {
     const errs = validatePushRequirements([loaded(
         [{name: 'C', expression: "customer.balance = 'customer.blance'"}])]);

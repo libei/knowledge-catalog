@@ -669,8 +669,9 @@ async function provisionOne(
     if (reason) {
       warnings.push(
           `left the existing ${aspectLabel} in project '${home.project}' ` +
-          `unchanged (${reason}); a push that needs a field it does not ` +
-          `carry will fail`);
+          `unchanged (${reason}); a push will fail wherever the two ` +
+          `templates disagree, whether it states a field this one does not ` +
+          `carry or omits one this one still requires`);
     }
   } else if (aspect.status !== 200) {
     const refused = denial(aspectLabel, aspect.status, aspect.message);

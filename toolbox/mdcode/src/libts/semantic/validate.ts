@@ -386,7 +386,22 @@ function validateConstraints(
   const errors: string[] = [];
   const constraints = model.constraints ?? [];
   if (!constraints.length) return errors;
-  const fieldsByEntity = fieldsPruned ? undefined : declaredFields(model);
+  // declaredFields resolves inheritance, and that THROWS on an `extends` naming
+  // an entity the model does not declare. The loader accepts such a model and a
+  // Knowledge-Catalog-only push reaches no graph leg to catch it, so calling
+  // this unguarded turns a bad `extends` into a stack trace out of the
+  // validation gate. Standing the field scan down is the same thing a pruned
+  // profile does: this scan catches a misspelled field, and a model whose
+  // inheritance does not resolve has a larger problem that the graph legs
+  // report where they can resolve it.
+  let fieldsByEntity: Map<string, Set<string>>|undefined;
+  if (!fieldsPruned) {
+    try {
+      fieldsByEntity = declaredFields(model);
+    } catch {
+      fieldsByEntity = undefined;
+    }
+  }
 
   for (const c of constraints) {
     const where =
@@ -467,6 +482,12 @@ function judgedConstraintErrors(
 // refusing to guess is what stops a valid rule being falsely rejected. A known
 // entity with an unknown field is the case where the author plainly meant this
 // model and got the name wrong, so that one is an error.
+
+// An entity that declares no fields at all is unknowable in the same way an
+// unrecognized name is, so the scan stands down there too. Fields are optional
+// on an entity, and a logical model bound to nothing but Knowledge Catalog
+// routinely declares none; reading an empty set as "this entity has no such
+// field" would refuse every constraint such a model can write.
 //
 // The two segments must be adjacent to the dot, which is what keeps a sentence
 // boundary ("check the memo. Every credit...") out of the scan. A decimal
@@ -481,7 +502,7 @@ function unknownFieldRefs(
   for (let m = token.exec(judgment); m; m = token.exec(judgment)) {
     const [, entity, field] = m;
     const fields = fieldsByEntity.get(entity);
-    if (!fields || fields.has(field)) continue;
+    if (!fields || !fields.size || fields.has(field)) continue;
     const ref = `${entity}.${field}`;
     if (seen.has(ref)) continue;
     seen.add(ref);
