@@ -886,6 +886,76 @@ states advisory rules permanently unrunnable.
 Every refusal is decided before a session is opened, so a refused action leaves
 no transaction behind.
 
+## 8. Hand it to an agent
+
+An agent needs two things from a model: a way to look at what is there, and a
+way to change it. Both are already declared, so `agent_tools` reads them out
+rather than inventing a tool schema.
+
+```ts
+import {modelTools} from './src/libts/semantic/agent_tools';
+
+const {lookups, actions} = modelTools({model, client});
+```
+
+`actions` holds one write tool per action. Its name is the action's, snake-cased;
+its description is the action's description followed by its
+`ai_context.instructions`; its parameters are the action's parameters, with each
+ontology type mapped to a JSON one and each entity-typed parameter described as
+the reference it is. Invoking it runs the action — the same resolve, bind and
+transact `kcmd action run` performs.
+
+`lookups` holds one read tool per entity: exact match on any bound field,
+combined with AND, capped at 50 rows. No joins, no ranges, no aggregation, no
+ordering. That is enough for an agent to find the object an action needs, and it
+keeps the generated SQL checkable by eye. Table and column names come from the
+binding and every filter value is a bound parameter, so no caller text reaches
+the SQL.
+
+`modelTools` returns both halves with their names settled against each other. An
+entity `Account` and an action `FindAccount` both want to be called
+`find_account`, and deriving them together is the only place that can notice: the
+action keeps the name, because it is the author's own, and the lookup takes
+`lookup_account`. `actionTools` and `entityTools` are also exported for a caller
+that wants one half, and each names its own tools without seeing the other.
+
+### A tool says whether it can be called
+
+Every refusal in [section 7](#7-run-it) is decided before the store is touched,
+so it can be decided before the tool is offered. Each action tool carries
+`runnable`, and when it is false, `unavailable` says why — a withdrawn executor,
+a remote executor with no handler, or a guard nothing checks. The verdict is
+asked of the runtime rather than worked out again, so the two cannot drift: a
+tool advertised as runnable that refuses every call spends the agent's turn and
+teaches it nothing, and one withheld that would have worked is never discovered
+at all.
+
+The tool is still returned and still named either way. An action the model
+declares should not vanish from what the model offers; an adapter binds the
+runnable ones and reports the rest.
+
+### The framework binding is the caller's
+
+Nothing in this module imports an agent framework. A tool is a name, a
+description, typed parameters and a function, so binding one to ADK, to
+LangChain or to an MCP server is a short adapter the caller writes, and a second
+framework costs nothing here.
+
+An outcome comes back as three states rather than two. A write that landed and
+one that did not are the obvious pair; the third is a commit whose result
+nothing can establish, reported as unknown with an explicit "do not retry",
+because a caller reading it as "nothing happened" applies the write twice.
+
+`handler` may be passed for an executor this runtime cannot perform itself. It is
+not passed to an action with a `sql` executor: the claim such an action makes is
+that what runs is what the catalog published, and one handler serves the whole
+model, so passing it through would retract that claim for every such action at
+once.
+
+[`demo/agent`](../../demo/agent/README.md) runs all of this against a live
+Spanner database — a model, a binding profile, the derived tools printed and
+called by hand, and the same tools bound to a Gemini agent.
+
 ## What is not modeled yet
 
 This is a prototype. Three things a reader reasonably expects are absent.
