@@ -87,6 +87,16 @@ describe('loader parses actions', () => {
     expect(models[0].actions).toBeUndefined();
   });
 
+  test('an explicit `executor: null` reads the same as no executor', () => {
+    // `executor:` with its body commented out parses as null, and a profile
+    // already spells withdrawal that way, so the two agree rather than one
+    // being a parse error.
+    const {models, warnings} =
+        withActions([{name: 'A', executor: null, parameters: []}]);
+    expect(models[0].actions![0].executor).toBeUndefined();
+    expect(warnings).toEqual([]);
+  });
+
   test('an unresolvable parameter type is kept verbatim and warned', () => {
     const {models, warnings} = withActions([{
       name: 'A',
@@ -407,6 +417,41 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     const {entries, entryLinks} = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(entries, entryLinks);
     expect(models[0].actions).toEqual(model.actions);
+  });
+
+  test('an action with no executor publishes and pulls back unchanged', () => {
+    // The `semantic-action` aspect type does not require `executorKind`: an
+    // action no binding performs here is still a declaration, and the catalog
+    // is where declarations live.
+    const unbound: SemanticModel = structuredClone(model);
+    delete unbound.actions![0].executor;
+
+    const {entries, entryLinks} = generateCatalogResources(unbound, OPTS);
+    const entry = entries.find(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))!;
+    const data = entry.aspects!['dest.global.semantic-action'].data!;
+    expect(data.executorKind).toBeUndefined();
+    // Everything else the action declares is still published.
+    expect(data.parameters).toEqual([
+      {name: 'customer', type: 'customer', isEntityRef: true},
+      {name: 'quantity', type: 'Integer', isEntityRef: false},
+    ]);
+
+    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    expect(models[0].actions).toEqual(unbound.actions);
+    expect(warnings.some(w => w.includes('executor'))).toBe(false);
+  });
+
+  test('an entry whose executor names a kind it cannot back is skipped', () => {
+    // The other half of the rule above: no kind is a published state, a kind
+    // with no coordinates is damage, and damage still degrades itself.
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const entry = entries.find(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))!;
+    entry.aspects!['dest.global.semantic-action'].data!.mcpTool = '';
+
+    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    expect(models[0].actions ?? []).toEqual([]);
+    expect(warnings.some(w => w.includes('no usable') && w.includes('executor')))
+        .toBe(true);
   });
 
   test('a pull missing the referenced entity drops isEntityRef and warns', () => {

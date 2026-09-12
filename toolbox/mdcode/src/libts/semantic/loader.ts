@@ -262,7 +262,9 @@ const actionSchema = z.object({
   description: z.string().optional(),
   // Optional because it is a physical binding: a profile may supply it, and a
   // purely logical model declares actions it cannot perform. See Action.
-  executor: executorSchema.optional(),
+  // `null` reads the same as absent, so `executor:` with the body commented out
+  // means here what `executor: null` means in a profile: performed by nothing.
+  executor: executorSchema.nullish(),
   parameters: z.array(parameterSchema).optional(),
   // Names of the constraints that gate this action. Kept as plain strings: they
   // are resolved against the model's own constraints in validate.ts, which sees
@@ -461,7 +463,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
   const action = z.object({
                     name: z.string(),
                     description: z.string().optional(),
-                    executor: executorSchema.optional(),
+                    executor: executorSchema.nullish(),
                     parameters: z.array(parameter).optional(),
                     guards: z.array(z.string()).optional(),
                     affects: z.array(affectedConceptSchema).optional(),
@@ -995,7 +997,7 @@ function convertAction(
   };
   // Absent when no binding supplies one -- the action is declared but not
   // performable here.
-  if (a.executor !== undefined) {
+  if (a.executor != null) {
     action.executor = convertExecutor(a.executor);
   }
   if (a.guards?.length) {

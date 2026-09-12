@@ -119,9 +119,18 @@ withdraws it — a read-only binding that performs no writes at all.
 
 Writing no executor anywhere is allowed. The action is then **declared but not
 performable**: it still states what it does, what gates it, and what it changes,
-which is the whole of what a reader needs, and it still publishes to the
-catalog. `kcmd profiles` lists it under `cannot run:` for each binding that
-supplies no executor for it.
+which is the whole of what a reader needs. A catalog-only push (`--no-profile`,
+or a model with no deployment target) publishes it like any other action.
+`kcmd profiles` lists it under `cannot run:` for each binding that supplies no
+executor for it.
+
+A push that also deploys a graph is different, and in the same way it already is
+for metrics: the catalog entries reflect the binding that was pushed, pruned to
+what it can do. An action that binding cannot perform is absent from them, and
+because the model owns its action entries for delete reconciliation, pushing
+that binding removes an entry an earlier push published. Choose the binding
+whose view of the model the catalog should hold — `default_profile` in
+`catalog.yaml` — as you would for a metric only one store can answer.
 
 ### What an entity-typed parameter adds
 

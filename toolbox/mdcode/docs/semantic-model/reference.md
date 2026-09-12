@@ -390,10 +390,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   does resolve reports every field it does not have. Everything that reads the
   ontology — the concept check and the field check both — stands down on a
   profile push, because pruning drops whole entities and whole relationships as
-  well as unbound fields — and drops any action that names one, so the action
-  the check would have complained about is already gone — and an action reaches
-  no graph in any case; the fields-beside-a-`delete` check reads only the entry,
-  so it still applies. A `sql` executor is checked further, because it carries the
+  well as unbound fields, and an action reaches no graph in any case. Pruning
+  now drops an action that names a dropped *concept*, so for the concept check
+  the offending action is gone before the check would run; it does not drop one
+  whose `affects` names a pruned *field*, so a blast radius can still name a
+  field the published entity no longer carries, and nothing reports it. The
+  fields-beside-a-`delete` check reads only the entry, so it still applies. A `sql` executor is checked further, because it carries the
   write itself rather than a pointer to whoever performs it: each statement must
   begin with `INSERT`, `UPDATE` or `DELETE`, must contain no `;` other than a
   trailing one, and may reference only `@parameter` names the action declares —

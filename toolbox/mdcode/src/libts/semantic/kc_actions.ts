@@ -255,15 +255,21 @@ export function actionAspectTypes(entryTypeBase: string): string[] {
  * needs no
  * such treatment: it stores only what the author wrote.
  *
- * Returns undefined, with a warning, for an entry whose executor is missing or
- * malformed: one bad entry degrades itself rather than the pull.
+ * An entry with NO executor recovers as an action with none: that is a legal
+ * published state, not damage. An entry whose executor names a kind but lacks
+ * the coordinates that kind needs is malformed, and returns undefined with a
+ * warning, so one bad entry degrades itself rather than the pull.
  */
 export function readAction(
     entry: Entry, entityNames: string[], warnings: string[]): Action|undefined {
   const name = entry.entrySource?.displayName || idOf(entry.name);
   const data = actionAspectDataOf(entry);
+  // No kind at all is an action no binding performed, which round-trips as it
+  // was published. A kind whose coordinates are missing is damage.
+  const declaresExecutor =
+      typeof data.executorKind === 'string' && data.executorKind.trim() !== '';
   const executor = readExecutor(data);
-  if (!executor) {
+  if (declaresExecutor && !executor) {
     warnings.push(
         `action '${name}': the ${ACTION_TYPE_ID} aspect has no usable ` +
         `executor; the action is skipped`);
@@ -275,7 +281,8 @@ export function readAction(
           .map((p: any) => readParameter(p, entitySet, name, warnings))
           .filter((p): p is ActionParameter => p !== undefined);
 
-  const action: Action = {name, executor, parameters};
+  const action: Action = {name, parameters};
+  if (executor) action.executor = executor;
   // Guard names round-trip verbatim. A name whose constraint is not part of
   // this pull is kept rather than dropped, because dropping it here would
   // silently rewrite the author's model. It is not kept in silence:

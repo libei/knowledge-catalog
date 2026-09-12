@@ -178,15 +178,19 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
     type: 'record',
     recordFields: [
       {
+        // NOT required: an executor is a physical binding, so an action no
+        // binding performs here publishes with none. The rest of the record --
+        // the parameters, the guards, what it changes -- is the declaration,
+        // and that is what the catalog is for.
         index: 1,
         name: 'executorKind',
         type: 'string',
-        constraints: {required: true},
         annotations: {
           displayName: 'Executor Kind',
           description:
-              'How the action is executed: `mcp`, `rest`, or `grpc`. The ' +
-              'fields for that kind, and only those, are set.',
+              'How the action is executed: `mcp`, `rest`, `grpc`, or `sql`. ' +
+              'The fields for that kind, and only those, are set. Absent ' +
+              'when no binding supplies an executor.',
         },
       },
       {
