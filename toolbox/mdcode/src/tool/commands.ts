@@ -449,15 +449,16 @@ export async function push(options: PushOptions): Promise<number> {
             });
             for (const r of availability) {
               const dropped = r.droppedEntities.length + r.droppedMetrics.length +
-                  r.droppedRelationships.length;
+                  r.droppedRelationships.length + r.droppedActions.length;
               if (r.unboundFields.length || dropped) {
                 console.warn(
                     `Note: profile '${r.profile}' leaves ${
                         r.unboundFields.length} field(s) unbound` +
                     (dropped ?
                          `; ${r.droppedEntities.length} entity(ies), ${
-                             r.droppedMetrics.length} metric(s) and ${
+                             r.droppedMetrics.length} metric(s), ${
                              r.droppedRelationships.length} relationship(s) ` +
+                             `and ${r.droppedActions.length} action(s) ` +
                              `unavailable` :
                          '') +
                     '.');
@@ -805,6 +806,14 @@ export async function profiles(): Promise<number> {
         for (const w of withheld) console.log(`      ${w}`);
       } else {
         console.log('    cannot answer: nothing withheld.');
+      }
+      // Listed apart from the read side: an action is not a question this
+      // binding cannot answer, it is a write it cannot perform.
+      if (report.droppedActions.length) {
+        console.log('    cannot run:');
+        for (const d of report.droppedActions) {
+          console.log(`      action ${d.name} (${d.reason})`);
+        }
       }
     }
   }

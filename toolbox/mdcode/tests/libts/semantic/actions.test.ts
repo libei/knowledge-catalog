@@ -113,6 +113,25 @@ describe('loader parses actions', () => {
         .toThrow(/exactly one kind/);
   });
 
+  test('an action with no executor at all loads, with executor unset', () => {
+    // An empty executor is a binding that names no mechanism, which is an
+    // authoring mistake. Omitting it entirely says something else: no binding
+    // supplies one here. The action still declares what it does and what gates
+    // it, which is the whole of what a reader needs, so it loads.
+    const {models, warnings} = withActions([{
+      name: 'A',
+      description: 'Declared here, performed elsewhere',
+      parameters: [{name: 'customer', type: 'customer'}],
+    }]);
+    const [action] = models[0].actions!;
+    expect(action.executor).toBeUndefined();
+    expect(action.description).toBe('Declared here, performed elsewhere');
+    expect(action.parameters).toEqual([
+      {name: 'customer', type: 'customer', isEntityRef: true},
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
   test('rest and grpc executors normalize to the tagged union', () => {
     const {models} = withActions([
       {
@@ -202,6 +221,18 @@ describe('validatePushRequirements gates actions', () => {
     const errs = validatePushRequirements([loaded([{
       name: 'PlaceOrder',
       executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
+      parameters: [{name: 'customer', type: 'customer', isEntityRef: true}],
+    }])]);
+    expect(errs).toEqual([]);
+  });
+
+  test('an action with no executor passes: it is still publishable', () => {
+    // The catalog records what the action does, and that is worth publishing
+    // whether or not this binding can perform it. A missing executor is a
+    // question of availability, which pruneUnavailable answers; a blank
+    // coordinate INSIDE an executor is still a hard error, below.
+    const errs = validatePushRequirements([loaded([{
+      name: 'PlaceOrder',
       parameters: [{name: 'customer', type: 'customer', isEntityRef: true}],
     }])]);
     expect(errs).toEqual([]);

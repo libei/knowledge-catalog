@@ -4,7 +4,8 @@
 // A model is authored as ONE logical declaration (entities, fields,
 // relationships, metrics, the grain, and the graph shape) plus zero or more
 // BINDING PROFILES that supply the physical facets it leaves open: each entity's
-// `source`, each field's column (`expression`), and the deployment target.
+// `source`, each field's column (`expression`), each action's `executor`, and
+// the deployment target.
 // `kcmd push --profile <name>` merges the selected profile onto the logical
 // model BY NAME and deploys the result. See docs/semantic-model/profiles.md.
 //
@@ -22,7 +23,7 @@
 //     availability report. Availability propagates UP the dependency graph from
 //     the fields a profile binds.
 
-import {fieldBinding, Metric, Relationship, SemanticModel} from './ir';
+import {Action, fieldBinding, Metric, Relationship, SemanticModel} from './ir';
 import {
   blankStringLiterals,
   escapeRegExp,
@@ -48,10 +49,11 @@ export interface MergeResult {
 // declaration the model owns; setting it in a profile is rejected so swapping a
 // profile can move data but never change what the model means.
 const PROFILE_MODEL_KEYS = new Set([
-  'name', 'version', 'deployment_target', 'entities', 'datasets',
+  'name', 'version', 'deployment_target', 'entities', 'datasets', 'actions',
 ]);
 const PROFILE_ENTITY_KEYS = new Set(['name', 'source', 'fields']);
 const PROFILE_FIELD_KEYS = new Set(['name', 'expression']);
+const PROFILE_ACTION_KEYS = new Set(['name', 'executor']);
 
 /**
  * Overlays `profileDoc` onto `logicalDoc`, matching models, entities, fields by
@@ -128,6 +130,23 @@ function mergeModel(lm: any, pm: any, profileName: string): string|undefined {
     lm.deployment_target = pm.deployment_target;
   }
 
+  if (pm.actions !== undefined) {
+    if (!Array.isArray(pm.actions)) {
+      return `profile '${profileName}': 'actions' must be a list`;
+    }
+    const lActions = indexByName(lm.actions);
+    for (const pa of pm.actions) {
+      if (!pa || typeof pa !== 'object') continue;
+      const la = lActions.get(pa.name);
+      if (!la) {
+        return `profile '${profileName}': action '${
+            pa.name}' is not in the logical model`;
+      }
+      const err = mergeAction(la, pa, profileName);
+      if (err) return err;
+    }
+  }
+
   const pEntities = pm.entities ?? pm.datasets;
   if (pEntities === undefined) return undefined;
   if (!Array.isArray(pEntities)) {
@@ -143,6 +162,32 @@ function mergeModel(lm: any, pm: any, profileName: string): string|undefined {
     }
     const err = mergeEntity(le, pe, profileName);
     if (err) return err;
+  }
+  return undefined;
+}
+
+// Overlays one action's binding. Unlike a field's column, an executor is
+// INHERITED when the profile says nothing: an action the profile does not
+// mention keeps whatever the model declared, so a model can state one default
+// executor and a profile override only the stores that perform the write
+// differently. A field cannot work that way -- inheriting a column name into a
+// renamed schema binds to the wrong column silently -- but an executor names a
+// whole mechanism, and a wrong one fails loudly at the first call rather than
+// returning another column's data.
+//
+// Withdrawing an inherited executor is therefore explicit: `executor: null`
+// says this store performs the write by no means at all, which leaves the
+// action declared and unavailable here.
+function mergeAction(la: any, pa: any, profileName: string): string|undefined {
+  for (const k of Object.keys(pa)) {
+    if (!PROFILE_ACTION_KEYS.has(k)) {
+      return declError(profileName, `action '${pa.name}'`, k);
+    }
+  }
+  if (pa.executor === null) {
+    delete la.executor;
+  } else if (pa.executor !== undefined) {
+    la.executor = pa.executor;
   }
   return undefined;
 }
@@ -197,7 +242,7 @@ function mergeField(
 function declError(profileName: string, where: string, key: string): string {
   return `profile '${profileName}': ${where} sets '${key}', a logical ` +
       `declaration the model owns; a profile may set only physical bindings ` +
-      `(source, expression, deployment_target)`;
+      `(source, expression, executor, deployment_target)`;
 }
 
 // A profile's field expression must be a BARE column reference (e.g. `c_name`),
@@ -265,6 +310,9 @@ export interface AvailabilityReport {
   droppedEntities: {name: string; reason: string}[];
   droppedMetrics: {name: string; reason: string}[];
   droppedRelationships: {name: string; reason: string}[];
+  // An action this profile cannot perform: it binds no executor for it, or a
+  // concept the action names is itself unavailable.
+  droppedActions: {name: string; reason: string}[];
 }
 
 /**
@@ -283,6 +331,7 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     droppedEntities: [],
     droppedMetrics: [],
     droppedRelationships: [],
+    droppedActions: [],
   };
 
   // A field is bound when fieldBinding resolves it to a column; otherwise it is
@@ -386,6 +435,45 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     keptMetrics.push(mt);
   }
   clone.metrics = keptMetrics;
+
+  // An action is available only where a binding performs it and every concept
+  // it names survives. The executor is the action's binding, so an action
+  // without one is unavailable for the same reason a column-less field is: it
+  // is declared, and there is nothing here to carry it out.
+  const droppedRels = new Set(report.droppedRelationships.map(d => d.name));
+  const keptActions: Action[] = [];
+  for (const a of clone.actions ?? []) {
+    if (a.executor === undefined) {
+      report.droppedActions.push(
+          {name: a.name, reason: 'no executor is bound under this profile'});
+      continue;
+    }
+    // A parameter's `type` names an entity only when it is an object
+    // reference; a scalar type cannot collide with an entity name, so one test
+    // covers both.
+    const deadParam =
+        (a.parameters ?? []).find(p => unavailableEntities.has(p.type));
+    if (deadParam !== undefined) {
+      report.droppedActions.push({
+        name: a.name,
+        reason: `parameter ${deadParam.name} refers to ${
+            deadParam.type}, which is unavailable`,
+      });
+      continue;
+    }
+    const deadAffected = (a.affects ?? [])
+                             .find(f => unavailableEntities.has(f.concept) ||
+                                       droppedRels.has(f.concept));
+    if (deadAffected !== undefined) {
+      report.droppedActions.push({
+        name: a.name,
+        reason: `it affects ${deadAffected.concept}, which is unavailable`,
+      });
+      continue;
+    }
+    keptActions.push(a);
+  }
+  clone.actions = keptActions;
 
   return {model: clone, report};
 }

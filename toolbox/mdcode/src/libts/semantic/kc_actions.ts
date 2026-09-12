@@ -173,7 +173,7 @@ export function actionEntries(
 // an affected concept names an entity or relationship entry the same way.
 function actionAspectData(action: Action): Record<string, any> {
   return compact({
-    ...executorData(action.executor),
+    ...(action.executor ? executorData(action.executor) : {}),
     parameters: action.parameters.map(
         p => compact({name: p.name, type: p.type, isEntityRef: p.isEntityRef})),
     guards: action.guards?.length ? action.guards : undefined,

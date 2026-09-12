@@ -184,6 +184,116 @@ describe('mergeProfile overlays physical bindings by name', () => {
 });
 
 
+// An action's executor is its only physical facet: the same operation is
+// performed by DML where the data is relational and by a call to whoever owns
+// the data where it is not. These build the smallest pair that shows a profile
+// supplying it.
+const SQL_EXEC = {
+  sql: {statements: ['UPDATE orders SET total = 0 WHERE o_orderkey = @order']},
+};
+const MCP_EXEC = {
+  mcp: {
+    server: '//agentregistry.googleapis.com/projects/p/locations/l/mcpServers/s',
+    tool: 'issue_credit',
+  },
+};
+
+function logicalWithAction(defaultExecutor?: any): any {
+  const doc = logicalDoc();
+  modelOf(doc).actions = [{
+    name: 'IssueCredit',
+    description: 'Credit an order',
+    parameters: [{name: 'order', type: 'Order'}],
+    affects: [{concept: 'Order', operation: 'modify'}],
+    ...(defaultExecutor ? {executor: defaultExecutor} : {}),
+  }];
+  return doc;
+}
+
+function profileWithAction(action: any): any {
+  const p = analyticalDoc();
+  modelOf(p).actions = [action];
+  return p;
+}
+
+const actionOf = (doc: any, name: string) =>
+    (modelOf(doc).actions ?? []).find((a: any) => a.name === name);
+
+
+describe('an executor is a binding a profile supplies', () => {
+  test('a profile binds an action the logical model leaves open', () => {
+    const {doc, error} = mergeProfile(
+        logicalWithAction(), profileWithAction({
+          name: 'IssueCredit',
+          executor: SQL_EXEC,
+        }),
+        'analytical');
+    expect(error).toBeUndefined();
+    expect(actionOf(doc, 'IssueCredit').executor).toEqual(SQL_EXEC);
+    // The declaration is untouched: a profile moves the write, never its
+    // meaning.
+    expect(actionOf(doc, 'IssueCredit').description).toBe('Credit an order');
+    expect(actionOf(doc, 'IssueCredit').affects).toEqual([
+      {concept: 'Order', operation: 'modify'},
+    ]);
+  });
+
+  test('a profile replaces the model default, and may change the kind', () => {
+    // The point of binding the executor rather than declaring it: a store that
+    // holds the rows performs the write as DML, and a store that does not calls
+    // whoever does. Same action, same blast radius, different mechanism.
+    const {doc, error} = mergeProfile(
+        logicalWithAction(SQL_EXEC),
+        profileWithAction({name: 'IssueCredit', executor: MCP_EXEC}),
+        'analytical');
+    expect(error).toBeUndefined();
+    expect(actionOf(doc, 'IssueCredit').executor).toEqual(MCP_EXEC);
+  });
+
+  test('an action the profile does not mention keeps the model default', () => {
+    // Unlike a field's column, an executor is inherited on silence. A column
+    // inherited into a renamed schema binds to the wrong data quietly; an
+    // executor names a whole mechanism, so a wrong one fails at the first call.
+    const {doc, error} =
+        mergeProfile(logicalWithAction(SQL_EXEC), analyticalDoc(), 'analytical');
+    expect(error).toBeUndefined();
+    expect(actionOf(doc, 'IssueCredit').executor).toEqual(SQL_EXEC);
+  });
+
+  test('`executor: null` withdraws an inherited executor', () => {
+    // A read-only environment has to be able to say "by no means at all",
+    // because silence already means "keep the default".
+    const {doc, error} = mergeProfile(
+        logicalWithAction(SQL_EXEC),
+        profileWithAction({name: 'IssueCredit', executor: null}),
+        'readonly');
+    expect(error).toBeUndefined();
+    expect(actionOf(doc, 'IssueCredit').executor).toBeUndefined();
+    // Withdrawn, not deleted: the action is still declared.
+    expect(actionOf(doc, 'IssueCredit').name).toBe('IssueCredit');
+  });
+
+  test('a profile naming an action the model does not declare is an error',
+       () => {
+         const {error} = mergeProfile(
+             logicalWithAction(),
+             profileWithAction({name: 'Nonesuch', executor: SQL_EXEC}),
+             'analytical');
+         expect(error).toMatch(/action 'Nonesuch' is not in the logical model/);
+       });
+
+  test('a profile setting a logical facet on an action is rejected', () => {
+    // What gates the action and what it changes are the model's to state. A
+    // profile that could move a guard could turn a check off per environment.
+    const {error} = mergeProfile(
+        logicalWithAction(SQL_EXEC),
+        profileWithAction({name: 'IssueCredit', guards: ['SomeRule']}),
+        'analytical');
+    expect(error).toMatch(/action 'IssueCredit' sets 'guards'/);
+  });
+});
+
+
 // A loaded IR model with one field left unbound, for the pruning pass.
 function irModel(): SemanticModel {
   return {
@@ -224,6 +334,7 @@ const fieldNames = (m: SemanticModel, entity: string) =>
     m.entities.find(e => e.name === entity)!.fields.map(f => f.name);
 const metricNames = (m: SemanticModel) => (m.metrics ?? []).map(mt => mt.name);
 const relNames = (m: SemanticModel) => (m.relationships ?? []).map(r => r.name);
+const actionNames = (m: SemanticModel) => (m.actions ?? []).map(a => a.name);
 
 
 describe('pruneUnavailable drops what a binding cannot answer', () => {
@@ -338,5 +449,81 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     expect(party.fields.map(f => f.name)).toEqual(['id', 'name']);
     // Its column-less fields are not reported as unbound.
     expect(report.unboundFields).toEqual([]);
+  });
+});
+
+
+describe('an action a binding cannot perform is unavailable', () => {
+  function irWithActions(): any {
+    const m: any = irModel();
+    m.actions = [
+      {
+        name: 'IssueCredit',
+        parameters: [{name: 'order', type: 'Order', isEntityRef: true}],
+        affects: [{concept: 'Order', operation: 'modify'}],
+        executor: {kind: 'sql', sql: {statements: ['UPDATE orders SET x = 1']}},
+      },
+      {name: 'Unperformable', parameters: []},
+    ];
+    return m;
+  }
+
+  // Unbinding a key makes the whole entity unavailable, which is the existing
+  // rule this reuses to reach the actions over it.
+  function withoutCustomer(m: any): any {
+    delete m.entities.find((e: any) => e.name === 'Customer')
+        .fields.find((f: any) => f.name === 'key')
+        .expression;
+    return m;
+  }
+
+  test('an action with no executor is dropped and reported', () => {
+    const {model, report} = pruneUnavailable(irWithActions(), 'operational');
+    expect(actionNames(model)).toEqual(['IssueCredit']);
+    expect(report.droppedActions.find(d => d.name === 'Unperformable')?.reason)
+        .toMatch(/no executor/);
+  });
+
+  test('an action whose executor is bound survives', () => {
+    const {model} = pruneUnavailable(irWithActions(), 'operational');
+    expect(actionNames(model)).toContain('IssueCredit');
+  });
+
+  test('an action whose parameter names an unavailable entity is dropped',
+       () => {
+         // There is nothing to resolve the argument against, so binding an
+         // executor would not make the call performable.
+         const m = withoutCustomer(irWithActions());
+         m.actions.push({
+           name: 'RaiseLimit',
+           parameters: [{name: 'customer', type: 'Customer', isEntityRef: true}],
+           executor: {
+             kind: 'sql',
+             sql: {statements: ['UPDATE customer SET x = 1']},
+           },
+         });
+         const {model, report} = pruneUnavailable(m, 'operational');
+         expect(actionNames(model)).not.toContain('RaiseLimit');
+         expect(report.droppedActions.find(d => d.name === 'RaiseLimit')?.reason)
+             .toMatch(/Customer/);
+       });
+
+  test('an action that affects an unavailable concept is dropped', () => {
+    const m = withoutCustomer(irWithActions());
+    m.actions.push({
+      name: 'Anonymize',
+      parameters: [],
+      affects: [{concept: 'Customer', operation: 'modify'}],
+      executor: {kind: 'sql', sql: {statements: ['UPDATE customer SET x = 1']}},
+    });
+    const {model, report} = pruneUnavailable(m, 'operational');
+    expect(actionNames(model)).not.toContain('Anonymize');
+    expect(report.droppedActions.find(d => d.name === 'Anonymize')?.reason)
+        .toMatch(/Customer/);
+  });
+
+  test('a model that declares no actions reports none dropped', () => {
+    const {report} = pruneUnavailable(irModel(), 'operational');
+    expect(report.droppedActions).toEqual([]);
   });
 });

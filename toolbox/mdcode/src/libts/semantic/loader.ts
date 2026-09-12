@@ -260,7 +260,9 @@ const affectedConceptSchema = z.union([
 const actionSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
-  executor: executorSchema,
+  // Optional because it is a physical binding: a profile may supply it, and a
+  // purely logical model declares actions it cannot perform. See Action.
+  executor: executorSchema.optional(),
   parameters: z.array(parameterSchema).optional(),
   // Names of the constraints that gate this action. Kept as plain strings: they
   // are resolved against the model's own constraints in validate.ts, which sees
@@ -459,7 +461,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
   const action = z.object({
                     name: z.string(),
                     description: z.string().optional(),
-                    executor: executorSchema,
+                    executor: executorSchema.optional(),
                     parameters: z.array(parameter).optional(),
                     guards: z.array(z.string()).optional(),
                     affects: z.array(affectedConceptSchema).optional(),
@@ -989,9 +991,13 @@ function convertAction(
 
   const action: Action = {
     name: a.name,
-    executor: convertExecutor(a.executor),
     parameters,
   };
+  // Absent when no binding supplies one -- the action is declared but not
+  // performable here.
+  if (a.executor !== undefined) {
+    action.executor = convertExecutor(a.executor);
+  }
   if (a.guards?.length) {
     // A repeated guard would check one constraint twice while reading as two
     // rules, so it is rejected like any other duplicate name.

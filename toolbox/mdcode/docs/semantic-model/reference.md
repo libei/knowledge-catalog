@@ -374,7 +374,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   must carry its coordinates (an `mcp` server + tool, a `rest` endpoint + method,
   a `grpc` service + method, or at least one non-blank `sql` statement) with no
   blank field. A coordinate omitted altogether is rejected earlier, when the
-  model is parsed. Each name in the
+  model is parsed. An action with *no* executor is not an error at all: the
+  executor is a physical binding, so an action no binding performs here is still
+  a declaration worth publishing. Each name in the
   action's `guards` must resolve to a constraint that the same model declares. A
   guard resolving to nothing leaves the author believing the write is checked
   when nothing checks it. Every `concept` in the action's `affects` must
@@ -388,9 +390,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   does resolve reports every field it does not have. Everything that reads the
   ontology — the concept check and the field check both — stands down on a
   profile push, because pruning drops whole entities and whole relationships as
-  well as unbound fields, leaves actions untouched, and an action reaches no
-  graph in any case; the fields-beside-a-`delete` check reads only the entry, so
-  it still applies. A `sql` executor is checked further, because it carries the
+  well as unbound fields — and drops any action that names one, so the action
+  the check would have complained about is already gone — and an action reaches
+  no graph in any case; the fields-beside-a-`delete` check reads only the entry,
+  so it still applies. A `sql` executor is checked further, because it carries the
   write itself rather than a pointer to whoever performs it: each statement must
   begin with `INSERT`, `UPDATE` or `DELETE`, must contain no `;` other than a
   trailing one, and may reference only `@parameter` names the action declares —

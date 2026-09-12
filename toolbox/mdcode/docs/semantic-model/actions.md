@@ -4,10 +4,12 @@ A semantic model says what the data means, and its metrics say what can be read
 from it. An **action** is the write-side counterpart: a named operation that
 changes state, declared over the same concepts as everything else in the model.
 
-An action does not contain the write. It names the operation, points at the
-**executor** that performs it — an MCP tool, a REST endpoint, a gRPC method —
-types the operation's inputs against the ontology, and says which concepts the
-call changes. Publishing it puts the
+An action does not contain the write. It names the operation, types the
+operation's inputs against the ontology, and says which concepts the call
+changes. It also points at the **executor** that performs it — an MCP tool, a
+REST endpoint, a gRPC method, or DML — which is the one physical part of an
+action, and so may come from a binding profile rather than the model.
+Publishing it puts the
 operation in the same place as the data it acts on, so an agent that discovers
 the model discovers what it can do as well as what it can ask.
 
@@ -80,11 +82,46 @@ the tool's name within it. `rest` (`{endpoint, method}`) and `grpc`
 (`{service, method}`) are the other two remote kinds. A fourth, `sql`, carries
 the write itself rather than a pointer to whoever performs it — see
 [Writing the statements in the model](#writing-the-statements-in-the-model).
-Exactly one kind is required.
+Exactly one kind, where an executor is written at all.
 
 `description` and `ai_context.instructions` are both carried through to the
 catalog. Write the instructions for the agent that will call the action, as
 above.
+
+### The executor is a binding, and may come from a profile
+
+Everything else an action declares is logical — what it takes, what gates it,
+what it changes. The executor is not: it is *how* the change is carried out,
+which depends on the store. Where the rows sit in a relational database the
+write is DML; where they do not, it is a call to whoever owns them. Even two
+relational stores differ, each with its own table names and dialect.
+
+So the executor is a physical binding, like an entity's `source`, and a [binding
+profile](profiles.md) may supply or replace it:
+
+```yaml
+# commerce.profiles/operational.yaml — this store owns the rows, so it writes them
+semantic_model:
+  - name: payments
+    actions:
+      - name: TransferFunds
+        executor:
+          sql:
+            statements:
+              - UPDATE account SET balance = balance - @amount WHERE account_id = @source
+              - UPDATE account SET balance = balance + @amount WHERE account_id = @target
+```
+
+An action the profile does not mention keeps whatever the model declared, so the
+executor written above serves as the default and a profile overrides only the
+stores that perform the write differently. `executor: null` in a profile
+withdraws it — a read-only binding that performs no writes at all.
+
+Writing no executor anywhere is allowed. The action is then **declared but not
+performable**: it still states what it does, what gates it, and what it changes,
+which is the whole of what a reader needs, and it still publishes to the
+catalog. `kcmd profiles` lists it under `cannot run:` for each binding that
+supplies no executor for it.
 
 ### What an entity-typed parameter adds
 

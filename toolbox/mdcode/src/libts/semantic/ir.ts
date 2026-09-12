@@ -314,10 +314,19 @@ export interface Metric {
 export interface Action {
   name: string;
   description?: string;
-  // How the action is executed. Exactly one executor kind (mcp / rest / grpc);
-  // the loader normalizes the open format's single-key executor object to this
-  // discriminated form.
-  executor: Executor;
+  // How the action is executed: exactly one executor kind, normalized by the
+  // loader from the open format's single-key object to this discriminated form.
+  //
+  // This is the action's PHYSICAL BINDING, and the one part of an action that
+  // is not a logical declaration. The same operation is performed differently
+  // in different stores -- DML where the data sits in a relational database, a
+  // call to whoever owns the data where it does not -- so a binding profile may
+  // supply or replace it, exactly as it supplies an entity's `source`.
+  //
+  // Absent when no binding supplies one. That makes the action unavailable,
+  // not invalid: an action with no executor still declares what it does, what
+  // gates it, and what it changes, which is the whole of what a reader needs.
+  executor?: Executor;
   // Inputs, each typed by the ontology: an entity type is an object reference,
   // a scalar type an ordinary value. See ActionParameter.
   parameters: ActionParameter[];

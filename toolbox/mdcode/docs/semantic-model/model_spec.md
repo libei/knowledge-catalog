@@ -474,8 +474,16 @@ reads the document ([§6](#6-the-extension-mechanism)).
   so `affects` is the author's declaration and nothing verifies it against what
   the executor does. See [Modeling write operations](actions.md).
 
-  An executor MUST declare exactly one kind. Three of them — `mcp`, `rest` and
-  `grpc` — name a system that performs the write; the fourth, `sql`, carries the
+  An executor is a **physical binding**, not part of the declaration: it is
+  OPTIONAL on the action, and a [binding profile](profiles.md) MAY supply or
+  replace it, exactly as it supplies an entity's `source`. An action a profile
+  does not mention keeps the model's executor; `executor: null` in a profile
+  withdraws it. An action left with no executor is declared and not performable
+  under that binding, which the availability pass reports; it is not an error.
+
+  An executor, where one is written, MUST declare exactly one kind. Three of
+  them — `mcp`, `rest` and `grpc` — name a system that performs the write; the
+  fourth, `sql`, carries the
   write itself as an ordered list of `statements`. Because that one is the only
   kind whose text the model can read, it is the only one with rules about that
   text: each statement MUST be a single `INSERT`, `UPDATE` or `DELETE`, MUST NOT
@@ -617,9 +625,11 @@ and relationship join columns — from required to optional ([§4.2](#42-relaxat
 so a model with none of them is a complete *logical* model that can be governed in
 Knowledge Catalog as-is. The bindings are required only to deploy to a store.
 
-The physical bindings divide by what a profile can move. **`source` and a field's
-`expression` are profile-swappable**: a [binding profile](#73-binding-profiles)
-supplies or overrides them, so one logical model deploys to several stores. **A
+The physical bindings divide by what a profile can move. **`source`, a field's
+`expression`, and an action's `executor` are profile-swappable**: a [binding
+profile](#73-binding-profiles) supplies or overrides them, so one logical model
+deploys to several stores and performs its writes by whatever mechanism each
+store has. **A
 relationship's join columns are not** — they are declared on the logical model and
 a profile MUST NOT set them ([§7.3](#73-binding-profiles)), so they are fixed for
 every binding of the model. In practice this holds because join keys are usually
@@ -667,13 +677,19 @@ bindings for a model, so one logical model can deploy to several stores from one
 definition. A profile:
 
 - is a `semantic_model` document in the **same schema** as the logical model, but
-  MUST set only physical-binding keys: at the model level `deployment_target` and
-  `datasets`/`entities`; at the dataset level `source` and `fields`; at the field
-  level `expression`. Setting any logical key (a new field, `primary_key`, a
-  relationship, …) in a profile is an error — the logical model owns those.
+  MUST set only physical-binding keys: at the model level `deployment_target`,
+  `datasets`/`entities` and `actions`; at the dataset level `source` and
+  `fields`; at the field level `expression`; at the action level `executor`.
+  Setting any logical key (a new field, `primary_key`, a relationship, an
+  action's `guards`, …) in a profile is an error — the logical model owns those.
 - binds by `name` at each level. A field a profile does not bind is left **unbound**
   for that profile (selecting a profile clears the logical model's inline column
   bindings, so the profile alone decides what is bound); there is no `unbound` flag.
+- **inherits an executor, unlike a column.** An action a profile does not mention
+  keeps the model's executor, so a model MAY declare one default and a profile
+  override only where the write differs; `executor: null` withdraws it. A wrong
+  column returns another column's data silently, while a wrong mechanism fails at
+  the first call, which is why the two omissions mean opposite things.
 - MUST express a field `expression` as a **bare column reference**, not arbitrary
   SQL — the computation belongs to the logical model.
 

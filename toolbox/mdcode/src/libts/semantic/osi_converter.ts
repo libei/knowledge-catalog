@@ -289,7 +289,7 @@ function actionDoc(action: Action, warnings: string[]): Record<string, any> {
   return compact({
     name: action.name,
     description: action.description,
-    executor: executorDoc(action.executor),
+    executor: action.executor ? executorDoc(action.executor) : undefined,
     parameters: nonEmpty(
         (action.parameters ?? []).map(p => ({name: p.name, type: p.type}))),
     guards: nonEmpty(action.guards),
