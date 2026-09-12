@@ -435,9 +435,13 @@ describe('validatePushRequirements checks every affected concept', () => {
     return m;
   }
 
-  test('a dangling extends does not crash a model with no affects', () => {
-    // Nothing here reads the ontology, so nothing may resolve inheritance.
-    expect(validatePushRequirements([withDanglingSupertype([])])).toEqual([]);
+  test('a dangling extends is reported, not crashed on or ignored', () => {
+    // Nothing here reads the ontology, so nothing may resolve inheritance to
+    // answer a question. The model is still broken, and no other leg of a
+    // Knowledge-Catalog-only push would say so, so the gate reports it.
+    const errs = validatePushRequirements([withDanglingSupertype([])]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('extends unknown entity');
   });
 
   test('a dangling extends does not crash a profile push', () => {

@@ -274,6 +274,70 @@ describe('validatePushRequirements gates constraints', () => {
     expect(errs).toEqual([]);
   });
 
+  test('a tail naming a relationship is not read as a field', () => {
+    // `customer.OwnedBy` is a traversal. The model declares the name, so the
+    // scan cannot call it a misspelling.
+    const m = loaded([{
+      name: 'C',
+      judgment: 'Trace the balance through customer.OwnedBy before approving.',
+      onViolation: 'warn',
+    }]);
+    m.model.relationships = [{
+      name: 'OwnedBy',
+      source: {entity: 'customer', columns: ['id']},
+      destination: {entity: 'customer', columns: ['id']},
+    }];
+    expect(validatePushRequirements([m])).toEqual([]);
+  });
+
+  test('a tail naming a metric is not read as a field', () => {
+    // Metrics are model-level, so the qualifier is the entity the metric hangs
+    // off rather than an entity that declares it as a field.
+    const m = loaded([{name: 'C', expression: '0 <= customer.total_owed'}]);
+    m.model.metrics = [{name: 'total_owed', entity: 'customer'}];
+    expect(validatePushRequirements([m])).toEqual([]);
+  });
+
+  test('a tail naming another entity is not read as a field', () => {
+    const m = loaded([{name: 'C', expression: 'customer.account > 0'}]);
+    m.model.entities.push(
+        {name: 'account', dataSource: 'p.d.a', keys: ['id'], fields: []} as
+        any);
+    expect(validatePushRequirements([m])).toEqual([]);
+  });
+
+  test('a tail the model declares nowhere is still a misspelling', () => {
+    // The carve-outs above must not swallow the case the scan exists for.
+    const m = loaded([{name: 'C', expression: 'customer.blance > 0'}]);
+    m.model.relationships = [{
+      name: 'OwnedBy',
+      source: {entity: 'customer', columns: ['id']},
+      destination: {entity: 'customer', columns: ['id']},
+    }];
+    m.model.metrics = [{name: 'total_owed', entity: 'customer'}];
+    const errs = validatePushRequirements([m]);
+    expect(errs.some(e => e.includes("declares no field 'blance'"))).toBe(true);
+  });
+
+  test('an extends naming an undeclared entity is reported', () => {
+    // Standing the field scan down cannot mean saying nothing: nothing else on
+    // a Knowledge-Catalog-only push resolves inheritance, so silence here
+    // publishes the broken model.
+    const m = loaded([{name: 'C', expression: 'customer.balance >= 0'}]);
+    (m.model.entities[0] as any).extends = ['MissingParent'];
+    const errs = validatePushRequirements([m]);
+    expect(errs.some(e => e.includes('MissingParent'))).toBe(true);
+  });
+
+  test('an empty judgment still reports a missing on_violation', () => {
+    // The two are independent. Reporting only the empty body sends the author
+    // back for a second failure over a key they were never told about.
+    const errs =
+        validatePushRequirements([loaded([{name: 'C', judgment: '   '}])]);
+    expect(errs.some(e => e.includes('empty judgment'))).toBe(true);
+    expect(errs.some(e => e.includes('on_violation'))).toBe(true);
+  });
+
   test('a quoted literal in an expression is not a field reference', () => {
     const errs = validatePushRequirements([loaded(
         [{name: 'C', expression: "customer.balance = 'customer.blance'"}])]);

@@ -419,11 +419,15 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   check the rule. A qualifier that is not a known entity — a
   relationship-qualified name like `OrderedAs.quantity`, a metric reference, or
   compound logic — is left alone rather than guessed at, so a valid constraint
-  is never falsely rejected. So is an entity that declares no fields, since
-  fields are optional and a logical model may declare none; an empty list is no
-  evidence that a field is missing. So is a token carrying a third dotted
+  is never falsely rejected. So is a token whose **tail** names something the
+  model declares that is not a field of the head: `Customer.Order` and
+  `LineItem.BelongsTo` are traversals, and `Order.total_revenue` names a metric,
+  none of which the check can settle. So is an entity that declares no fields,
+  since fields are optional and a logical model may declare none; an empty list
+  is no evidence that a field is missing. So is a token carrying a third dotted
   segment, which is a path rather than a field. A quoted literal is data, so it
-  is not scanned.
+  is not scanned. What is left is the case the check exists for: a tail the
+  model declares under no kind at all, next to an entity it does declare.
   *(static)*
 * **Every judged constraint says what a violation does.** The `judgment` must
   be non-empty, and `on_violation` is required on it rather than defaulting. Any

@@ -118,6 +118,26 @@ export function validatePushRequirements(
       }
     }
 
+    // Resolving inheritance throws on an `extends` naming an entity the model
+    // does not declare, and the two checks below stand down rather than
+    // stack-trace on one. Standing down has to mean reporting somewhere or it
+    // means publishing a broken model in silence: the loader accepts such a
+    // model, and a Knowledge-Catalog-only push reaches no graph leg that would
+    // resolve inheritance and catch it. So the failure is reported here, once
+    // per model, and the checks below stay quiet about it. A profile push that
+    // pruned fields is exempt for the same reason those checks are -- pruning
+    // can remove a supertype whole, and the dangling `extends` it leaves is the
+    // pruner's doing rather than the author's.
+    if (!opts.fieldsPruned) {
+      const failure = inheritanceFailure(model);
+      if (failure) {
+        errors.push(
+            `model '${model.name}' (${document}): ${failure} Constraint and ` +
+            `action checks that need the resolved model are skipped until ` +
+            `this is fixed.`);
+      }
+    }
+
     // An action reaches Knowledge Catalog only, so its checks are
     // target-independent: each parameter's type must resolve to something in
     // the ontology, the executor must carry the coordinates a runtime needs to
@@ -383,6 +403,12 @@ function validateConstraints(
   if (!constraints.length) return errors;
   const fieldsByEntity =
       fieldsPruned ? undefined : ifResolvable(() => declaredFields(model));
+  // Names the model declares that are not fields of any one entity, which a
+  // token's tail may legitimately carry. See unknownFieldRefs.
+  const nonFieldNames = new Set([
+    ...(model.relationships ?? []).map(r => r.name),
+    ...(model.metrics ?? []).map(m => m.name),
+  ]);
 
   for (const c of constraints) {
     const where =
@@ -405,7 +431,8 @@ function validateConstraints(
     }
 
     if (hasJudgment) {
-      errors.push(...judgedConstraintErrors(c, where, fieldsByEntity));
+      errors.push(
+        ...judgedConstraintErrors(c, where, fieldsByEntity, nonFieldNames));
       continue;
     }
 
@@ -416,7 +443,8 @@ function validateConstraints(
     // A quoted literal is data rather than a reference, so it is blanked
     // before the scan: `status = 'Order.total'` compares against a string.
     errors.push(...unknownFieldRefs(
-        c.expression!.replace(/'[^']*'|"[^"]*"/g, ' '), where, fieldsByEntity));
+        c.expression!.replace(/'[^']*'|"[^"]*"/g, ' '), where, fieldsByEntity,
+        nonFieldNames));
   }
   return errors;
 }
@@ -434,11 +462,15 @@ function validateConstraints(
 // is the whole of the static checking a judged rule can get.
 function judgedConstraintErrors(
     c: Constraint, where: string,
-    fieldsByEntity: Map<string, Set<string>>|undefined): string[] {
+    fieldsByEntity: Map<string, Set<string>>|undefined,
+    nonFieldNames: Set<string>): string[] {
   const errors: string[] = [];
-  if (!c.judgment!.trim()) {
+  // The two checks are independent, so an empty judgment does not skip the
+  // routing one. Reporting only the empty body would send the author back for a
+  // second failure over a key they were never told about.
+  const empty = !c.judgment!.trim();
+  if (empty) {
     errors.push(`${where} has an empty judgment.`);
-    return errors;
   }
   if (c.onViolation === undefined) {
     errors.push(
@@ -447,7 +479,10 @@ function judgedConstraintErrors(
         `let it through and report it. An unmarked constraint rejects, which ` +
         `is too strong a thing to inherit by leaving the key out.`);
   }
-  errors.push(...unknownFieldRefs(c.judgment!, where, fieldsByEntity));
+  if (!empty) {
+    errors.push(...unknownFieldRefs(
+        c.judgment!, where, fieldsByEntity, nonFieldNames));
+  }
   return errors;
 }
 
@@ -470,12 +505,21 @@ function judgedConstraintErrors(
 // routinely declares none; reading an empty set as "this entity has no such
 // field" would refuse every constraint such a model can write.
 //
+// A tail that names something the model declares is not a misspelled field
+// either. Traversal has no syntax in the model today, so a prose token like
+// `Customer.Order` or `LineItem.BelongsTo` reads as a field of the head and
+// would be rejected for a field the author never claimed existed; the same goes
+// for `Order.total_revenue`, where metrics are model-level and the qualifier is
+// the entity the metric hangs off. The scan therefore settles only the case it
+// can: a tail the model does not declare under any kind is the misspelling.
+//
 // The two segments must be adjacent to the dot, which is what keeps a sentence
 // boundary ("check the memo. Every credit...") out of the scan. A decimal
 // number cannot survive either, since no entity is named `30`.
 function unknownFieldRefs(
     judgment: string, where: string,
-    fieldsByEntity: Map<string, Set<string>>|undefined): string[] {
+    fieldsByEntity: Map<string, Set<string>>|undefined,
+    nonFieldNames: Set<string>): string[] {
   if (!fieldsByEntity) return [];
   const errors: string[] = [];
   const seen = new Set<string>();
@@ -494,6 +538,13 @@ function unknownFieldRefs(
     }
     const fields = fieldsByEntity.get(entity);
     if (!fields || !fields.size || fields.has(field)) continue;
+    // The tail names something the model declares that is not a field of the
+    // head: another entity, a relationship, or a metric. `Customer.Order` and
+    // `LineItem.BelongsTo` are traversals and `Order.total_revenue` is a metric
+    // reference, none of which this scan can settle, and all of which an author
+    // writing prose reaches for. Only a tail the model does not declare at all
+    // is read as the misspelling this check exists to catch.
+    if (fieldsByEntity.has(field) || nonFieldNames.has(field)) continue;
     const ref = `${entity}.${field}`;
     if (seen.has(ref)) continue;
     seen.add(ref);
@@ -514,15 +565,31 @@ function unknownFieldRefs(
 // push can create one by pruning a supertype whole. A validation gate reports;
 // it does not stack-trace, so every caller that resolves inheritance to answer
 // a question comes through here and stands its own check down when the answer
-// is unavailable. That is the same thing a pruned profile does. The checks
-// these builders feed catch a misspelled name, and a model whose inheritance
-// does not resolve has a larger problem that the graph legs report where they
-// can resolve it.
+// is unavailable. That is the same thing a pruned profile does. Standing down
+// is not silence: validatePushRequirements reports the resolution failure once
+// per model, so the larger problem is named and only the checks that depend on
+// the resolved model go quiet.
 function ifResolvable<T>(build: () => T): T|undefined {
   try {
     return build();
   } catch {
     return undefined;
+  }
+}
+
+// Why resolving the model's inheritance fails, or nothing when it succeeds.
+//
+// Reported rather than thrown, and reported once for the model rather than once
+// per check that needed it. A model declaring no inheritance cannot fail, and
+// resolving clones, so it is not asked.
+function inheritanceFailure(model: SemanticModel): string|undefined {
+  if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
+  try {
+    resolveInheritance(model);
+    return undefined;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return message.endsWith('.') ? message : `${message}.`;
   }
 }
 
