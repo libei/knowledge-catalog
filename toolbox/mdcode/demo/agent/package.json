@@ -6,6 +6,7 @@
     "check": "tsc --ignoreConfig --noEmit --skipLibCheck --strict --target esnext --module preserve --moduleResolution bundler --types bun agent.ts"
   },
   "dependencies": {
-    "@google/adk": "^2.0.0"
+    "@google/adk": "^2.0.0",
+    "@google/genai": "^2.22.0"
   }
 }

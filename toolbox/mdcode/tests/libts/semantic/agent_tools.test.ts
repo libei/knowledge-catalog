@@ -13,7 +13,7 @@ import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import {actionTools, describeOutcome, entityTools, modelTools} from '../../../src/libts/semantic/agent_tools';
+import {actionTools, callableTools, describeOutcome, entityTools, modelTools} from '../../../src/libts/semantic/agent_tools';
 import {Action, Constraint, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import * as spanner from '../../../src/libts/gcp/spanner';
@@ -657,6 +657,44 @@ describe('one name space for everything a model offers', () => {
     const {lookups, actions} = modelTools({model, client: NO_CLIENT});
     expect(actions.map(t => t.name)).toEqual(['place_order']);
     expect(lookups.map(t => t.name)).toEqual(['find_orders', 'find_customer']);
+  });
+});
+
+
+describe('sorting the tools an adapter can actually offer', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+  const runnable = withExecutor(model, RUNNABLE);
+
+  test('everything runnable is offered, lookups before actions', () => {
+    const {callable, withheld} =
+        callableTools(modelTools({model: runnable, client: NO_CLIENT}));
+    expect(callable.map(t => t.name)).toEqual([
+      'find_orders', 'find_customer', 'place_order'
+    ]);
+    expect(withheld).toEqual([]);
+  });
+
+  test('a guarded action is withheld, and says why', () => {
+    // A guard is the case that matters: the model says this write must be
+    // checked, no checker exists, so the tool must not be offered as callable.
+    const guarded = {
+      ...withExecutor(model, {...RUNNABLE, guards: ['UnderReview']}),
+      constraints: [{
+        name: 'UnderReview',
+        expression: 'quantity < 25',
+        onViolation: 'escalate',
+      }] as Constraint[],
+    };
+    const {callable, withheld} =
+        callableTools(modelTools({model: guarded, client: NO_CLIENT}));
+    expect(callable.map(t => t.name)).toEqual(['find_orders', 'find_customer']);
+    expect(withheld.map(t => t.name)).toEqual(['place_order']);
+    expect(withheld[0].unavailable).toContain('UnderReview');
+  });
+
+  test('the instruction is carried through untouched', () => {
+    const tools = modelTools({model: runnable, client: NO_CLIENT});
+    expect(callableTools(tools).instruction).toBe(tools.instruction);
   });
 });
 

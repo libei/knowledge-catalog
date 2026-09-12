@@ -4,7 +4,7 @@ This is a recipe, not an exhibit. Follow it and you end up with an agent that
 takes an English request and changes a row in Spanner — and with an
 understanding of why almost none of the work was agent work.
 
-The whole agent is one file, `agent.ts`, 69 lines of code. Not one of them
+The whole agent is one file, `agent.ts`, 57 lines of code. Not one of them
 mentions credits, orders, customers, Spanner tables or SQL. Four steps: open the
 workspace, derive the tools, adapt them to the framework, run. Everything that
 knows what business this is lives in the model, where it outlives the agent.
@@ -294,17 +294,26 @@ const [{model}] = opened.models;
 const store = spannerStore(model);
 if ('error' in store) throw new Error(store.error);
 
-// 2. Derive the tools and what to say about them -- what `kcmd agent tools`
-//    just printed.
-const {lookups, actions, instruction} =
-    modelTools({model, client: store.client});
+// 2. Derive what the model offers, and keep what this binding can serve --
+//    what `kcmd agent tools` just printed.
+const {callable, withheld, instruction} =
+    callableTools(modelTools({model, client: store.client}));
+for (const tool of withheld) {
+  console.error(`(withheld) ${tool.name}: ${tool.unavailable}`);
+}
 
-// 3. Adapt each one to the framework.
-const tools = [...lookups, ...actions].map(
+// 3. Adapt each one to ADK.
+const tools = callable.map(
     tool => new FunctionTool({
       name: tool.name,
       description: tool.description,
-      parameters: schemaFor(tool.parameters),
+      parameters: {
+        type: Type.OBJECT,
+        properties: Object.fromEntries(tool.parameters.map(p => [
+          p.name, {type: p.type.toUpperCase() as Type, description: p.description}
+        ])),
+        required: tool.parameters.filter(p => p.required).map(p => p.name),
+      },
       execute: (args: unknown) => tool.invoke(args as Record<string, unknown>),
     }));
 
@@ -312,16 +321,25 @@ const tools = [...lookups, ...actions].map(
 const agent = new LlmAgent({
   name: 'model_agent',
   model: 'gemini-2.5-flash',
-  description: model.description,
   instruction,
   tools,
 });
 ```
 
-`agent.ts` adds four things to that sketch and nothing else: `schemaFor`, which
-turns a tool parameter into a Zod field; a filter that leaves out any tool the
-runtime cannot run today, printing why; the loop that prints each call and each
-answer; and one line appended to the instruction —
+Step 3 is the only part that is ADK's shape rather than the model's, and it is a
+rename: a derived parameter already carries a JSON type and a description, which
+is the whole of a function declaration. ADK takes a plain schema object, so
+there is no schema library in here and nothing to keep in step with the
+derivation's types.
+
+Step 2 used to be a hand-written filter over `[...lookups, ...actions]`. Every
+adapter has to make that same split — a tool the runtime cannot run is still
+worth naming, but offering it as callable spends a turn on a call that cannot
+succeed — so it moved into `callableTools` in the library, which also makes
+dropping `withheld` in silence something you have to choose.
+
+What `agent.ts` adds to the sketch is the loop that prints each call and each
+answer, the usage line, and one line appended to the instruction —
 
 ```ts
   instruction: `${instruction}\n\nToday is ${
@@ -403,7 +421,7 @@ Four files, and you can list them:
 | the seed commands in [step 2](#2-create-the-store) | Andy Brook's order |
 
 `agent.ts` is not on that list, and neither is anything under `src/`. Swap those
-four for a different business and the same 69 lines run it — that is the claim
+four for a different business and the same 57 lines run it — that is the claim
 this demo is making, and the file list is how you check it.
 
 Two things are worth knowing about how short that list stayed. The doc's case

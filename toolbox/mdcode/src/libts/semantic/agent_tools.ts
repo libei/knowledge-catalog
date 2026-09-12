@@ -459,6 +459,45 @@ export function modelTools(opts: ActionToolOptions&EntityToolOptions):
 }
 
 
+/** A tool derived from a model, whichever half it came from. */
+export type DerivedTool = EntityTool|ActionTool;
+
+
+/** Derived tools sorted by whether this binding can serve them. */
+export interface CallableTools {
+  /** The ones a call would actually reach the store through. */
+  callable: DerivedTool[];
+  /** The rest. Each carries `unavailable`, saying why. */
+  withheld: DerivedTool[];
+  /** `ModelTools.instruction`, carried through unchanged. */
+  instruction: string;
+}
+
+
+/**
+ * Sort the derived tools into the ones this binding can serve and the ones it
+ * cannot.
+ *
+ * Every adapter has to make this split, and it is the same split every time. A
+ * tool the runtime cannot run is still declared, still published and still
+ * worth naming -- but offering it as callable spends a turn on a call that
+ * cannot succeed and teaches the agent nothing it can act on. Lookups and
+ * actions answer `runnable` on the same terms, so they are sorted together
+ * rather than twice, and they keep the order `modelTools` gave them.
+ *
+ * What to do about `withheld` stays the caller's: print it, log it, refuse to
+ * start. Dropping it in silence is the one thing this does not make easy.
+ */
+export function callableTools(tools: ModelTools): CallableTools {
+  const derived: DerivedTool[] = [...tools.lookups, ...tools.actions];
+  return {
+    callable: derived.filter(tool => tool.runnable),
+    withheld: derived.filter(tool => !tool.runnable),
+    instruction: tools.instruction,
+  };
+}
+
+
 // What to tell an agent that holds these tools, and the split is the point.
 //
 // The first part is the model's own `ai_context.instructions`: what this
