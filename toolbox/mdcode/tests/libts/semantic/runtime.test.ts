@@ -38,6 +38,9 @@ class FakeSpanner {
   // error rather than as a response, which is what makes them interesting.
   commitThrows = false;
   sessionFails = false;
+  // A commit the store REFUSES, by status. Spanner's routine one is 409
+  // ABORTED under lock contention, which guarantees nothing was applied.
+  commitRefused = 0;
   // Statements whose SQL contains one of these fragments fail, so a store-level
   // error can be provoked at a chosen point.
   failOn: string[] = [];
@@ -74,6 +77,9 @@ class FakeSpanner {
   async commit() {
     // What a socket hang-up, a DNS failure or an abort looks like from here.
     if (this.commitThrows) throw new TypeError('fetch failed');
+    if (this.commitRefused) {
+      return {status: this.commitRefused, message: 'Transaction was aborted'};
+    }
     if (this.commitFails) return {status: 500, message: 'commit failed'};
     this.committed = true;
     return {status: 200, result: {commitTimestamp: '2026-09-06T00:00:00Z'}};
@@ -297,6 +303,7 @@ describe('failures that stop the write', () => {
     const outcome = await run(fake);
     if (outcome.status !== 'error') throw new Error('expected an error');
     expect(outcome.message).toContain('statement rejected');
+    expect(outcome.message).toContain('failed and was rolled back');
     expect(fake.rolledBack).toBe(true);
     expect(fake.committed).toBe(false);
   });
@@ -310,6 +317,21 @@ describe('failures that stop the write', () => {
     });
     if (outcome.status !== 'error') throw new Error('expected an error');
     expect(outcome.message).toContain('handler blew up');
+    expect(fake.rolledBack).toBe(true);
+  });
+
+  test('a bug in a handler is not reported as a rejected write', async () => {
+    // A statement the store refused and a TypeError out of the caller's own
+    // code both land in the same catch. Reporting the second as a rejected
+    // write sends the reader to the data to look for a problem in the code.
+    const fake = resolvingFake();
+    const outcome = await run(fake, {
+      handler: async () => {
+        throw new TypeError('x.map is not a function');
+      },
+    });
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('not on the store\'s account');
     expect(fake.rolledBack).toBe(true);
   });
 
@@ -739,6 +761,34 @@ describe('an action whose write comes from a handler', () => {
     expect(outcome.refs.source.keys).toEqual(['eu', '1']);
   });
 
+  test('is gated on what it declares, not on statements that will not run',
+       async () => {
+         // The model's statements write Account, and a rule reads Account --
+         // but a handler supplies the plan, so those statements are text that
+         // never runs. Gating on them refuses the call over a write nobody is
+         // making. `affects` is the only account of what a handler does, which
+         // is the position every non-`sql` executor is already in.
+         const fake = resolvingFake();
+         const outcome = await runAction({
+           model: creditModel({
+             actions: [{
+               ...credit,
+               affects: [{concept: 'Entry', operation: 'create'}],
+             }],
+             constraints: [{
+               name: 'NonNegativeBalance',
+               expression: 'Account.balance >= 0',
+               description: 'An account cannot go negative.',
+             }],
+           }),
+           actionName: 'Credit',
+           args: {account: 'A1', amount: 100},
+           client: fake.client,
+           handler: debitAndCredit,
+         });
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
+       });
+
   test('a composite key is still refused when the MODEL supplies the write',
        async () => {
          // Here the key has to become one statement parameter, and one value
@@ -1041,6 +1091,114 @@ describe('the blast radius read off the statements', () => {
 });
 
 
+describe('a commit the store refuses outright', () => {
+  test('is a rollback, not an unknown outcome', async () => {
+    // `409 ABORTED` is what Spanner returns under lock contention, and it
+    // guarantees the transaction applied nothing. Reporting it as
+    // indeterminate -- "the write may have landed, read the data before
+    // retrying" -- would turn the commonest routine failure there is into an
+    // investigation, every time two writers meet.
+    const fake = resolvingFake();
+    fake.commitRefused = 409;
+    const outcome = await runCredit(fake);
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.indeterminate).toBeUndefined();
+    expect(outcome.message).toContain('nothing was written');
+    expect(outcome.message).toContain('can be run again');
+    expect(fake.committed).toBe(false);
+  });
+
+  test('but a 5xx is still unknown, because that one may have landed',
+       async () => {
+         // The distinction is the whole point: a definite refusal is definite,
+         // and everything else is not.
+         const fake = resolvingFake();
+         fake.commitRefused = 503;
+         const outcome = await runCredit(fake);
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.indeterminate).toBe(true);
+         expect(outcome.message).toContain('Whether the write landed is unknown');
+         expect(fake.rolledBack).toBe(false);
+       });
+});
+
+
+describe('two concepts bound to the same table name', () => {
+  // A constraint over a concept this action does not touch. It is what makes
+  // the control case run, so the refusal below is attributable to the
+  // collision and to nothing else.
+  const widgetRule: Constraint = {
+    name: 'WidgetsAreSized',
+    expression: 'Widget.size >= 0',
+    description: 'A widget has a non-negative size.',
+  };
+
+  const widget = {
+    name: 'Widget',
+    dataSource: 'demo.payments.Widget',
+    keys: ['widgetId'],
+    fields: [
+      {name: 'widgetId', expression: 'widget_id'},
+      {name: 'size', expression: 'size'},
+    ],
+  };
+
+  // Bound to a DIFFERENT database, and reading as the same table: an action's
+  // statements address a table by its final name segment, so `Account` names
+  // both of these.
+  const archived = {
+    name: 'ArchivedAccount',
+    dataSource: 'demo.archive.Account',
+    keys: ['accountId'],
+    fields: [{name: 'accountId', expression: 'account_id'}],
+  };
+
+  const debit: Action = {
+    ...credit,
+    executor: {
+      kind: 'sql',
+      sql: {
+        statements: [
+          'UPDATE Account SET balance = balance - @amount ' +
+              'WHERE account_id = @account',
+        ],
+      },
+    },
+    affects: [{concept: 'Account', operation: 'modify', fields: ['balance']}],
+  };
+
+  function runDebit(entities: SemanticModel['entities']) {
+    const base = creditModel();
+    return runAction({
+      model: {
+        ...base,
+        entities: [...base.entities, ...entities],
+        actions: [debit],
+        constraints: [widgetRule],
+      },
+      actionName: 'Credit',
+      args: {account: 'A1', amount: 100},
+      client: resolvingFake().client,
+    });
+  }
+
+  test('runs when the table it writes names one concept', async () => {
+    const outcome = await runDebit([widget]);
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+  });
+
+  test('is refused when the table it writes names two', async () => {
+    // Keeping the last one written would answer "this statement writes
+    // ArchivedAccount" for a statement over Account, and a rule stated over
+    // Account would then find no overlap and stand down -- the gate failing
+    // open, which is the one direction it must never fail.
+    const outcome = await runDebit([widget, archived]);
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('\'WidgetsAreSized\' could constrain');
+  });
+});
+
+
 describe('an entity whose key has more than one column', () => {
   test('is not resolved by matching one part of the key', async () => {
     // `region = @ref OR account_id = @ref` accepts a row matching one PART of
@@ -1104,6 +1262,44 @@ describe('an argument given as empty text', () => {
     });
     if (outcome.status !== 'committed') throw new Error(outcome.message);
   });
+
+  test('keeps the caller\'s spacing, because a String is not parsed',
+       async () => {
+         // The trim on the way in exists to read a number or a date off a
+         // command line. A String parameter is not being parsed -- it IS the
+         // value -- so trimming it would store text the caller did not write.
+         const fake = resolvingFake();
+         const outcome = await runAction({
+           model: creditModel({
+             actions: [{
+               ...credit,
+               executor: {
+                 kind: 'sql',
+                 sql: {
+                   statements: [
+                     'UPDATE Account SET memo = @memo WHERE account_id = @account',
+                   ],
+                 },
+               },
+               parameters: [
+                 {name: 'account', type: 'Account', isEntityRef: true},
+                 {name: 'memo', type: 'String', isEntityRef: false},
+               ],
+               affects: [{
+                 concept: 'Account',
+                 operation: 'modify',
+                 fields: ['balance'],
+               }],
+             }],
+           }),
+           actionName: 'Credit',
+           args: {account: 'A1', memo: '  see ticket 42  '},
+           client: fake.client,
+         });
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
+         const write = fake.statements.find(s => s.sql.includes('SET memo'));
+         expect(write?.params?.['memo']).toBe('  see ticket 42  ');
+       });
 
   test('is still not a value for a numeric one', async () => {
     // There is no Float that empty text could be.

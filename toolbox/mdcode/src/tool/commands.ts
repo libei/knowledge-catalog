@@ -20,6 +20,7 @@ import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import {resolveInheritance} from '../libts/semantic/resolve_inheritance';
 import {runAction} from '../libts/semantic/runtime';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
@@ -1299,7 +1300,21 @@ function loadForProfile(
       {defaultProject: source.project ?? ctx.project, bindingOptional: true});
   if (loaded.error) return {error: loaded.error};
   for (const w of loaded.warnings) console.warn(`Warning: ${w}`);
-  return {models: loaded.models};
+
+  // Inheritance is resolved for the same reason both push legs resolve it: an
+  // inherited field is a field, and every reader downstream reads
+  // `entity.fields`. The runtime is the reader where skipping it is unsafe
+  // rather than merely incomplete. It would not see a subtype's inherited
+  // `name`, so resolving a reference by name would report a row missing that
+  // is there; and it would not see an inherited key's TYPE, so the check that
+  // refuses a generated UUID for an Integer key would read the key as a
+  // String, pass, and let the store take the mismatch instead.
+  const models = loaded.models.map(m => {
+    const resolved = resolveInheritance(m.model);
+    for (const w of resolved.warnings) console.warn(`Warning: ${w}`);
+    return {...m, model: resolved.model};
+  });
+  return {models};
 }
 
 
@@ -1417,14 +1432,20 @@ async function runOneAction(
 // `--arg <name>=<value>` pairs. Values are kept as text: the runtime parses
 // every argument from text against its declared ontology type, so the command
 // line does not have to guess whether `30` is a number, an amount, or a string.
-function parseActionArgs(raw: string|string[]|undefined):
+function parseActionArgs(raw: unknown):
     {args: Record<string, unknown>}|{error: string} {
-  const pairs = raw === undefined ? [] : (Array.isArray(raw) ? raw : [raw]);
+  const pairs: unknown[] =
+      raw === undefined ? [] : (Array.isArray(raw) ? raw : [raw]);
   // Null-prototype, because these names come off the command line: on a plain
   // object `--arg toString=x` would report itself as given twice, and
   // `--arg __proto__=x` would set the prototype instead of an argument.
   const args: Record<string, unknown> = Object.create(null);
-  for (const pair of pairs) {
+  for (const given of pairs) {
+    // cac does not hand back a string for every `--arg`. It coerces a bare
+    // numeric value, so the likeliest typo of all -- `--arg amount 30`, or
+    // `--arg=5` -- arrives as the NUMBER 30, and calling a string method on it
+    // would throw a TypeError past this function instead of the message below.
+    const pair = String(given);
     const eq = pair.indexOf('=');
     // An `=` at position 0 is a nameless argument, and none at all is a bare
     // word; neither names a parameter.

@@ -833,10 +833,14 @@ is what decides.
   and not. Nothing is interpolated into a statement.
 - **Apply.** A read-write transaction is opened, the action's statements run
   inside it in order, and it commits. Any failure before the commit rolls back,
-  so no partial write survives. A failure *of* the commit is the one thing
-  `kcmd` cannot resolve for you — the store may have applied the write and lost
-  the response — and it says so rather than claiming a rollback, because a
-  caller told "nothing happened" would retry a write that did.
+  so no partial write survives. A commit the store *refuses* wrote nothing
+  either, and is reported that way — the commonest refusal is Spanner's
+  `ABORTED` under lock contention, and the answer to it is to run the action
+  again. What `kcmd` cannot settle for you is a commit that is neither accepted
+  nor refused: a timeout or a 5xx, where the store may have applied the write
+  and lost the response. That one reports the outcome as unknown rather than
+  claiming a rollback, because a caller told "nothing happened" would retry a
+  write that did.
 
 Where the write goes is the model's Spanner deployment target under the selected
 profile. The command line never names a database: `--profile` changes the store,

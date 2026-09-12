@@ -153,23 +153,6 @@ export function validatePushRequirements(
   return errors;
 }
 
-// Static, target-independent checks for a model's actions. Returns one message
-// per violation. What can be statically wrong once the model has parsed:
-//   - a parameter's type resolves to neither a known entity nor a scalar
-//     datatype (the loader left isEntityRef unset and only warned) -- an
-//     unresolvable type is a malformed action, promoted to a hard error here;
-//   - an executor is missing a coordinate a runtime needs to dispatch it (an
-//     empty server/tool, endpoint/method, or service/method) -- the schema
-//     accepts empty strings, so this is caught here rather than at parse;
-//   - a guard names a constraint the model does not declare;
-//   - an `affects` entry names a concept the model does not declare, names
-//     fields on a 'delete' (which takes the whole instance), or names a field
-//     the concept does not have.
-//
-// Every `affects` check is a hard error for the reason the guard check is: an
-// entry that names nothing real leaves a reader believing the blast radius is
-// described when it is not, and a consumer routing on it would route on a
-// concept that does not exist.
 // The subset of the push checks that bear on RUNNING an action rather than on
 // deploying a model. `kcmd action run` skips the deployment checks on purpose
 // -- it deploys nothing -- but it must not skip these, because the runtime's
@@ -191,6 +174,23 @@ export function validateRunnable(models: LoadedModel[]): string[] {
 }
 
 
+// Static, target-independent checks for a model's actions. Returns one message
+// per violation. What can be statically wrong once the model has parsed:
+//   - a parameter's type resolves to neither a known entity nor a scalar
+//     datatype (the loader left isEntityRef unset and only warned) -- an
+//     unresolvable type is a malformed action, promoted to a hard error here;
+//   - an executor is missing a coordinate a runtime needs to dispatch it (an
+//     empty server/tool, endpoint/method, or service/method) -- the schema
+//     accepts empty strings, so this is caught here rather than at parse;
+//   - a guard names a constraint the model does not declare;
+//   - an `affects` entry names a concept the model does not declare, names
+//     fields on a 'delete' (which takes the whole instance), or names a field
+//     the concept does not have.
+//
+// Every `affects` check is a hard error for the reason the guard check is: an
+// entry that names nothing real leaves a reader believing the blast radius is
+// described when it is not, and a consumer routing on it would route on a
+// concept that does not exist.
 function validateActions(
     model: SemanticModel, document: string, fieldsPruned: boolean): string[] {
   const errors: string[] = [];

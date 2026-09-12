@@ -1,8 +1,10 @@
 // Tests for `kcmd action` (src/tool/commands.ts, action()) -- the command in
 // front of the semantic runtime.
 //
-// Nothing here reaches a store, and that is not a compromise: `list` never
-// opens one, and every `run` covered fails before the first request. The
+// Almost nothing here reaches a store, and that is not a compromise: `list`
+// never opens one, and every `run` covered but the last fails before the first
+// request. The exception fakes the Spanner client's own surface, because what
+// it checks is the QUESTION the runtime asks the store. The
 // argument parse, the choice of database, and the runtime's own refusal to run
 // an action a constraint is supposed to decide all happen before a session
 // exists. What is under test is the wiring -- that the command finds the model,
@@ -17,6 +19,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {ApiContext} from '../../src/libts/gcp/context';
+import {SpannerDataClient} from '../../src/libts/gcp/spanner';
 import {action} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -122,6 +125,41 @@ semantic_model:
         fields:
           - { name: key, expression: EntryId }
           - { name: amount, expression: Amount }
+`;
+
+
+// A subtype whose identifying field is its supertype's. Nothing else here has
+// inheritance, and the run path is the one reader for which not resolving it
+// is unsafe rather than merely incomplete.
+const INHERITS = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployment_target: ${SPANNER}/databases/commerce/propertyGraphs/commerce
+    entities:
+      - name: Party
+        source: ${SPANNER}/databases/commerce/tables/Parties
+        primary_key: [key]
+        fields:
+          - { name: key, expression: PartyId }
+          - { name: name, expression: FullName, datatype: String }
+      - name: Customer
+        extends: [Party]
+        source: ${SPANNER}/databases/commerce/tables/Customers
+        primary_key: [key]
+        fields:
+          - { name: key, expression: CustomerId }
+    actions:
+      - name: Touch
+        executor:
+          sql:
+            statements:
+              - >-
+                UPDATE Customers SET LastSeen = CURRENT_TIMESTAMP()
+                WHERE CustomerId = @who
+        parameters:
+          - {name: who, type: Customer}
+        affects:
+          - {concept: Customer, operation: modify, fields: [key]}
 `;
 
 let dir = '';
@@ -379,6 +417,51 @@ describe('kcmd action: what the command line can actually contain', () => {
 
 // `run` skips the deployment checks on purpose -- it deploys nothing -- but
 // not the ones the runtime's refusal gate depends on.
+describe('kcmd action run: --arg has to be a pair', () => {
+  test('a bare value is reported rather than crashing the parse', async () => {
+    // cac does not hand back a string for every `--arg`: it coerces a bare
+    // numeric value, so `--arg amount 30` arrives here as the NUMBER 30. Left
+    // as it came, `pair.indexOf` threw a TypeError past the parser and the
+    // message written for exactly this typo was unreachable.
+    writeWorkspace();
+    expect(await action('run', 'IssueCredit', {arg: 30 as any})).toBe(1);
+    expect(logs.join('\n')).toContain('--arg expects <name>=<value>');
+  });
+});
+
+
+describe('kcmd action run: a subtype inherits its fields', () => {
+  test('resolves a reference by an inherited identifying column', async () => {
+    // Both push legs resolve inheritance and this path did not, so a subtype
+    // arrived at the runtime with only the fields it declares itself.
+    // Customer's identifying field is Party's `name`; without it the lookup
+    // drops silently to key-only and reports a row missing that is there.
+    writeWorkspace(INHERITS);
+    const asked: string[] = [];
+    const ok = (result: unknown) =>
+        Promise.resolve({status: 200, result} as any);
+    spyOn(SpannerDataClient.prototype, 'createSession')
+        .mockImplementation(() => ok({name: 'sessions/1'}));
+    spyOn(SpannerDataClient.prototype, 'deleteSession')
+        .mockImplementation(() => ok({}));
+    spyOn(SpannerDataClient.prototype, 'beginReadWrite')
+        .mockImplementation(() => ok({id: 'txn-1'}));
+    spyOn(SpannerDataClient.prototype, 'rollback')
+        .mockImplementation(() => ok({}));
+    spyOn(SpannerDataClient.prototype, 'executeSql')
+        .mockImplementation((_s: any, _t: any, stmt: any) => {
+          asked.push(stmt.sql);
+          return ok({rows: []});
+        });
+
+    // No row comes back, so the run fails -- but it fails having asked the
+    // right question, which is what is under test.
+    expect(await action('run', 'Touch', {arg: 'who=Alice'})).toBe(1);
+    expect(asked[0]).toContain('FullName = @ref');
+  });
+});
+
+
 describe('kcmd action run: the model has to be valid to run', () => {
   const TYPO = MODEL.replace(
       '- {concept: Entry, operation: create}',

@@ -138,7 +138,7 @@ export async function runAction(opts: RunActionOptions):
 
   // Decided BEFORE touching the store, so an action this runtime will not run
   // fails without having opened a transaction at all.
-  const unsafe = unsafeToRunUnchecked(model, action);
+  const unsafe = unsafeToRunUnchecked(model, action, !!opts.handler);
   if (unsafe) return {status: 'error', message: unsafe};
 
   // Whether a transaction was ever opened. A session that could not be
@@ -225,13 +225,21 @@ export async function runAction(opts: RunActionOptions):
               `response -- so read the affected data before retrying.`,
         });
 
-        // A commit fails in two shapes, and they mean the same thing here. It
-        // can RETURN a non-2xx, or it can REJECT outright: the request throws
-        // on a socket hang-up, a DNS failure or an abort, and reading the
-        // response body can throw too. That second shape is precisely what a
-        // commit deadline looks like from the client -- so letting it fall
-        // through to the catch below, which rolls back and says so, would
-        // state the exact opposite of what this branch exists to say.
+        // A commit fails in three shapes, and only two of them are unknowable.
+        // It can REJECT outright -- the request throws on a socket hang-up, a
+        // DNS failure or an abort -- which is precisely what a commit deadline
+        // looks like from the client. It can RETURN a 5xx or a timeout, which
+        // Spanner sends just as readily for a commit that landed and lost its
+        // response as for one that did not. Both are indeterminate, and
+        // letting either fall through to the catch below, which rolls back and
+        // says so, would state the opposite of what is known.
+        //
+        // But a commit can also be REFUSED, definitively, and the commonest
+        // refusal is routine: `409 ABORTED` is what Spanner returns under lock
+        // contention, and it guarantees the transaction applied nothing. The
+        // right response to it is to run the action again. Telling that caller
+        // the write may have landed and the data must be read before retrying
+        // would turn every lock conflict into an investigation.
         let committed;
         try {
           committed = await client.commit(sessionName, transactionId);
@@ -239,7 +247,21 @@ export async function runAction(opts: RunActionOptions):
           return indeterminate(err instanceof Error ? err.message : `${err}`);
         }
         if (committed.status < 200 || committed.status >= 300) {
-          return indeterminate(`${committed.message ?? committed.status}`);
+          const reason = `${committed.message ?? committed.status}`;
+          if (!DEFINITELY_NOT_COMMITTED.has(committed.status)) {
+            return indeterminate(reason);
+          }
+          // Rolled back on the way out. An ABORTED transaction is already
+          // gone, so this is a no-op for the commonest case, but a refusal on
+          // other grounds can leave one open, and it costs a request either
+          // way.
+          return await rollback({
+            status: 'error',
+            message: `Action '${action.name}' was not committed on ${
+                client.database}: ${reason}. The store refused the commit ` +
+                `outright, so nothing was written and the action can be run ` +
+                `again.`,
+          });
         }
         return {
           status: 'committed',
@@ -256,12 +278,26 @@ export async function runAction(opts: RunActionOptions):
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+    if (!opened) {
+      return {
+        status: 'error',
+        message:
+            `Action '${action.name}' could not start on ${client.database}: ${
+                reason}`,
+      };
+    }
+    // A statement the store rejected and a bug in a handler both arrive here,
+    // and they are not the same news. The first is the action failing on its
+    // own terms, and the message is about the write. The second is this
+    // process being wrong, and reporting it as a rejected write sends the
+    // reader to the data to look for a problem that is in the code.
     return {
       status: 'error',
-      message: opened ?
+      message: err instanceof StoreError ?
           `Action '${action.name}' failed and was rolled back: ${reason}` :
-          `Action '${action.name}' could not start on ${client.database}: ${
-              reason}`,
+          `Action '${action.name}' failed and was rolled back, but not on ` +
+              `the store's account: ${reason}. That is a failure inside the ` +
+              `runtime or its caller rather than a rejected write.`,
     };
   }
 }
@@ -270,6 +306,16 @@ export async function runAction(opts: RunActionOptions):
 // A store-level failure, distinguished from a programming error so the message
 // surfaced to the caller stays about the store.
 class StoreError extends Error {}
+
+
+// Commit statuses that mean the transaction applied NOTHING, as against
+// leaving its fate unknown. A Spanner `409 ABORTED` -- the routine outcome of
+// lock contention -- guarantees it, and so do a rejected request, a denied
+// permission, and a transaction the server no longer has. Everything else,
+// every 5xx and every timeout included, is a commit that may have landed:
+// unlisted is the safe default, because the cost of wrongly reporting "nothing
+// was written" is a retry that writes twice.
+const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
 
 
 // Why this runtime will not run `action`, or null if it is safe to run.
@@ -294,7 +340,8 @@ class StoreError extends Error {}
 // An action over entities no constraint mentions runs today, which is what
 // makes this runtime useful before the evaluator exists.
 function unsafeToRunUnchecked(
-    model: SemanticModel, action: Action): string|null {
+    model: SemanticModel, action: Action,
+    plannedByCaller: boolean): string|null {
   // A guard names a constraint the author says is checked before the call.
   // One whose `onViolation` is `warn` reports rather than refuses, so an
   // evaluator would let the write through, and refusing here would make a
@@ -321,7 +368,7 @@ function unsafeToRunUnchecked(
         `nothing constrains that data.`;
   }
 
-  const bearing = constraintsOverAffected(model, action);
+  const bearing = constraintsOverAffected(model, action, plannedByCaller);
   if (bearing.length) {
     return `Action '${action.name}' writes data that ${quoteList(bearing)} ` +
         `could constrain, and this runtime does not evaluate constraints ` +
@@ -374,20 +421,36 @@ function gatingConstraints(model: SemanticModel): Constraint[] {
 // The statements are validated to be one DML verb each with no `;`
 // (sqlExecutorErrors), so the target is the identifier after the verb.
 function conceptsWrittenBy(
-    model: SemanticModel, action: Action): Set<string>|null {
-  if (action.executor.kind !== 'sql') return new Set();
+    model: SemanticModel, action: Action,
+    plannedByCaller: boolean): Set<string>|null {
+  // A handler supplies the plan, so the model's statements are not what runs
+  // and reading them would widen the blast radius by dead text. That leaves
+  // `affects` as the only account of the write -- the same position every
+  // non-`sql` executor is already in, since those name a system that performs
+  // it and put no statements in the model at all.
+  if (plannedByCaller || action.executor.kind !== 'sql') return new Set();
   const statements = action.executor.sql?.statements ?? [];
 
   // An action's statements address a table by its final name segment -- the
   // same reading `spannerTable` produces for the resolver -- so the map is
   // keyed that way, and case-insensitively, because SQL identifiers are.
+  //
+  // A collision is possible, and resolving it by guessing is the one thing
+  // this must not do. Two entities bound to `...dsA/tables/orders` and
+  // `...dsB/tables/orders` both read as `orders`; taking the last one written
+  // would answer "this statement writes ArchivedOrders" for a statement over
+  // Orders, and a constraint stated over Orders would then find no overlap and
+  // stand down. So a second concept on the same table marks it unanswerable
+  // rather than overwriting the first.
   const ignored: string[] = [];
-  const byTable = new Map<string, string>();
+  const byTable = new Map<string, string|null>();
   const add = (source: string|undefined, concept: string) => {
     if (!source) return;
     const table =
         spannerTable(source, ignored, concept).replace(/`/g, '').toLowerCase();
-    if (table) byTable.set(table, concept);
+    if (!table) return;
+    const seen = byTable.get(table);
+    byTable.set(table, seen === undefined || seen === concept ? concept : null);
   };
   for (const entity of model.entities ?? []) add(entity.dataSource, entity.name);
   for (const rel of model.relationships ?? []) {
@@ -400,9 +463,9 @@ function conceptsWrittenBy(
         /\b(?:insert\s+into|update|delete\s+from)\s+(`[^`]+`|[\w$]+)/i.exec(sql);
     if (!target) return null;
     const concept = byTable.get(target[1].replace(/`/g, '').toLowerCase());
-    // A table no concept binds is not something a constraint can be stated
-    // over -- but it is also not something this can vouch for, and what it
-    // would be vouching for is running the write unchecked.
+    // A table no concept binds -- or one that several bind, which names no
+    // single concept -- is not something this can vouch for, and what it would
+    // be vouching for is running the write unchecked.
     if (!concept) return null;
     written.add(concept);
   }
@@ -411,7 +474,7 @@ function conceptsWrittenBy(
 
 
 function constraintsOverAffected(
-    model: SemanticModel, action: Action): string[] {
+    model: SemanticModel, action: Action, plannedByCaller: boolean): string[] {
   const constraints = gatingConstraints(model);
   if (!constraints.length) return [];
 
@@ -422,7 +485,7 @@ function constraintsOverAffected(
   // `sql` executor the statements are in hand, so the blast radius is checked
   // rather than taken on trust.
   const affected = new Set((action.affects ?? []).map(a => a.concept));
-  const written = conceptsWrittenBy(model, action);
+  const written = conceptsWrittenBy(model, action, plannedByCaller);
   if (!written) return constraints.map(c => c.name).sort();
   for (const name of written) affected.add(name);
   if (!affected.size) return [];
@@ -546,7 +609,12 @@ function bindScalar(param: ActionParameter, raw: unknown):
     case 'DateTimeTz':
       return {value: text, code: 'TIMESTAMP'};
     default:
-      return {value: text, code: 'STRING'};
+      // `raw`, not `text`. The trim above exists to parse a number or a date
+      // off a command line; a String parameter is not parsed, it IS the value.
+      // Trimming here would store `see ticket` for `--arg memo=" see ticket "`
+      // -- the caller's text altered on the way to the store, by a rule
+      // nothing states.
+      return {value: `${raw}`, code: 'STRING'};
   }
 }
 
