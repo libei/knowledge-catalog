@@ -44,6 +44,10 @@ class FakeSpanner {
   // Statements whose SQL contains one of these fragments fail, so a store-level
   // error can be provoked at a chosen point.
   failOn: string[] = [];
+  // Statements whose SQL contains one of these never get an answer at all:
+  // the request itself throws, the way a dropped socket or a DNS failure
+  // reaches the runtime. A refusal and a silence are different news.
+  throwOn: string[] = [];
 
   constructor(private readonly answers: Answer[] = []) {}
 
@@ -67,6 +71,9 @@ class FakeSpanner {
 
   async executeSql(_s: string, _t: string, stmt: spanner.Statement) {
     this.statements.push(stmt);
+    if (this.throwOn.some(f => stmt.sql.includes(f))) {
+      throw new TypeError('fetch failed');
+    }
     if (this.failOn.some(f => stmt.sql.includes(f))) {
       return {status: 400, message: 'statement rejected'};
     }
@@ -307,6 +314,24 @@ describe('failures that stop the write', () => {
     expect(fake.rolledBack).toBe(true);
     expect(fake.committed).toBe(false);
   });
+
+  test('a store that stops answering is the store failing, not this code',
+       async () => {
+         // A statement the store REFUSES comes back as a status; a dropped
+         // socket, a DNS failure or a TLS error throws instead. Both are the
+         // store, and reporting the second as a fault inside the runtime
+         // sends the reader to look for a bug where there is only a network
+         // worth retrying.
+         const fake = resolvingFake();
+         fake.throwOn = ['UPDATE Account'];
+         const outcome = await run(fake);
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message).toContain('fetch failed');
+         expect(outcome.message).toContain('failed and was rolled back');
+         expect(outcome.message).not.toContain('inside the runtime');
+         expect(fake.rolledBack).toBe(true);
+         expect(fake.committed).toBe(false);
+       });
 
   test('a handler that throws rolls the transaction back', async () => {
     const fake = resolvingFake();
@@ -934,6 +959,94 @@ describe('a commit the store refuses outright', () => {
          expect(outcome.message).toContain('Whether the write landed is unknown');
          expect(fake.rolledBack).toBe(false);
        });
+});
+
+
+// A temporal argument is checked from the model like every other scalar. The
+// alternative is that the store checks it -- after a transaction is open and
+// the reference lookups have run -- and answers with a parse error that names
+// neither the parameter nor the type it was declared as.
+describe('a date or a timestamp argument', () => {
+  const schedule: Action = {
+    name: 'Schedule',
+    executor: {
+      kind: 'sql',
+      sql: {
+        statements: [
+          'UPDATE Account SET review_on = @day, seen_at = @at ' +
+              'WHERE account_id = @account',
+        ],
+      },
+    },
+    parameters: [
+      {name: 'account', type: 'Account', isEntityRef: true},
+      {name: 'day', type: 'Date', isEntityRef: false},
+      {name: 'at', type: 'DateTimeTz', isEntityRef: false},
+    ],
+  };
+
+  function scheduling(over: Record<string, unknown> = {}) {
+    const fake = resolvingFake();
+    return {
+      fake,
+      outcome: runAction({
+        model: model({actions: [schedule]}),
+        actionName: 'Schedule',
+        args: {
+          account: 'A1',
+          day: '2026-03-04',
+          at: '2026-03-04T10:00:00Z',
+          ...over,
+        },
+        client: fake.client,
+      }),
+    };
+  }
+
+  test('a well-formed pair binds as DATE and TIMESTAMP', async () => {
+    const {fake, outcome} = scheduling();
+    const result = await outcome;
+    if (result.status !== 'committed') throw new Error(result.message);
+    const write = fake.statements[fake.statements.length - 1];
+    expect(write.paramTypes!['day']).toEqual({code: 'DATE'});
+    expect(write.paramTypes!['at']).toEqual({code: 'TIMESTAMP'});
+    expect(write.params!['day']).toBe('2026-03-04');
+  });
+
+  test('a date in some other order is refused, naming the parameter',
+       async () => {
+         // '03/04/2026' is the fourth of March to one reader and the third of
+         // April to another, so it is not a date this can accept.
+         const {fake, outcome} = scheduling({day: '03/04/2026'});
+         const result = await outcome;
+         if (result.status !== 'error') throw new Error('expected an error');
+         expect(result.message).toContain("'day' is a Date");
+         expect(result.message).toContain('YYYY-MM-DD');
+         expect(fake.committed).toBe(false);
+       });
+
+  test('a date with the right shape and no such day is refused', async () => {
+    const {outcome} = scheduling({day: '2026-02-30'});
+    const result = await outcome;
+    if (result.status !== 'error') throw new Error('expected an error');
+    expect(result.message).toContain("'day' is a Date");
+  });
+
+  test('a timestamp with no zone is refused rather than assumed', async () => {
+    // Filling in the missing zone would write a different instant for every
+    // caller, and each of them would be sure it was the one they meant.
+    const {outcome} = scheduling({at: '2026-03-04T10:00:00'});
+    const result = await outcome;
+    if (result.status !== 'error') throw new Error('expected an error');
+    expect(result.message).toContain("'at' is a DateTimeTz");
+    expect(result.message).toContain('with the zone');
+  });
+
+  test('an offset counts as a zone', async () => {
+    const {outcome} = scheduling({at: '2026-03-04T10:00:00-07:00'});
+    const result = await outcome;
+    expect(result.status).toBe('committed');
+  });
 });
 
 

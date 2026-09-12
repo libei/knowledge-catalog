@@ -1240,20 +1240,6 @@ export async function action(
     return 1;
   }
 
-  // `list` reads the model as authored and is happy with whatever it finds.
-  // `run` executes it, and the runtime's refusal gate trusts what validation
-  // checks: a push would reject an `affects` entry naming an undeclared
-  // concept, and running one would find no constraint over that name and go
-  // ahead unchecked. Only the run-relevant checks, not the deployment ones --
-  // an action needs no deployed graph.
-  if (command === 'run') {
-    const errors = validateRunnable(loaded.models);
-    if (errors.length) {
-      for (const e of errors) console.error(`Error: ${e}`);
-      return 1;
-    }
-  }
-
   return command === 'list' ?
       listActions(loaded.models, source.entryGroup, profile) :
       await runOneAction(loaded.models, ctx, name, options);
@@ -1405,6 +1391,22 @@ async function runOneAction(
   }
   const model = declaring[0].model;
 
+  // `list` reads the model as authored and is happy with whatever it finds.
+  // `run` executes it, and the runtime's refusal gate trusts what validation
+  // checks: a push would reject an `affects` entry naming an undeclared
+  // concept, and running one would find no constraint over that name and go
+  // ahead unchecked. Only the run-relevant checks, not the deployment ones --
+  // an action needs no deployed graph.
+  //
+  // Only the model being run. A scope holds many documents, and a typo in one
+  // the run will not touch is a real error to fix but not a reason to refuse
+  // this call -- refusing on it would report a model the reader did not name.
+  const invalid = validateRunnable([declaring[0]]);
+  if (invalid.length) {
+    for (const e of invalid) console.error(`Error: ${e}`);
+    return 1;
+  }
+
   const parsed = parseActionArgs(options.arg);
   if ('error' in parsed) {
     console.error(`Error: ${parsed.error}`);
@@ -1525,8 +1527,21 @@ function spannerClientFor(model: SemanticModel, ctx: context.ApiContext):
 
   const strays: string[] = [];
   for (const binding of bindings) {
-    const bound = binding.source.trim().match(SPANNER_TABLE_SOURCE);
-    if (!bound) continue;
+    const source = binding.source.trim();
+    // Nothing bound is not a mis-binding: the entity is declared and this
+    // profile supplies it no table, which the statements will report on their
+    // own terms when they name a table that is not there.
+    if (!source) continue;
+    const bound = source.match(SPANNER_TABLE_SOURCE);
+    // A source that is not a Spanner table at all -- a BigQuery URI, say --
+    // is the same hazard and a likelier one: the statements would still run,
+    // against whatever table of that name the target database holds, and the
+    // data the model describes would sit untouched in the other system.
+    if (!bound) {
+      strays.push(`'${binding.name}' to ${source}, which is not a table in ` +
+                  `this database`);
+      continue;
+    }
     const boundDatabase =
         `projects/${bound[1]}/instances/${bound[2]}/databases/${bound[3]}`;
     if (boundDatabase !== database) {

@@ -179,7 +179,21 @@ export async function runAction(opts: RunActionOptions):
       opened = true;
 
       const run = async (stmt: spanner.Statement) => {
-        const res = await client.executeSql(sessionName, transactionId, stmt);
+        // A refusal arrives as a non-2xx response; a dropped socket, a DNS
+        // failure or a TLS error arrives as a thrown fetch error instead.
+        // Both are the store not answering, and neither is this process being
+        // wrong -- so both have to leave here as a StoreError. Without this
+        // the thrown one reaches the outer catch as a plain Error and is
+        // reported as a failure inside the runtime, which sends the reader to
+        // look for a bug in the code instead of retrying a transient fault.
+        let res;
+        try {
+          res = await client.executeSql(sessionName, transactionId, stmt);
+        } catch (err) {
+          throw new StoreError(`${
+              err instanceof Error ? err.message :
+                                     String(err)} (while running: ${stmt.sql})`);
+        }
         if (res.status < 200 || res.status >= 300) {
           throw new StoreError(
               `${res.message ?? 'request failed'} (while running: ${stmt.sql})`);
@@ -433,6 +447,25 @@ function bindReference(
 // One scalar argument as a Spanner value. The declared ontology type picks the
 // store type, so a `Decimal` amount is compared as a number rather than as text
 // -- which is the difference between "9" being less than "10" and not.
+// What Spanner accepts for a DATE and a TIMESTAMP parameter. The zone is
+// required rather than defaulted, because a timestamp written without one
+// means a different instant to every reader who supplies the missing part.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const RFC3339_TIMESTAMP =
+    /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[-+]\d{2}:?\d{2})$/;
+
+
+// Whether `text` is a day that exists, written the one way Spanner reads.
+// `Date.parse` answers neither question: it accepts '03/04/2026', and it reads
+// '2026-02-30' as the second of March rather than rejecting it. A round trip
+// answers both, because a day that rolled over comes back written differently.
+function isCalendarDay(text: string): boolean {
+  if (!ISO_DATE.test(text)) return false;
+  const utc = new Date(`${text}T00:00:00Z`);
+  return !Number.isNaN(utc.getTime()) && utc.toISOString().startsWith(text);
+}
+
+
 function bindScalar(param: ActionParameter, raw: unknown):
     {value: unknown; code: string}|{error: string} {
   // An empty String IS a value: `--arg memo=` is the caller saying the memo is
@@ -472,9 +505,26 @@ function bindScalar(param: ActionParameter, raw: unknown):
       }
       return {value: /^true$/i.test(text), code: 'BOOL'};
     case 'Date':
+      // Spanner reads a DATE as YYYY-MM-DD and nothing else. '03/04/2026' is
+      // the fourth of March to one reader and the third of April to another,
+      // so the shape is checked -- and then the calendar, because a shape is
+      // not a day.
+      if (!isCalendarDay(text)) {
+        return {
+          error: `'${param.name}' is a Date, but '${
+              text}' is not one. Dates are written YYYY-MM-DD.`,
+        };
+      }
       return {value: text, code: 'DATE'};
     case 'DateTime':
     case 'DateTimeTz':
+      if (!RFC3339_TIMESTAMP.test(text) || !isCalendarDay(text.slice(0, 10))) {
+        return {
+          error: `'${param.name}' is a ${param.type}, but '${
+              text}' is not a timestamp. Timestamps are written like ` +
+              `2026-03-04T10:00:00Z, with the zone.`,
+        };
+      }
       return {value: text, code: 'TIMESTAMP'};
     default:
       // `raw`, not `text`. The trim above exists to parse a number or a date

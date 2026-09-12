@@ -151,6 +151,54 @@ semantic_model:
 `;
 
 
+// A binding that points the model at Spanner and leaves its entities in
+// BigQuery. The statements would still run -- they name a table, not a
+// database -- so the write would land in whatever Spanner table shares the
+// name while the data the model describes sat untouched in the other system.
+const CROSSBOUND = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployment_target: ${SPANNER}/databases/commerce/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+        fields:
+          - { name: key, expression: order_id }
+          - { name: total, expression: total }
+      - name: Entry
+        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/ledger
+        fields:
+          - { name: key, expression: entry_id }
+          - { name: amount, expression: amount }
+`;
+
+
+// A second document in the same scope, whose action names a concept the model
+// does not declare. Running an action in ANOTHER document must not be blocked
+// by it.
+const WAREHOUSE = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: warehouse
+    deployment_target: ${SPANNER}/databases/commerce/propertyGraphs/warehouse
+    entities:
+      - name: Bin
+        source: ${SPANNER}/databases/commerce/tables/Bins
+        primary_key: [key]
+        fields:
+          - { name: key, expression: BinId }
+    actions:
+      - name: Restock
+        executor:
+          sql:
+            statements:
+              - UPDATE Bins SET Held = Held + 1 WHERE BinId = @bin
+        parameters:
+          - {name: bin, type: Bin}
+        affects:
+          - {concept: Pallet, operation: modify}
+`;
+
+
 // A subtype whose identifying field is its supertype's. Nothing else here has
 // inheritance, and the run path is the one reader for which not resolving it
 // is unsafe rather than merely incomplete.
@@ -202,6 +250,8 @@ function writeWorkspace(modelText = MODEL): void {
       path.join(eg, 'commerce.profiles', 'mismatched.yaml'), MISMATCHED);
   fs.writeFileSync(
       path.join(eg, 'commerce.profiles', 'readonly.yaml'), READONLY);
+  fs.writeFileSync(
+      path.join(eg, 'commerce.profiles', 'crossbound.yaml'), CROSSBOUND);
 }
 
 beforeEach(() => {
@@ -414,6 +464,62 @@ describe('kcmd action run: where the write would go', () => {
          expect(out).toContain(
              'deployment target is projects/acme-ops/instances/prod/databases/archive');
          expect(out).toContain('address a table by name alone');
+       });
+
+  test('refuses a binding that leaves its entities in another system',
+       async () => {
+         // The same hazard as a wrong database and a likelier one: the
+         // statements name a table, so they would run against whatever
+         // Spanner table shares the name while the data the model describes
+         // sat in BigQuery, untouched and unmentioned.
+         writeWorkspace();
+         const code = await action(
+             'run', 'IssueCredit',
+             {profile: 'crossbound', arg: ['order=12345', 'amount=30']});
+         expect(code).toBe(1);
+         const out = logs.join('\n');
+         expect(out).toContain("binds 'Order' to acme-analytics.sales.orders");
+         expect(out).toContain('not a table in this database');
+       });
+});
+
+
+// A scope holds every document under the entry group, and `run` touches one of
+// them. An error in a document this call will not read is a real error to fix,
+// and refusing on it would report a model the reader did not name.
+describe('kcmd action run: which model has to be valid', () => {
+  function withWarehouse(): void {
+    writeWorkspace();
+    fs.writeFileSync(
+        path.join(
+            dir, 'catalog', 'EntryGroups', 'commerce_eg', 'warehouse.yaml'),
+        WAREHOUSE);
+  }
+
+  test('a broken document elsewhere in the scope does not block the run',
+       async () => {
+         withWarehouse();
+         const code = await action(
+             'run', 'IssueCredit', {arg: ['order=12345', 'amount=30']});
+         // Still refused -- IssueCredit is guarded and nothing evaluates a
+         // guard yet -- but refused on its OWN terms.
+         expect(code).toBe(1);
+         // The broken document is still WARNED about -- it is a real problem,
+         // reported where it is. What must not happen is it becoming the
+         // reason this call failed.
+         const errors = logs.filter(l => l.startsWith('Error:')).join('\n');
+         expect(errors).toContain("is guarded by 'CreditIsPositive'");
+         expect(errors).not.toContain('Pallet');
+         expect(errors).not.toContain('warehouse');
+       });
+
+  test('the broken document is still refused when it is the one being run',
+       async () => {
+         withWarehouse();
+         const code = await action('run', 'Restock', {arg: ['bin=B1']});
+         expect(code).toBe(1);
+         const errors = logs.filter(l => l.startsWith('Error:')).join('\n');
+         expect(errors).toContain('Pallet');
        });
 });
 
