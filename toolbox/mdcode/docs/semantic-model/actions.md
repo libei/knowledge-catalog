@@ -745,7 +745,7 @@ That second command does not succeed against the model built up on this page,
 and the reason is worth knowing before the mechanics: `TransferFunds` is guarded
 by `AmountIsPositive`, nothing evaluates a constraint yet, and `kcmd` refuses a
 call rather than apply a write the model says must be checked first. What
-follows describes an action no constraint bears on, which is what runs today.
+follows describes an action that names no guard, which is what runs today.
 
 `kcmd action list` is what the model declares as runnable — parameters,
 executor, guards, blast radius — and each entry ends with the command line that
@@ -820,8 +820,8 @@ UPDATE account SET balance = balance - @amount WHERE account_id = @source
 This one updates a single row because it filters on the key. A statement reading
 `WHERE status = 'dormant'` would update every dormant account, and nothing would
 stop it. `affects` does not limit the blast radius either — it *declares* it, so
-that a reader and the refusal gate know what the write is about. The statement
-is what decides.
+that a reader knows what the write is about and an evaluator can one day check
+the statements against what was declared. The statement is what decides.
 
 `kcmd action run` does three things:
 
@@ -856,27 +856,12 @@ transaction and could not be rolled back if the commit failed. Supply a handler
 that performs the write as DML, or declare the action with a 'sql' executor.
 ```
 
-### An action a constraint should decide is refused, not run unchecked
+### A guarded action is refused, not run unchecked
 
 Nothing evaluates a constraint yet. A model that declares a rule and a runtime
 that quietly ignores it is worse than no runtime, because the model states the
 write is checked and nothing says otherwise — so `kcmd action run` refuses such
-a call instead. Three shapes say a constraint may bear on it:
-
-- the action names one in `guards`;
-- a constraint's expression reads a concept the action writes — either one it
-  declares in `affects`, or one its statements turn out to write. `affects` is a
-  declaration, so for a `sql` executor the statements are read too, and an
-  action that changes more than it declared is caught by what it does rather
-  than by what it said;
-- the model declares constraints and the action declares no `affects` at all,
-  which leaves nothing to compare. Reading that silence as "nothing is
-  constrained" is the one guess here that fails open.
-
-A constraint whose `onViolation` is `warn` is left out of all three. Such a rule
-reports a violation rather than rejecting one, so it could never refuse the
-write, and gating on it would leave a model that states advisory rules
-permanently unrunnable.
+a call instead:
 
 ```
 Error: Action 'TransferFunds' is guarded by 'AmountIsPositive', and this runtime
@@ -884,16 +869,30 @@ does not evaluate constraints yet. Running it would apply a write the model says
 must be checked first, so it is refused rather than run unchecked.
 ```
 
-An action over data no constraint mentions runs today. Every refusal is decided
-before a session is opened, so a refused action leaves no transaction behind.
+What makes a call "such a call" is `guards`, and only `guards` — the same rule
+[section 2](#2-gate-it-with-a-constraint) states, applied here. A constraint the
+action does not name is a rule this call does not consult, and the runtime does
+not go looking for one: a constraint that merely reads a concept the action
+writes gates nothing, and neither does declaring constraints in a model whose
+action leaves `affects` out. Refusing on either would mean publishing a rule
+could start refusing calls that succeeded the day before, which is exactly what
+making the reference explicit prevents.
+
+A guard whose constraint declares `onViolation: warn` is the one guard that does
+not refuse. Such a rule reports a violation rather than rejecting one, so an
+evaluator would let the write through, and gating on it would leave a model that
+states advisory rules permanently unrunnable.
+
+Every refusal is decided before a session is opened, so a refused action leaves
+no transaction behind.
 
 ## What is not modeled yet
 
 This is a prototype. Three things a reader reasonably expects are absent.
 
 - **Nothing checks the write.** No component evaluates a constraint or a guard.
-  An action whose outcome a constraint is supposed to decide is refused rather
-  than run, so the gap is loud, but it is still a gap: the correctness of what a
+  A guarded action is refused rather than run, so the gap is loud where a model
+  states a rule gates the call, but it is still a gap: the correctness of what a
   statement does belongs to whoever wrote it.
 - **`kcmd` calls no executor but its own.** A `sql` action runs; an `mcp`,
   `rest` or `grpc` one is published for whoever dispatches it, which is why

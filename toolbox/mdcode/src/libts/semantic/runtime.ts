@@ -24,24 +24,29 @@
 // the caller supplies a handler that produces the statements.
 //
 // What this does NOT do yet: evaluate the model's constraints. A constraint is
-// still text nothing checks, so an action whose outcome a constraint is
-// supposed to decide is REFUSED here rather than run unchecked -- see
-// `unsafeToRunUnchecked`. Refusing is the point. A model that declares a rule
-// and a runtime that quietly ignores it is worse than no runtime at all,
-// because the model states the write is checked and nothing says otherwise.
+// still text nothing checks, so an action that NAMES one in `guards` is REFUSED
+// here rather than run unchecked -- see `unsafeToRunUnchecked`. Refusing is the
+// point. A model that declares a rule and a runtime that quietly ignores it is
+// worse than no runtime at all, because the model states the call is checked
+// and nothing says otherwise.
+//
+// A constraint no action names gates nothing here, because it gates nothing
+// anywhere: a rule takes effect where something references it, and `guards` is
+// that reference for an action (see Action.guards in ir.ts). Refusing on a
+// constraint that merely reads data the action writes would mean publishing a
+// rule silently stopped calls that succeeded the day before, which is the
+// property that reference rule exists to guarantee.
 
 import * as spanner from '../gcp/spanner';
 
 import {
   Action,
   ActionParameter,
-  Constraint,
   Entity,
   generatedKeyParam,
   SemanticModel,
 } from './ir';
 import {spannerTable} from './spanner';
-import {referencedEntityNames} from './sql_expr_utils';
 import {quoteIfReserved, referencedParameters} from './sql_identifiers';
 
 
@@ -138,7 +143,7 @@ export async function runAction(opts: RunActionOptions):
 
   // Decided BEFORE touching the store, so an action this runtime will not run
   // fails without having opened a transaction at all.
-  const unsafe = unsafeToRunUnchecked(model, action, !!opts.handler);
+  const unsafe = unsafeToRunUnchecked(model, action);
   if (unsafe) return {status: 'error', message: unsafe};
 
   // Whether a transaction was ever opened. A session that could not be
@@ -320,28 +325,19 @@ const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
 
 // Why this runtime will not run `action`, or null if it is safe to run.
 //
-// Nothing here evaluates a constraint yet, so the only honest thing to do with
-// an action a constraint is supposed to decide is refuse it. Three shapes say a
-// constraint may bear on this call:
+// One question, and it is narrower than "could some rule bear on this write":
+// does the action name a constraint that has to be checked before it runs,
+// which nothing can check yet. `guards` is what gives a constraint effect over
+// a call -- a rule no action names is a catalogued rule no call consults -- so
+// the model's own answer to "what gates this" is the list, and reading further
+// would be this module inventing an obligation the model does not state.
 //
-//   * The action NAMES one in `guards`. That is the author stating the
-//     constraint is checked before this call, which is precisely what is
-//     missing.
-//   * A constraint reads an entity the action `affects`. The author never had
-//     to link the two -- an invariant over stored data holds for every write,
-//     however the row arrived -- so the overlap is the only signal there is. It
-//     is computed from the expression's qualifiers, the same derivation the
-//     emitters use.
-//   * The model declares constraints and the action declares no `affects` at
-//     all. Then there is nothing to compare and no way to rule an overlap out,
-//     so this refuses too. Reading silence as "nothing is constrained" is the
-//     one guess that fails open, and `affects` is the fix the author can make.
-//
-// An action over entities no constraint mentions runs today, which is what
-// makes this runtime useful before the evaluator exists.
+// An action naming no guard therefore runs. That is not this module judging the
+// write safe; it is the model saying no rule gates the call. What the write
+// does is the author's, which is what `affects` describes and what the
+// evaluator will check against the statements once it exists.
 function unsafeToRunUnchecked(
-    model: SemanticModel, action: Action,
-    plannedByCaller: boolean): string|null {
+    model: SemanticModel, action: Action): string|null {
   // A guard names a constraint the author says is checked before the call.
   // One whose `onViolation` is `warn` reports rather than refuses, so an
   // evaluator would let the write through, and refusing here would make a
@@ -358,159 +354,7 @@ function unsafeToRunUnchecked(
         `apply a write the model says must be checked first, so it is ` +
         `refused rather than run unchecked.`;
   }
-
-  const constraints = gatingConstraints(model);
-  if (constraints.length && !(action.affects ?? []).length) {
-    return `Action '${action.name}' declares no 'affects', so there is no ` +
-        `way to tell whether the ${constraints.length} constraint(s) this ` +
-        `model states bear on its write, and this runtime does not evaluate ` +
-        `constraints yet. Declare what the action changes and it will run if ` +
-        `nothing constrains that data.`;
-  }
-
-  const bearing = constraintsOverAffected(model, action, plannedByCaller);
-  if (bearing.length) {
-    return `Action '${action.name}' writes data that ${quoteList(bearing)} ` +
-        `could constrain, and this runtime does not evaluate constraints ` +
-        `yet. The write could leave the store violating a rule the model ` +
-        `states, so it is refused rather than run unchecked.`;
-  }
   return null;
-}
-
-
-// The names of constraints whose expression may read a concept this action
-// affects, sorted so a message is stable.
-//
-// This is the one place the refusal rule could fail open, so it errs the other
-// way twice. A constraint's expression is a logical invariant this module does
-// not parse, and `affects` names an entity OR a relationship, so:
-//
-//   * The scan covers relationships as well as entities. Validation
-//     deliberately permits a relationship-qualified name like
-//     `OrderedAs.quantity`, and an M:N `create` writes exactly the junction
-//     table such a constraint is about.
-//   * A constraint matching no known concept counts as bearing on all of them.
-//     An unqualified expression (`amount > 0`) names nothing this can compare,
-//     and "it mentions no entity, so it constrains none" is the reading that
-//     runs an unchecked write.
-//
-// The cost of both is refusing an action that would have been fine, which the
-// evaluator will then let through. That is the direction to be wrong in.
-// The constraints that could REFUSE a write. `onViolation: warn` says a
-// violation is reported rather than rejected, so such a rule cannot decide
-// whether an action may run -- and gating on it would make a model that states
-// advisory rules permanently unrunnable, with nothing the author could change.
-// An absent `onViolation` carries no default (see VIOLATION_EFFECTS), so it is
-// NOT read as advisory here: only the explicit `warn` stands down.
-function gatingConstraints(model: SemanticModel): Constraint[] {
-  return (model.constraints ?? []).filter(c => c.onViolation !== 'warn');
-}
-
-
-// The concepts an action's own statements write, or null for "cannot tell".
-//
-// Only a `sql` executor has statements to read. For any other kind this
-// returns an empty set, which leaves the declared `affects` as the only
-// evidence there is -- the write lives in a system this cannot see. Null is
-// different and stronger: a statement names a table this cannot attribute to a
-// concept, so nothing here supports the claim that some constraint does not
-// bear on the write, and the caller must read it as every concept rather than
-// as none.
-//
-// The statements are validated to be one DML verb each with no `;`
-// (sqlExecutorErrors), so the target is the identifier after the verb.
-function conceptsWrittenBy(
-    model: SemanticModel, action: Action,
-    plannedByCaller: boolean): Set<string>|null {
-  // A handler supplies the plan, so the model's statements are not what runs
-  // and reading them would widen the blast radius by dead text. That leaves
-  // `affects` as the only account of the write -- the same position every
-  // non-`sql` executor is already in, since those name a system that performs
-  // it and put no statements in the model at all.
-  if (plannedByCaller || action.executor.kind !== 'sql') return new Set();
-  const statements = action.executor.sql?.statements ?? [];
-
-  // An action's statements address a table by its final name segment -- the
-  // same reading `spannerTable` produces for the resolver -- so the map is
-  // keyed that way, and case-insensitively, because SQL identifiers are.
-  //
-  // A collision is possible, and resolving it by guessing is the one thing
-  // this must not do. Two entities bound to `...dsA/tables/orders` and
-  // `...dsB/tables/orders` both read as `orders`; taking the last one written
-  // would answer "this statement writes ArchivedOrders" for a statement over
-  // Orders, and a constraint stated over Orders would then find no overlap and
-  // stand down. So a second concept on the same table marks it unanswerable
-  // rather than overwriting the first.
-  const ignored: string[] = [];
-  const byTable = new Map<string, string|null>();
-  const add = (source: string|undefined, concept: string) => {
-    if (!source) return;
-    const table =
-        spannerTable(source, ignored, concept).replace(/`/g, '').toLowerCase();
-    if (!table) return;
-    const seen = byTable.get(table);
-    byTable.set(table, seen === undefined || seen === concept ? concept : null);
-  };
-  for (const entity of model.entities ?? []) add(entity.dataSource, entity.name);
-  for (const rel of model.relationships ?? []) {
-    add(rel.association?.dataSource, rel.name);
-  }
-
-  const written = new Set<string>();
-  for (const sql of statements) {
-    const target =
-        /\b(?:insert\s+into|update|delete\s+from)\s+(`[^`]+`|[\w$]+)/i.exec(sql);
-    if (!target) return null;
-    const concept = byTable.get(target[1].replace(/`/g, '').toLowerCase());
-    // A table no concept binds -- or one that several bind, which names no
-    // single concept -- is not something this can vouch for, and what it would
-    // be vouching for is running the write unchecked.
-    if (!concept) return null;
-    written.add(concept);
-  }
-  return written;
-}
-
-
-function constraintsOverAffected(
-    model: SemanticModel, action: Action, plannedByCaller: boolean): string[] {
-  const constraints = gatingConstraints(model);
-  if (!constraints.length) return [];
-
-  // What the author DECLARED, widened by what the statements actually write.
-  // `affects` is a declaration, and an action declaring `affects: [Transfer
-  // create]` whose second statement is `UPDATE Account SET ...` would
-  // otherwise pass a test that never read the write it is about to run. For a
-  // `sql` executor the statements are in hand, so the blast radius is checked
-  // rather than taken on trust.
-  const affected = new Set((action.affects ?? []).map(a => a.concept));
-  const written = conceptsWrittenBy(model, action, plannedByCaller);
-  if (!written) return constraints.map(c => c.name).sort();
-  for (const name of written) affected.add(name);
-  if (!affected.size) return [];
-
-  const conceptNames = [
-    ...(model.entities ?? []).map(e => e.name),
-    ...(model.relationships ?? []).map(r => r.name),
-  ];
-  const names: string[] = [];
-  for (const c of constraints) {
-    // A judged constraint states its rule in prose for a language model to
-    // settle, so it declares no expression and there are no qualifiers to read
-    // a coverage set out of. What it covers is therefore unknown, and unknown
-    // counts against every action -- the same answer this gives an expression
-    // that names no concept it recognizes.
-    if (c.expression === undefined) {
-      names.push(c.name);
-      continue;
-    }
-    const read = referencedEntityNames(c.expression, conceptNames);
-    if (!read.length || read.some(name => affected.has(name))) {
-      names.push(c.name);
-    }
-  }
-  return names.sort();
 }
 
 

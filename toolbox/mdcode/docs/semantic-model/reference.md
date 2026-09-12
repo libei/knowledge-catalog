@@ -73,7 +73,8 @@ kcmd action run <name> --arg <name>=<value> ...
 `list` prints every action the models in the scope declare, with the command
 line that runs each one. `run` executes one against the Spanner database the
 selected profile's deployment target names; only a `sql` executor runs, and an
-action a constraint may bear on is refused rather than run unchecked. See
+action that names a constraint in `guards` is refused rather than run
+unchecked, because nothing evaluates a constraint yet. See
 [Run it](actions.md#7-run-it).
 
 | Flag | Effect |

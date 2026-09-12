@@ -471,10 +471,11 @@ describe('kcmd action run: the model has to be valid to run', () => {
       'an affects entry naming a concept the model does not declare is ' +
           'refused rather than run',
       async () => {
-        // A push rejects this outright. Left to run, the overlap test would
-        // look for constraints over 'Etnry', find none, and the gate that
-        // exists to stop an unchecked write would quietly turn off -- the one
-        // failure it is there to prevent, arriving as a typo.
+        // A push rejects this outright. Left to run, the typo would reach
+        // the binder, which turns an `affects` entry whose operation is
+        // `create` into a generated key: the key would be minted for a concept
+        // that has no table, and the statement binding it would fail at the
+        // store reading like a fault in the SQL rather than a typo.
         writeWorkspace(TYPO);
         const code =
             await action('run', 'IssueCredit', {arg: ['order=A1', 'amount=5']});

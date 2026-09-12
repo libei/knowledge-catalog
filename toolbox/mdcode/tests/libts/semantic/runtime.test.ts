@@ -538,10 +538,10 @@ describe('an action whose write is declared in the model', () => {
 });
 
 
-// Nothing evaluates a constraint yet. The runtime therefore has to tell an
-// action a constraint might decide from one no constraint touches, and refuse
-// the first rather than apply a write the model says must be checked.
-describe('an action a constraint may decide is refused, not run unchecked', () => {
+// Nothing evaluates a constraint yet, so an action that says it is checked
+// before it runs must not run. `guards` is what says that, and it is the only
+// thing that does: a constraint takes effect where something references it.
+describe('a guarded action is refused, not run unchecked', () => {
   const balance: Constraint = {
     name: 'NonNegativeBalance',
     expression: 'Account.balance >= 0',
@@ -581,62 +581,24 @@ describe('an action a constraint may decide is refused, not run unchecked', () =
     expect(fake.rolledBack).toBe(false);
   });
 
-  test('an action writing data a constraint reads is refused, and says which',
+  test('an action writing data a constraint reads runs, if it names no guard',
        async () => {
-         // Credit affects Account; NonNegativeBalance reads Account.balance.
-         // Nothing links them in the model -- an invariant holds for every
-         // write -- so the overlap is the only signal there is.
+         // Credit affects Account and NonNegativeBalance reads Account.balance.
+         // That overlap is not what gives the rule effect over this call, and
+         // refusing on it would mean publishing a rule silently stopped calls
+         // that worked the day before -- the thing a constraint's reference
+         // rule exists to prevent.
          const outcome = await runWith({constraints: [balance]});
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message)
-             .toContain("'NonNegativeBalance' could constrain");
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
        });
 
-  test('an action writing data no constraint reads runs', async () => {
-    // The same constraint, over an entity Credit does not touch. This is what
-    // makes the runtime useful before the evaluator exists.
-    const outcome = await runWith({
-      constraints: [{
-        name: 'NamedAccount',
-        expression: 'Ledger.name IS NOT NULL',
-        description: 'Every ledger is named.',
-      }],
-      entities: [
-        ...creditModel().entities,
-        {
-          name: 'Ledger',
-          dataSource: 'demo.payments.Ledger',
-          keys: ['ledgerId'],
-          fields: [
-            {name: 'ledgerId', expression: 'ledger_id'},
-            {name: 'name', expression: 'name', type: 'String'},
-          ],
-        },
-      ],
-    });
-    expect(outcome.status).toBe('committed');
-  });
-
-  test('an action that declares no affects is refused when the model has ' +
-           'constraints',
+  test('an action that declares no affects runs, constraints or not',
        async () => {
-         // Silence is not a statement that nothing is constrained, and reading
-         // it as one is the single guess here that fails open.
-         const outcome = await runWith({
-           actions: [{...credit, affects: undefined}],
-           constraints: [balance],
-         });
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain("declares no 'affects'");
-       });
-
-  test('an action that declares no affects runs when the model has no ' +
-           'constraints',
-       async () => {
-         // Nothing to be unsure about, so there is nothing to refuse. The DML
-         // is the UPDATE alone: dropping `affects` drops the `create` that
+         // `affects` describes the blast radius; it is not a switch that turns
+         // checking on, and its absence is not a reason to refuse. The DML is
+         // the UPDATE alone: dropping `affects` drops the `create` that
          // generates `@newEntryKey`, so an INSERT binding it would fail for an
-         // unrelated reason and prove nothing about the refusal rules.
+         // unrelated reason.
          const outcome = await runWith({
            actions: [{
              ...credit,
@@ -651,8 +613,9 @@ describe('an action a constraint may decide is refused, not run unchecked', () =
                },
              },
            }],
+           constraints: [balance],
          });
-         expect(outcome.status).toBe('committed');
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
        });
 
   test('a guard is refused even when the model states no such constraint',
@@ -668,68 +631,17 @@ describe('an action a constraint may decide is refused, not run unchecked', () =
          expect(outcome.message).toContain("guarded by 'NoSuchRule'");
        });
 
-  test('several bearing constraints are all named, in a stable order',
-       async () => {
-         const outcome = await runWith({
-           constraints: [
-             {name: 'ZBalance', expression: 'Account.balance >= 0'},
-             {name: 'AEntry', expression: 'Entry.amount > 0'},
-           ],
-         });
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain("'AEntry' and 'ZBalance'");
-       });
-});
-
-
-// The overlap test is the one place the refusal rule could fail open: it is
-// what decides that no constraint bears on a write, and it decides it by
-// reading expressions this module does not parse. So it is wrong on purpose,
-// in the direction that refuses.
-describe('constraints the overlap test cannot rule out', () => {
-  const runWith = (over: Partial<SemanticModel>) => runAction({
-    model: creditModel(over),
-    actionName: 'Credit',
-    args: {account: 'A1', amount: 100},
-    client: resolvingFake().client,
+  test('several guards are all named', async () => {
+    const outcome = await runWith({
+      actions: [{...credit, guards: ['ZBalance', 'AEntry']}],
+      constraints: [
+        {name: 'ZBalance', expression: 'Account.balance >= 0'},
+        {name: 'AEntry', expression: 'Entry.amount > 0'},
+      ],
+    });
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain("'ZBalance' and 'AEntry'");
   });
-
-  test('a constraint qualified by a RELATIONSHIP the action affects is found',
-       async () => {
-         // `affects` names an entity OR a relationship, and validation
-         // deliberately permits a relationship-qualified expression. Scanning
-         // entity names alone would find no overlap, and -- because `affects`
-         // is non-empty -- the "declares no affects" rule would not catch it
-         // either, so the write would run unchecked.
-         const outcome = await runWith({
-           actions: [{
-             ...credit,
-             affects: [{concept: 'PostedTo', operation: 'create'}],
-           }],
-           relationships: [{
-             name: 'PostedTo',
-             source: {entity: 'Entry', columns: ['entry_id']},
-             destination: {entity: 'Account', columns: ['account_id']},
-           }],
-           constraints: [
-             {name: 'OnePosting', expression: 'PostedTo.postings <= 1'},
-           ],
-         });
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain("'OnePosting' could constrain");
-       });
-
-  test('a constraint that names no known concept bears on every action',
-       async () => {
-         // `amount > 0` is about whatever the author had in mind. Nothing here
-         // can tell which concept that is, and reading "it mentions no entity"
-         // as "it constrains none" is the guess that runs an unchecked write.
-         const outcome = await runWith({
-           constraints: [{name: 'PositiveAmount', expression: 'amount > 0'}],
-         });
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain("'PositiveAmount' could constrain");
-       });
 });
 
 
@@ -760,34 +672,6 @@ describe('an action whose write comes from a handler', () => {
     if (outcome.status !== 'committed') throw new Error(outcome.message);
     expect(outcome.refs.source.keys).toEqual(['eu', '1']);
   });
-
-  test('is gated on what it declares, not on statements that will not run',
-       async () => {
-         // The model's statements write Account, and a rule reads Account --
-         // but a handler supplies the plan, so those statements are text that
-         // never runs. Gating on them refuses the call over a write nobody is
-         // making. `affects` is the only account of what a handler does, which
-         // is the position every non-`sql` executor is already in.
-         const fake = resolvingFake();
-         const outcome = await runAction({
-           model: creditModel({
-             actions: [{
-               ...credit,
-               affects: [{concept: 'Entry', operation: 'create'}],
-             }],
-             constraints: [{
-               name: 'NonNegativeBalance',
-               expression: 'Account.balance >= 0',
-               description: 'An account cannot go negative.',
-             }],
-           }),
-           actionName: 'Credit',
-           args: {account: 'A1', amount: 100},
-           client: fake.client,
-           handler: debitAndCredit,
-         });
-         if (outcome.status !== 'committed') throw new Error(outcome.message);
-       });
 
   test('a composite key is still refused when the MODEL supplies the write',
        async () => {
@@ -940,22 +824,7 @@ describe('a constraint that only warns', () => {
     onViolation: 'warn',
   };
 
-  test(
-      'does not gate the action, because it could never refuse it',
-      async () => {
-        // Gating on it would leave a model that states advisory rules
-        // permanently unrunnable, with nothing the author could change short
-        // of deleting the rule.
-        const outcome = await runAction({
-          model: creditModel({constraints: [advisory]}),
-          actionName: 'Credit',
-          args: {account: 'A1', amount: 100},
-          client: resolvingFake().client,
-        });
-        if (outcome.status !== 'committed') throw new Error(outcome.message);
-      });
-
-  test('does not gate it as a guard either', async () => {
+  test('does not gate the action that guards it', async () => {
     const outcome = await runAction({
       model: creditModel({
         actions: [{...credit, guards: ['BalanceIsLow']}],
@@ -990,107 +859,6 @@ describe('a constraint that only warns', () => {
 });
 
 
-// For a `sql` executor the write is in the model, so what it touches is a fact
-// to be read rather than a claim to be believed.
-describe('the blast radius read off the statements', () => {
-  const nonNegative: Constraint = {
-    name: 'NonNegativeBalance',
-    expression: 'Account.balance >= 0',
-    description: 'An account cannot go negative.',
-  };
-
-  test(
-      'an action that writes more than it declares is still caught',
-      async () => {
-        // This `affects` omits Account, whose balance the second statement
-        // changes, and the constraint reads exactly that. Trusting the
-        // declaration would run the write with the rule unevaluated -- and an
-        // author who under-declares is the likeliest one to have missed it.
-        const outcome = await runAction({
-          model: creditModel({
-            actions: [{
-              ...credit,
-              affects: [{concept: 'Entry', operation: 'create'}],
-            }],
-            constraints: [nonNegative],
-          }),
-          actionName: 'Credit',
-          args: {account: 'A1', amount: 100},
-          client: resolvingFake().client,
-        });
-        if (outcome.status !== 'error') throw new Error('expected an error');
-        expect(outcome.message)
-            .toContain('\'NonNegativeBalance\' could constrain');
-      });
-
-  test(
-      'a statement writing a table no concept binds is not vouched for',
-      async () => {
-        // An audit table is not something a constraint can be stated over,
-        // but it is also not something this can attribute to a concept -- and
-        // what it would be vouching for is running the write unchecked.
-        const outcome = await runAction({
-          model: creditModel({
-            actions: [{
-              ...credit,
-              executor: {
-                kind: 'sql',
-                sql: {
-                  statements: ['INSERT INTO audit_log (note) VALUES (@amount)'],
-                },
-              },
-              affects: [{concept: 'Entry', operation: 'create'}],
-            }],
-            constraints: [nonNegative],
-          }),
-          actionName: 'Credit',
-          args: {account: 'A1', amount: 100},
-          client: resolvingFake().client,
-        });
-        if (outcome.status !== 'error') throw new Error('expected an error');
-        expect(outcome.message).toContain('could constrain');
-      });
-
-  test(
-      'an action whose statements stay inside what it declares runs',
-      async () => {
-        // The point of reading the statements is to catch the one that
-        // reaches further, not to refuse everything.
-        const fake = resolvingFake();
-        const outcome = await runAction({
-          model: creditModel({
-            constraints: [{
-              name: 'EntryHasAmount',
-              expression: 'Entry.amount >= 0',
-              description: 'A ledger entry records an amount.',
-            }],
-            actions: [{
-              ...credit,
-              executor: {
-                kind: 'sql',
-                sql: {
-                  statements: [
-                    'UPDATE Account SET balance = balance - @amount ' +
-                        'WHERE account_id = @account',
-                  ],
-                },
-              },
-              affects: [{
-                concept: 'Account',
-                operation: 'modify',
-                fields: ['balance'],
-              }],
-            }],
-          }),
-          actionName: 'Credit',
-          args: {account: 'A1', amount: 100},
-          client: fake.client,
-        });
-        if (outcome.status !== 'committed') throw new Error(outcome.message);
-      });
-});
-
-
 describe('a commit the store refuses outright', () => {
   test('is a rollback, not an unknown outcome', async () => {
     // `409 ABORTED` is what Spanner returns under lock contention, and it
@@ -1120,82 +888,6 @@ describe('a commit the store refuses outright', () => {
          expect(outcome.message).toContain('Whether the write landed is unknown');
          expect(fake.rolledBack).toBe(false);
        });
-});
-
-
-describe('two concepts bound to the same table name', () => {
-  // A constraint over a concept this action does not touch. It is what makes
-  // the control case run, so the refusal below is attributable to the
-  // collision and to nothing else.
-  const widgetRule: Constraint = {
-    name: 'WidgetsAreSized',
-    expression: 'Widget.size >= 0',
-    description: 'A widget has a non-negative size.',
-  };
-
-  const widget = {
-    name: 'Widget',
-    dataSource: 'demo.payments.Widget',
-    keys: ['widgetId'],
-    fields: [
-      {name: 'widgetId', expression: 'widget_id'},
-      {name: 'size', expression: 'size'},
-    ],
-  };
-
-  // Bound to a DIFFERENT database, and reading as the same table: an action's
-  // statements address a table by its final name segment, so `Account` names
-  // both of these.
-  const archived = {
-    name: 'ArchivedAccount',
-    dataSource: 'demo.archive.Account',
-    keys: ['accountId'],
-    fields: [{name: 'accountId', expression: 'account_id'}],
-  };
-
-  const debit: Action = {
-    ...credit,
-    executor: {
-      kind: 'sql',
-      sql: {
-        statements: [
-          'UPDATE Account SET balance = balance - @amount ' +
-              'WHERE account_id = @account',
-        ],
-      },
-    },
-    affects: [{concept: 'Account', operation: 'modify', fields: ['balance']}],
-  };
-
-  function runDebit(entities: SemanticModel['entities']) {
-    const base = creditModel();
-    return runAction({
-      model: {
-        ...base,
-        entities: [...base.entities, ...entities],
-        actions: [debit],
-        constraints: [widgetRule],
-      },
-      actionName: 'Credit',
-      args: {account: 'A1', amount: 100},
-      client: resolvingFake().client,
-    });
-  }
-
-  test('runs when the table it writes names one concept', async () => {
-    const outcome = await runDebit([widget]);
-    if (outcome.status !== 'committed') throw new Error(outcome.message);
-  });
-
-  test('is refused when the table it writes names two', async () => {
-    // Keeping the last one written would answer "this statement writes
-    // ArchivedAccount" for a statement over Account, and a rule stated over
-    // Account would then find no overlap and stand down -- the gate failing
-    // open, which is the one direction it must never fail.
-    const outcome = await runDebit([widget, archived]);
-    if (outcome.status !== 'error') throw new Error('expected an error');
-    expect(outcome.message).toContain('\'WidgetsAreSized\' could constrain');
-  });
 });
 
 
