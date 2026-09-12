@@ -200,7 +200,7 @@ const metricSchema = z.object({
 // so the schema only checks its shape here. What makes it safe -- one DML verb
 // per statement, and every `@parameter` declared by the action -- is checked in
 // validate.ts, where the action's parameter list is in scope. See SqlExecutor.
-const EXECUTOR_KINDS = ['mcp', 'rest', 'grpc', 'sql'] as const;
+const EXECUTOR_KINDS = ['mcp', 'rest', 'grpc', 'sql', 'proposal'] as const;
 
 const executorSchema =
     z.object({
@@ -214,6 +214,9 @@ const executorSchema =
        sql: z.object({statements: z.array(z.string()).min(1)})
                 .strict()
                 .optional(),
+       // No statement here, by construction: a proposal's write is composed at
+       // call time. What the model pins is who reviews it. See ProposalExecutor.
+       proposal: z.object({reviewer: z.string()}).strict().optional(),
      })
         .strict()
         .superRefine((ex, ctx) => {
@@ -1203,7 +1206,8 @@ function convertExecutor(ex: ExecutorDoc): Executor {
       sql: { statements: ex.sql.statements.map(t => t.trim()) },
     };
   }
-  // The schema's refinement guarantees one of the four kinds is set.
+  if (ex.proposal) return { kind: 'proposal', proposal: { ...ex.proposal } };
+  // The schema's refinement guarantees one of the five kinds is set.
   return { kind: 'grpc', grpc: { ...ex.grpc! } };
 }
 

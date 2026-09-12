@@ -212,8 +212,30 @@ function validateActions(
     }
     errors.push(...affectedConceptErrors(action, where, concepts));
     errors.push(...sqlExecutorErrors(action, where));
+    errors.push(...proposalExecutorErrors(action, where));
   }
   return errors;
+}
+
+// The errors in a PROPOSAL executor's declaration.
+//
+// Only one, and it is about `affects` rather than the executor itself: a
+// proposal executor MUST declare a blast radius. Every other kind can fall back
+// on something -- a `sql` executor's statements say what they touch, and a
+// remote call is performed by a system that knows what it is about to do. A
+// proposal has neither. The statement does not exist yet, and the reviewer is
+// being asked to judge one it has never seen against a declaration the model
+// did not make. An undeclared blast radius is not an omission here, it is the
+// missing half of the check.
+function proposalExecutorErrors(action: Action, where: string): string[] {
+  if (action.executor?.kind !== 'proposal') return [];
+  if (action.affects?.length) return [];
+  return [
+    `${where} has a proposal executor but declares no 'affects'. The write is ` +
+        `composed at call time, so the declared blast radius is the only ` +
+        `statement of what the call may touch, and the reviewer has nothing ` +
+        `to check the proposal against without it.`,
+  ];
 }
 
 // The errors in a SQL executor's statements. Nothing here for the other three
@@ -630,6 +652,8 @@ function missingExecutorFields(ex: Executor): string[] {
           .map(([k]) => k);
     case 'sql':
       return ex.sql.statements.every(blank) ? ['statements'] : [];
+    case 'proposal':
+      return blank(ex.proposal.reviewer) ? ['reviewer'] : [];
   }
 }
 

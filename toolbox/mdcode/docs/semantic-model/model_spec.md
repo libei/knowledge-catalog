@@ -481,9 +481,9 @@ reads the document ([§6](#6-the-extension-mechanism)).
   withdraws it. An action left with no executor is declared and not performable
   under that binding, which the availability pass reports; it is not an error.
 
-  An executor, where one is written, MUST declare exactly one kind. Three of
-  them — `mcp`, `rest` and `grpc` — name a system that performs the write; the
-  fourth, `sql`, carries the
+  An executor, where one is written, MUST declare exactly one kind. The kinds
+  divide by where the write comes from. Three of them — `mcp`, `rest` and `grpc`
+  — name a system that already holds it; the fourth, `sql`, carries the
   write itself as an ordered list of `statements`. Because that one is the only
   kind whose text the model can read, it is the only one with rules about that
   text: each statement MUST be a single `INSERT`, `UPDATE` or `DELETE`, MUST NOT
@@ -491,6 +491,16 @@ reads the document ([§6](#6-the-extension-mechanism)).
   names the action declares, plus `@new<Concept>Key` for each `affects` entry
   whose `operation` is `create`. Those rules are what let every value be bound
   rather than interpolated, so an argument cannot reach the store as SQL.
+
+  The fifth kind, `proposal`, has no write at all: it declares that the write is
+  composed at call time and reviewed before it runs, and names the `reviewer`
+  that decides. It carries no statement by construction, and the schema rejects
+  one. Because the statement does not exist when the model is published, the
+  declaration is the only description of the call a reviewer can check a proposal
+  against, so a `proposal` executor MUST declare a non-empty `affects` — the one
+  kind for which push requires it. See
+  [Actions → When the write is composed at call
+  time](actions.md#when-the-write-is-composed-at-call-time).
 
 - **`constraints` (extended profile only).** Model-level named invariants over
   the ontology, accepted only under `0.2.0.dev0/google`. Each states exactly one

@@ -372,11 +372,15 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **Every action is well-formed.** Each action parameter's `type` must resolve to
   a known entity (an object reference) or a scalar datatype, and each executor
   must carry its coordinates (an `mcp` server + tool, a `rest` endpoint + method,
-  a `grpc` service + method, or at least one non-blank `sql` statement) with no
+  a `grpc` service + method, at least one non-blank `sql` statement, or a
+  `proposal` reviewer) with no
   blank field. A coordinate omitted altogether is rejected earlier, when the
   model is parsed. An action with *no* executor is not an error at all: the
   executor is a physical binding, so an action no binding performs here is still
-  a declaration worth publishing. Each name in the
+  a declaration worth publishing. A `proposal` executor must additionally declare
+  a non-empty `affects`, and is the only kind that must: its write is composed at
+  call time, so the declared blast radius is the only thing the reviewer can
+  check the proposed statement against. Each name in the
   action's `guards` must resolve to a constraint that the same model declares. A
   guard resolving to nothing leaves the author believing the write is checked
   when nothing checks it. Every `concept` in the action's `affects` must

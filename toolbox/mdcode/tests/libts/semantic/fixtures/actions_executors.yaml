@@ -1,15 +1,16 @@
 # Test fixture -- AI-first semantics format (v0.2.0.dev0/google).
 #
-# Four actions covering every executor kind, so the Knowledge Catalog round
+# Five actions covering every executor kind, so the Knowledge Catalog round
 # trip is exercised on each branch of the tagged union rather than on `mcp`
 # alone. It also covers the two shapes an action can be missing pieces in: one
 # with no parameters at all, and one with neither a description nor an
 # ai_context. `actions` is a native extension key, so this document declares the
 # extended profile.
 #
-# The `sql` kind is the odd one out and is here for that reason: the other three
-# publish two scalar coordinates, while this one publishes a list of statements,
-# so it is the only kind whose aspect field is repeated.
+# Two kinds are odd ones out. `sql` publishes a list of statements where the
+# remote three publish two scalar coordinates, so it is the only kind whose
+# aspect field is repeated. `proposal` publishes ONE coordinate and no write at
+# all, because its write is composed at call time.
 
 version: "0.2.0.dev0/google"
 
@@ -84,3 +85,16 @@ semantic_model:
         affects:
           - {concept: orders, operation: create}
           - {concept: orders, operation: delete}
+      # Proposal executor: the write does not exist when the model is authored.
+      # The model names who reviews it, and `affects` is what the reviewer has
+      # to check the proposed statement against -- required for this kind and
+      # for no other.
+      - name: AdjustPricing
+        description: Change the price on an order, subject to review
+        executor:
+          proposal:
+            reviewer: //dataagents.googleapis.com/projects/p/locations/us/actionManagers/commerce
+        parameters:
+          - {name: order, type: orders}
+        affects:
+          - {concept: orders, operation: modify}

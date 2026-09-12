@@ -225,6 +225,11 @@ function executorData(ex: Executor): Record<string, any> {
         executorKind: 'sql',
         sqlStatements: [...ex.sql.statements],
       };
+    case 'proposal':
+      return {
+        executorKind: 'proposal',
+        proposalReviewer: ex.proposal.reviewer,
+      };
   }
 }
 
@@ -436,6 +441,13 @@ function readExecutor(data: Record<string, any>): Executor|undefined {
       if (statements.length) return {kind: 'sql', sql: {statements}};
       return undefined;
     }
+    case 'proposal':
+      if (str(data.proposalReviewer))
+        return {
+          kind: 'proposal',
+          proposal: {reviewer: data.proposalReviewer}
+        };
+      return undefined;
     default:
       return undefined;
   }

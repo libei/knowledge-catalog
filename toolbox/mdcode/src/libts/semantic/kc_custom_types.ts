@@ -388,6 +388,20 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               'taking it on trust.',
         },
       },
+      {
+        index: 13,
+        name: 'proposalReviewer',
+        type: 'string',
+        annotations: {
+          displayName: 'Proposal Reviewer',
+          description:
+              'For a `proposal` executor: the service that reviews a write ' +
+              'composed at call time and runs it if it passes. The model ' +
+              'carries no statement for this kind, so the declared ' +
+              '`affects` and `guards` are what the proposal is checked ' +
+              'against.',
+        },
+      },
     ],
   },
 };

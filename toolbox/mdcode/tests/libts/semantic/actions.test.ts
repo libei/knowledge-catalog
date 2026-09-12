@@ -163,6 +163,28 @@ describe('loader parses actions', () => {
     });
   });
 
+  test('a proposal executor normalizes to the tagged union', () => {
+    // No statement, by construction: the write is composed at call time, so
+    // what the model pins is who reviews it.
+    const {models} = withActions([{
+      name: 'A',
+      executor: {proposal: {reviewer: '//x/actionManagers/a'}},
+      affects: [{concept: 'customer', operation: 'modify'}],
+    }]);
+    expect(models[0].actions![0].executor)
+        .toEqual({kind: 'proposal', proposal: {reviewer: '//x/actionManagers/a'}});
+  });
+
+  test('a proposal executor carrying statements is rejected at parse', () => {
+    // The open format is strict per kind, so the shape that would smuggle a
+    // pre-written statement into a reviewed write does not parse.
+    expect(() => withActions([{
+             name: 'A',
+             executor: {proposal: {reviewer: '//x/a', statements: ['DELETE 1']}},
+           }]))
+        .toThrow();
+  });
+
   test('a sql executor normalizes to the tagged union, trimmed', () => {
     // The statements are the write, so whitespace an author wrapped them in is
     // not part of it; trimming here keeps the verb check in validate.ts
@@ -256,6 +278,52 @@ describe('validatePushRequirements gates actions', () => {
     }])]);
     expect(errs.some(e => e.includes('parameter \'x\'') && e.includes('Nope')))
         .toBe(true);
+  });
+
+  test('a proposal executor with no affects is a hard error', () => {
+    // Every other kind can fall back on something -- a sql executor's
+    // statements say what they touch, a remote call is performed by a system
+    // that knows what it is doing. A proposal has neither, so an undeclared
+    // blast radius leaves the reviewer nothing to check against.
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'proposal', proposal: {reviewer: '//x/a'}},
+      parameters: [],
+    }])]);
+    expect(errs.some(e => e.includes('proposal executor') && e.includes('affects')))
+        .toBe(true);
+  });
+
+  test('a proposal executor that declares its blast radius passes', () => {
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'proposal', proposal: {reviewer: '//x/a'}},
+      parameters: [],
+      affects: [{concept: 'customer', operation: 'modify'}],
+    }])]);
+    expect(errs).toEqual([]);
+  });
+
+  test('a blank proposal reviewer is a hard error', () => {
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'proposal', proposal: {reviewer: '  '}},
+      parameters: [],
+      affects: [{concept: 'customer', operation: 'modify'}],
+    }])]);
+    expect(errs.some(e => e.includes('proposal') && e.includes('reviewer')))
+        .toBe(true);
+  });
+
+  test('the affects rule applies only to the proposal kind', () => {
+    // An mcp call is performed by a system that knows what it touches, so a
+    // missing blast radius there is a gap in the catalog, not a broken gate.
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
+      parameters: [],
+    }])]);
+    expect(errs).toEqual([]);
   });
 
   test('a blank executor coordinate is a hard error', () => {
@@ -505,6 +573,7 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
       'commerce.actions.RefundOrder',
       'commerce.actions.CloseBooks',
       'commerce.actions.ReplaceOrder',
+      'commerce.actions.AdjustPricing',
     ]);
     for (const e of actions) expect(e.parentEntry).toBe(entries[0].name);
   });
@@ -530,6 +599,13 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
       grpcService: 'commerce.v1.Ledger',
       grpcMethod: 'CloseBooks',
     });
+    // The one kind that publishes no write at all: what it pins is who decides
+    // whether the write composed at call time may run.
+    expect(dataOf('AdjustPricing')).toMatchObject({
+      executorKind: 'proposal',
+      proposalReviewer:
+          '//dataagents.googleapis.com/projects/p/locations/us/actionManagers/commerce',
+    });
     // The one kind whose coordinate is a list, and whose order is part of the
     // meaning: the insert has to reach the store before the delete.
     expect(dataOf('ReplaceOrder')).toMatchObject({
@@ -543,10 +619,11 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
     // A kind writes nothing belonging to another kind, so the aspect never
     // carries two executors at once.
     for (const [kind, foreign] of [
-             ['PlaceOrder', ['restEndpoint', 'restMethod', 'grpcService', 'grpcMethod', 'sqlStatements']],
-             ['RefundOrder', ['mcpServer', 'mcpTool', 'grpcService', 'grpcMethod', 'sqlStatements']],
-             ['CloseBooks', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod', 'sqlStatements']],
-             ['ReplaceOrder', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod', 'grpcService', 'grpcMethod']],
+             ['PlaceOrder', ['restEndpoint', 'restMethod', 'grpcService', 'grpcMethod', 'sqlStatements', 'proposalReviewer']],
+             ['RefundOrder', ['mcpServer', 'mcpTool', 'grpcService', 'grpcMethod', 'sqlStatements', 'proposalReviewer']],
+             ['CloseBooks', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod', 'sqlStatements', 'proposalReviewer']],
+             ['ReplaceOrder', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod', 'grpcService', 'grpcMethod', 'proposalReviewer']],
+             ['AdjustPricing', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod', 'grpcService', 'grpcMethod', 'sqlStatements']],
     ] as Array<[string, string[]]>) {
       for (const field of foreign) expect(dataOf(kind)[field]).toBeUndefined();
     }

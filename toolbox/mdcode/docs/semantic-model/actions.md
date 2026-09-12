@@ -81,8 +81,11 @@ a tool already registered in Agent Registry by the server's resource name plus
 the tool's name within it. `rest` (`{endpoint, method}`) and `grpc`
 (`{service, method}`) are the other two remote kinds. A fourth, `sql`, carries
 the write itself rather than a pointer to whoever performs it — see
-[Writing the statements in the model](#writing-the-statements-in-the-model).
-Exactly one kind, where an executor is written at all.
+[Writing the statements in the model](#writing-the-statements-in-the-model). A
+fifth, `proposal`, names neither, because its write does not exist yet — see
+[When the write is composed at call
+time](#when-the-write-is-composed-at-call-time). Exactly one kind, where an
+executor is written at all.
 
 `description` and `ai_context.instructions` are both carried through to the
 catalog. Write the instructions for the agent that will call the action, as
@@ -207,6 +210,56 @@ refer to the generated key as `@new<Concept>Key`:
 Nothing executes a statement yet. `kcmd` validates the statements, publishes
 them to the catalog and reads them back; what runs them is the action runtime,
 which lands separately.
+
+### When the write is composed at call time
+
+The last rule above rules out a whole class of write: the ad hoc correction, the
+cleanup whose shape depends on what is found, the fix an agent works out from the
+data in front of it. Nobody can pre-write those statements, and running one the
+caller supplies would mean running a write no one declared and no gate can check.
+
+A review engine answers that. The caller proposes a statement, a reviewer checks
+it and only then does it run. The `proposal` kind declares that arrangement:
+
+```yaml
+      - name: AdjustPricing
+        description: Change the price on an order, subject to review
+        executor:
+          proposal:
+            reviewer: //dataagents.googleapis.com/projects/acme/locations/us/actionManagers/commerce
+        parameters:
+          - { name: order, type: Order }
+        guards:
+          - discount_within_policy
+        affects:
+          - { concept: Order, operation: modify, fields: [price] }
+```
+
+One coordinate, and it is not a write. The other four kinds answer *what is the
+write*, by carrying it or by naming who holds it. This one answers *who decides*,
+because the write does not exist when the model is authored.
+
+That inverts what the rest of the action is for. Everywhere else, `affects` and
+`guards` describe a write that is already pinned down; here they are the only
+description of it there will ever be before the call, so they are what the
+reviewer checks the proposal against:
+
+- **`affects` is required for this kind, and for no other.** Push rejects a
+  `proposal` executor that declares no blast radius. A `sql` executor's
+  statements say what they touch, and a remote call is performed by a system that
+  knows what it is about to do; a proposal has neither, so an undeclared blast
+  radius leaves the reviewer with nothing to compare against.
+- **`guards` name the rules the proposal is checked against.** The rules live in
+  the model, next to the ontology they are written over, rather than restated in
+  the review engine's own policy language.
+
+What the model does not promise is that the proposed write matches the
+declaration. Nothing can promise that — the statement arrives long after the
+model is published. The declaration is what the reviewer checks the proposal
+*against*, which is the reason it has to exist.
+
+`kcmd` neither reviews nor runs a proposal. It publishes the arrangement: who
+decides, what the call may touch, and which rules apply.
 
 ## 2. Gate it with a constraint
 

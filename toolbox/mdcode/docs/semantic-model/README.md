@@ -124,7 +124,8 @@ push enforces.
 A model can also declare **actions**: model-level write operations, the
 write-side counterpart to a metric. An action names a business operation, points
 at the executor that carries it out (an MCP tool, a REST endpoint, a gRPC
-method, or DML), and types each parameter against the ontology, so an
+method, DML, or a reviewer for a write composed at call time), and types each
+parameter against the ontology, so an
 entity-typed parameter is an object reference rather than a bare string. The
 executor is a physical binding, so a [binding profile](profiles.md) can supply a
 different one per store. An action also

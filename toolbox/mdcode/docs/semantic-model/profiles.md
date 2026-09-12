@@ -101,6 +101,12 @@ and column names and each speaks its own dialect. So the `executor` sits with
 `source` and `expression` on the physical side: the same action, the same blast
 radius, performed by whatever mechanism the bound store actually has.
 
+Whether a write is *reviewed* is a property of the environment too, and lands in
+the same place. A profile can bind a `proposal` executor where the store holds
+production data, so the write is composed at call time and passed to a reviewer,
+and leave the staging profile writing DML directly — the same declared action,
+gated in one environment and not the other.
+
 **An executor inherits; a column does not.** A model may declare one default
 executor, and a profile overrides it only for the stores that perform the write
 differently — an action the profile does not mention keeps the default. This is

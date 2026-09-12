@@ -405,14 +405,52 @@ export interface ActionParameter {
 /**
  * The mechanics of how an action is executed: exactly one kind, tagged so
  * consumers can switch on it. The open format expresses it as an object with a
- * single kind key (`mcp` / `rest` / `grpc`); the loader normalizes that to this
- * discriminated union. Other kinds (SQL DML, CLI, ...) can be added later.
+ * single kind key (`mcp` / `rest` / `grpc` / `sql` / `proposal`); the loader
+ * normalizes that to this discriminated union.
+ *
+ * The kinds divide by WHERE the write comes from. `sql` carries the write in
+ * the model. `mcp`, `rest` and `grpc` name a system that already holds it.
+ * `proposal` says the write does not exist yet: it is composed at call time and
+ * submitted for review before it runs.
  */
 export type Executor =
   | { kind: 'mcp'; mcp: McpExecutor }
   | { kind: 'rest'; rest: RestExecutor }
   | { kind: 'grpc'; grpc: GrpcExecutor }
-  | { kind: 'sql'; sql: SqlExecutor };
+  | { kind: 'sql'; sql: SqlExecutor }
+  | { kind: 'proposal'; proposal: ProposalExecutor };
+
+/**
+ * A PROPOSAL executor: the write is composed at call time and reviewed before
+ * it runs.
+ *
+ * The other four kinds all answer "what is the write?" -- `sql` by carrying it,
+ * the remote three by naming who holds it. This one answers "who decides?"
+ * instead, because the write does not exist when the model is authored. A
+ * caller proposes a statement; the reviewer named here checks it and either
+ * runs it or refuses.
+ *
+ * That is the shape a review-gated write engine already has, and modeling it as
+ * an executor kind puts it inside the model rather than beside it. It is also
+ * the one kind where the rest of the action is not documentation:
+ *
+ *   - `affects` is the only statement of blast radius that exists before the
+ *     call, so it is what a reviewer routes on -- and validate.ts REQUIRES it
+ *     here, unlike every other kind.
+ *   - `guards` are the rules the proposal is checked against, named in the
+ *     model rather than restated in the review engine's own policy language.
+ *
+ * What this kind does NOT promise is that the proposed write matches the
+ * declaration. Nothing here can promise that: the statement arrives after the
+ * model is published. The declaration is what the reviewer checks the proposal
+ * AGAINST, which is the whole point of having one.
+ */
+export interface ProposalExecutor {
+  // Resource name of the service that reviews a proposed write and runs it if
+  // it passes. One coordinate, not two: what is proposed is decided per call,
+  // so there is no operation name to pin here.
+  reviewer: string;
+}
 
 /**
  * A SQL executor: the write itself, declared in the model as an ordered list of
