@@ -513,8 +513,7 @@ function lookupFor(entity: Entity, opts: EntityToolOptions): EntityTool {
     parameters: bound.map(f => ({
                             name: f.name,
                             type: jsonType(f.type),
-                            description: `Match ${entity.name}.${
-                                f.name} exactly. Omit to leave it unfiltered.`,
+                            description: filterDescription(entity, f),
                             required: false,
                           })),
     async invoke(args: Record<string, unknown>): Promise<EntityRows> {
@@ -552,6 +551,8 @@ interface BoundField {
   name: string;
   type: string;
   column: string;
+  /** What the model says this field holds, if it says anything. */
+  description?: string;
 }
 
 
@@ -562,9 +563,26 @@ function boundFields(entity: Entity): BoundField[] {
     if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) continue;
     // A field with no declared type travels as text, which is the carrier
     // every scalar has a faithful string form in.
-    bound.push({name: field.name, type: field.type ?? 'String', column: expr});
+    const said = field.description?.trim();
+    bound.push({
+      name: field.name,
+      type: field.type ?? 'String',
+      column: expr,
+      ...(said ? {description: said} : {}),
+    });
   }
   return bound;
+}
+
+
+// What the model says the field holds, then how the filter treats it. The
+// first half is the only written-down source for the values a coded field
+// accepts, so a caller that does not get it has to guess one and spend a turn
+// learning it was wrong.
+function filterDescription(entity: Entity, field: BoundField): string {
+  const match = `Match ${entity.name}.${
+      field.name} exactly. Omit to leave it unfiltered.`;
+  return field.description ? `${field.description} ${match}` : match;
 }
 
 

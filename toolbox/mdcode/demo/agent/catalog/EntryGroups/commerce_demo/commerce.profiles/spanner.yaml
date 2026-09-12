@@ -32,6 +32,7 @@ semantic_model:
         fields:
           - {name: orderId, expression: order_id}
           - {name: customerId, expression: customer_id}
+          - {name: placedOn, expression: placed_on}
           - {name: total, expression: total}
           - {name: status, expression: status}
 

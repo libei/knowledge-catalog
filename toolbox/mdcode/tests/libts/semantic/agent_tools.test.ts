@@ -495,6 +495,50 @@ describe('entity tools', () => {
 });
 
 
+// A coded field's allowed values are written in exactly one place -- the
+// field's description -- and a caller that does not get them has to guess one.
+// The action side already passes a parameter's description through; this is the
+// read side agreeing.
+describe('what a lookup filter says it matches', () => {
+  const model = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: m
+    entities:
+      - name: LineItem
+        primary_key: [lineItemId]
+        source: //spanner.googleapis.com/projects/p/instances/i/databases/d/tables/LineItem
+        fields:
+          - {name: lineItemId, datatype: String, expression: line_item_id}
+          - name: type
+            datatype: String
+            description: item, tax, fee, or credit.
+            expression: type
+          - {name: amount, datatype: Decimal, expression: amount}
+`).models[0];
+  const [lineItem] = entityTools({model, client: NO_CLIENT});
+
+  test("the field's own description leads", () => {
+    const type = lineItem.parameters.find(p => p.name === 'type')!;
+    expect(type.description.startsWith('item, tax, fee, or credit.'))
+        .toBe(true);
+  });
+
+  test('how the filter behaves is still said, after it', () => {
+    // The two halves are owed by different authors: what the field holds is
+    // the model's, that the match is exact is the derivation's.
+    const type = lineItem.parameters.find(p => p.name === 'type')!;
+    expect(type.description).toContain('Match LineItem.type exactly');
+    expect(type.description).toContain('Omit to leave it unfiltered');
+  });
+
+  test('a field the model says nothing about gets only the behavior', () => {
+    const amount = lineItem.parameters.find(p => p.name === 'amount')!;
+    expect(amount.description).toBe(
+        'Match LineItem.amount exactly. Omit to leave it unfiltered.');
+  });
+});
+
+
 // A filter has to be bound as the type its field declares. Casting the column
 // to STRING would let one predicate shape serve every type, and no index can
 // answer it -- a lookup on a primary key would scan the table.

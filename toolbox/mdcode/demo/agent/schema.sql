@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS Customer (
 CREATE TABLE IF NOT EXISTS Orders (
   order_id INT64 NOT NULL,
   customer_id INT64,
+  placed_on DATE,
   total NUMERIC,
   status STRING(16),
 ) PRIMARY KEY (order_id);

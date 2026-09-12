@@ -1368,11 +1368,28 @@ function printActionTool(tool: ActionTool): void {
 function printLookupTool(tool: EntityTool): void {
   console.log(`  lookup  ${tool.name}  (${tool.entityName})`);
   console.log(indentBlock(tool.description));
-  console.log(`      filters: ${tool.parameters.map(p => p.name).join(', ')}`);
+  // One line per filter, like an action's parameters: the point of this
+  // command is that it shows what the agent gets, and a bare list of names
+  // hides the half of it the model wrote.
+  for (const p of tool.parameters) {
+    const said = describedPart(p.description);
+    console.log(`      ${p.name}: ${p.type}${said ? `  -- ${said}` : ''}`);
+  }
   if (!tool.runnable) {
     console.log(indentBlock(`NOT READABLE: ${tool.unavailable}`));
   }
   console.log();
+}
+
+
+// The model's half of a filter description, without the sentence the
+// derivation appends to every one of them. Printing that sentence once per
+// filter would bury what is actually worth reading.
+function describedPart(description: string): string {
+  // From the end: the derivation appends its sentence last, and a model is
+  // free to use the word in its own.
+  const boilerplate = description.lastIndexOf('Match ');
+  return boilerplate <= 0 ? '' : description.slice(0, boilerplate).trim();
 }
 
 

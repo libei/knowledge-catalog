@@ -1,7 +1,9 @@
 // The demo agent, in full. There is no second file.
 //
-//   bun demo/agent/agent.ts "Dana Reyes says the stand mixer arrived
-//                            scratched, give her $20 off"
+//   bun agent.ts "Find the order for Andy Brook (andybrook@gmail.com) that
+//                 was placed on Labor Day. It was supposed to get free
+//                 shipping but we had a glitch and the customer got charged.
+//                 Please issue them a credit to offset the charge."
 //
 // Nothing here mentions credits, orders, Spanner tables or customer service.
 // Four steps: open the workspace, derive the tools, adapt them to the
@@ -99,11 +101,20 @@ function schemaFor(params: ToolParameter[]) {
 // anything acting on it is in `ai_context` in commerce.yaml, and how to use a
 // derived tool comes from the derivation -- so there is no prompt here to
 // review, and none to drift out of step with the model it describes.
+//
+// The one thing added to it is today's date. A request says "Labor Day" and a
+// filter wants 2026-09-07; resolving one to the other needs a calendar, which
+// a language model has, and a clock, which it does not. That is a fact about
+// when this agent is running, not about commerce, so the model is the wrong
+// place to write it and this is the right one. Without it the agent guesses a
+// year or stops to ask, and both waste the turn the instruction is trying to
+// save.
 const agent = new LlmAgent({
   name: 'model_agent',
   model: process.env.DEMO_MODEL ?? 'gemini-2.5-flash',
   description: model.description ?? `Acts on the ${model.name} model.`,
-  instruction,
+  instruction: `${instruction}\n\nToday is ${
+      new Date().toISOString().slice(0, 10)}.`,
   tools,
 });
 

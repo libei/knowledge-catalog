@@ -1,5 +1,11 @@
 # What the business is, and what one agent is allowed to do to it.
 #
+# The scenario is not invented here. It is the worked example in "Ontologies,
+# actions and policies -- a simple illustration": three entities, one credit
+# action, and three policy rules, stated in prose. This file is that prose
+# written down as a model, and the README runs the specific case the doc poses.
+# Where the two differ, the doc is right and this is a bug.
+#
 # Nothing here says where the data lives, what the columns are called, or what
 # SQL performs the write. Those are physical facts, and they are in
 # commerce.profiles/spanner.yaml. This file would read the same if the orders
@@ -30,10 +36,12 @@ semantic_model:
     # not repeat them.
     ai_context:
       instructions: >-
-        You are working a customer-service desk for this business. The person
-        in front of you has an order and describes it the way a customer does
-        -- a name, a product, what went wrong -- so expect to be given a
-        description where the model expects a number.
+        You are working an internal operations desk for this business, fixing
+        orders on behalf of the people who run it. A request describes an order
+        the way a person does -- a customer's name, a day, what went wrong --
+        so expect to be given a description where the model expects a number,
+        and expect to have to read an order's lines to find out what was
+        actually charged.
 
     entities:
       - name: Customer
@@ -54,6 +62,9 @@ semantic_model:
         fields:
           - {name: orderId, datatype: Integer}
           - {name: customerId, datatype: Integer}
+          - name: placedOn
+            datatype: Date
+            description: The day the order was placed.
           - name: total
             datatype: Decimal
             description: What the customer owes on this order, in dollars.
@@ -69,7 +80,7 @@ semantic_model:
           - {name: orderId, datatype: Integer}
           - name: type
             datatype: String
-            description: item, shipping, tax, or credit.
+            description: item, tax, fee, or credit.
           - {name: amount, datatype: Decimal}
           - {name: memo, datatype: String}
 
