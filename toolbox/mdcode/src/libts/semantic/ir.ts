@@ -321,12 +321,15 @@ export interface Action {
   // Inputs, each typed by the ontology: an entity type is an object reference,
   // a scalar type an ordinary value. See ActionParameter.
   parameters: ActionParameter[];
-  // The constraints that gate this action, by name. A constraint reaches this
-  // list only when it has to: one that reads an action's parameters describes
-  // the call rather than the data, so the only moment it can be checked is
-  // before that call runs. A constraint over data alone holds for every write
-  // and needs no reference here. Naming a constraint adds an earlier check and
-  // does not switch its enforcement on.
+  // The constraints that gate this action, by name. This list is what gives a
+  // constraint effect over the action. A constraint no action names is a
+  // catalogued rule that no call consults, so adding one to a model cannot
+  // silently start refusing calls that succeeded before it was published.
+  //
+  // Both kinds of rule belong here. One reading the action's parameters has no
+  // other moment to run. One over stored data, guarded, says the call must not
+  // proceed from a state that is already broken -- which is less than the rule
+  // itself says, because nothing binds a check to the state a write produces.
   guards?: string[];
   // What the call changes: its blast radius, one entry per concept touched.
   // Declared rather than derived, because the executor is opaque -- nothing

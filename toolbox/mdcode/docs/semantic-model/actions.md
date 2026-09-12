@@ -164,12 +164,12 @@ which lands separately.
 
 ## 2. Gate it with a constraint
 
-A **constraint** is a named invariant a model states over its ontology. An
-action needs none; declare one when a rule decides whether a call may proceed at
-all. Where a constraint applies depends on what its rule reads.
+A **constraint** is a named rule a model states over its ontology. Declaring one
+adds it to the catalog and changes nothing by itself. A constraint takes effect
+where something references it and nowhere else, so publishing a rule cannot
+silently start refusing calls that succeeded yesterday.
 
-An expression over stored data holds for every write, whatever performed that
-write. No action has to name such a constraint:
+An expression over stored data states a condition the data must satisfy:
 
 ```yaml
     constraints:
@@ -179,9 +179,12 @@ write. No action has to name such a constraint:
           An account cannot be taken below its minimum balance.
 ```
 
+On its own that is a catalogued rule and no more. Nothing consults it, and no
+write is refused for breaking it. It acquires effect when an action names it.
+
 An expression that reads an action's **parameters** describes one call rather
 than the stored data. The only moment it can be checked is before that call
-runs, so the action names it in `guards`:
+runs:
 
 ```yaml
     constraints:
@@ -203,26 +206,29 @@ runs, so the action names it in `guards`:
         guards: [AmountIsPositive]
 ```
 
-`guards` holds the names of constraints the same model declares. Naming one adds
-an earlier check; it does not switch enforcement on. An invariant over stored
-data is in force whether or not an action names it, so `guards` exists for the
-constraints that have no other moment to run. Naming an invariant over stored
-data as a guard is still useful. It states that the call must not proceed on
-data that is already broken, and it puts that check before the call.
+`guards` holds the names of constraints the same model declares, and it is how a
+constraint acquires effect over an action. Both kinds of rule belong there. One
+that reads the action's parameters has no other moment to run. One over stored
+data, named as a guard, states that the call must not proceed on data that is
+already broken.
 
-The two kinds are settled at different moments, and what each rule reads decides
-which. A constraint that reads an action's parameters can be settled before
-anything is written, from the arguments and the data as it stands. A constraint
-over stored data states a condition on the state the write produces, so it is
-settled against the proposed result, inside the write, and a breach stops the
-commit. A rule meant to report rather than block is one that declares `warn`,
-checked at the same moment and let through.
+Every guard is checked before the call, with the arguments bound. What each rule
+reads decides how much that moment can tell you. A rule over the parameters is
+settled completely there, since the arguments are the whole of what it reads. A
+rule over stored data is a condition on the state a write produces, and checking
+it before the call reports only that the call is not starting from a broken
+state. It does not report that the call leaves a sound one. Nothing in the model
+binds a rule to the result of a write, which is the gap between what a data rule
+says and what a guard can enforce.
 
-Not every rule can be handed to the store to check. A condition on a single row
-lowers to a store-level `CHECK`. A condition that aggregates across a child
-table, such as an order total matching the sum of its line items, lowers to
-neither Spanner nor BigQuery, so enforcing it before the commit falls to
-whatever performs the write.
+A rule meant to report rather than block is one that declares `warn`, checked at
+the same moment and let through.
+
+Whatever dispatches the call is what checks its guards. Handing a rule to the
+store instead works only for some rules. A condition on a single row lowers to a
+store-level `CHECK`. One that aggregates across a child table, such as an order
+total matching the sum of its line items, lowers to neither Spanner nor
+BigQuery.
 
 The reference lives on the action rather than on the constraint, because the
 same rule may gate `TransferFunds` and leave `CloseAccount` alone.
@@ -373,6 +379,7 @@ becomes one constraint, carrying its own outcome in its own `on_violation`:
         guards:
           - CreditWithinOrderTotal
           - CreditUnderSelfServiceLimit
+          - OrderTotalMatchesLineItems
           - CreditMemoNamesAServiceFailure
           - CreditIsNotSplitToAvoidReview
 ```
@@ -380,16 +387,18 @@ becomes one constraint, carrying its own outcome in its own `on_violation`:
 Reading down the `on_violation` column gives the branching that the policy
 describes in prose, in a column a search can read.
 
-**Rule 3 is not a guard, and that is what `reject` means.** The other four rules
-are about one proposed call, so they can be checked only before that call and
-the action names them in `guards`. Rule 3 quantifies over stored data. It holds
-for every write from every source, whether or not an action mentions it, so it
-is declared and left unguarded. It is also the only rule here that nobody in the
-business may approve: an order whose total disagrees with its line items is
-broken rather than unusual. When a rule tempts you toward `reject`, check first
-whether it is really an invariant. One is in force without being listed, and
-naming it in `guards` would add an early check rather than switch enforcement
-on.
+**Rule 3 is named like the rest, because an unnamed rule does nothing.** It is
+the one rule here that nobody in the business may approve: an order whose total
+disagrees with its line items is broken rather than unusual, which is why it
+says `reject`. That word buys nothing until an action names the rule. Left out
+of every `guards` list it would be a rule the catalog records and no call
+consults, and the strongest word in the policy would be the one with the least
+effect.
+
+Naming it makes `IssueCredit` refuse to run against an order whose books already
+disagree. Catching the credit that *breaks* the agreement is a different check,
+against the state the write produces, and the model cannot bind one yet. Rule 3
+is the rule in this policy whose enforcement is furthest from what it says.
 
 **Rules 4 and 5 are why the second body exists.** Neither reduces to arithmetic
 over `Order` and `LineItem`, and before `judgment` they had nowhere to go but a
@@ -417,11 +426,12 @@ IssueCredit(order=12345, amount=30.00,
             memo="refund of the shipping charge applied in error during the Labor Day sale")
 ```
 
-Rule 1 holds, since 30 is within the order. Rule 2 is violated, since 30 is over
-the self-service limit, and its word is `escalate`. Rules 4 and 5 hold: the memo
-names a specific failure, and a single credit is not a split one. One violation,
-so the call is held for a supervisor, who reviews it as a credit against an
-order rather than as a SQL diff.
+Rules 1 and 3 hold: 30 is within the order, and the order's total agrees with
+its line items. Rule 2 is violated, since 30 is over the self-service limit, and
+its word is `escalate`. Rules 4 and 5 hold: the memo names a specific failure,
+and a single credit is not a split one. One violation, so the call is held for a
+supervisor, who reviews it as a credit against an order rather than as a SQL
+diff.
 
 Now three 9-dollar credits raised against the same order within the hour, each
 memo reading some version of "customer asked":
@@ -430,8 +440,8 @@ memo reading some version of "customer asked":
 IssueCredit(order=12345, amount=9.00, memo="customer asked")
 ```
 
-Rules 1 and 2 both hold — 9 is inside the order and inside the limit — so every
-gate a query can compute lets this through. Rule 4 is violated and warns. Rule 5
+Rules 1, 2 and 3 all hold — 9 is inside the order, inside the limit, and the
+order's books agree — so every gate a query can compute lets this through. Rule 4 is violated and warns. Rule 5
 is violated and rejects. This is the case the judged rules were added for: the
 policy is being evaded precisely by staying inside the arithmetic.
 
@@ -448,7 +458,7 @@ Open Policy Agent, so a policy written this way lowers into either.
 
 An action whose guards are *all* judged loads with a warning. Every gate then
 costs a model call, none can lower to a store-level check, and each may decide
-two identical calls differently. `IssueCredit` is clear of it: two of its four
+two identical calls differently. `IssueCredit` is clear of it: three of its five
 guards are expressions.
 
 **Status: nothing calls a judge.** `kcmd` parses `judgment`, validates it,

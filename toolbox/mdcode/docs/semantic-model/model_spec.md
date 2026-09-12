@@ -507,11 +507,15 @@ reads the document ([§6](#6-the-extension-mechanism)).
   differently](actions.md#a-policy-whose-rules-end-differently) works a
   five-rule credit policy through end to end.
 
-  A constraint that quantifies over stored data applies to every write without
-  being referenced anywhere. A constraint that reads an action's parameters can
-  be checked only before that call, so it applies only where an action names it
-  in `guards`; one that no action names at all draws a load warning. An action
-  whose every guard is judged draws one too: it has no gate a query can decide.
+  A constraint takes effect only where something references it. Declaring one
+  adds a rule to the catalog and refuses nothing, so publishing a rule cannot
+  change what an already-working call does. `guards` on an action is the only
+  reference the model defines, and rules of both kinds belong in it: one over an
+  action's parameters has no other moment to run, and one over stored data
+  checks that the call does not start from a broken state. A parameter-reading
+  constraint that no action names draws a load warning, since it can never run.
+  An action whose every guard is judged draws one too: it has no gate a query
+  can decide.
   Status: authored, validated and published; no component evaluates a
   constraint, so nothing today rejects a write that would break one, and nothing
   calls a judge. Rules in [Reference → Validation](reference.md#validation).
