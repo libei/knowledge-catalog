@@ -326,19 +326,6 @@ class StoreError extends Error {}
 const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
 
 
-// Why this runtime will not run `action`, or null if it is safe to run.
-//
-// One question, and it is narrower than "could some rule bear on this write":
-// does the action name a constraint that has to be checked before it runs,
-// which nothing can check yet. `guards` is what gives a constraint effect over
-// a call -- a rule no action names is a catalogued rule no call consults -- so
-// the model's own answer to "what gates this" is the list, and reading further
-// would be this module inventing an obligation the model does not state.
-//
-// An action naming no guard therefore runs. That is not this module judging the
-// write safe; it is the model saying no rule gates the call. What the write
-// does is the author's, which is what `affects` describes and what the
-// evaluator will check against the statements once it exists.
 /**
  * Why this runtime would refuse `action` before opening a transaction, or null
  * if it would run it.
@@ -371,10 +358,65 @@ export function whyRefusedWithoutRunning(
         `that performs the write as DML, or declare the action with a 'sql' ` +
         `executor.`;
   }
-  return unsafeToRunUnchecked(model, action);
+  const unchecked = unsafeToRunUnchecked(model, action);
+  if (unchecked) return unchecked;
+  // The refusals left are about filling the model's OWN statements, so they
+  // apply only when the model is what supplies them. A handler writes its own
+  // DML, is handed `refs` whole, and may well spell a composite key across
+  // several parameters -- none of what follows is owed by it.
+  if (handler) return null;
+  return unbindableByThisRuntime(model, action);
 }
 
 
+// Why this runtime could not fill the model's own statements for `action`, or
+// null if it could. Both answers are in the model and neither needs a row, so
+// both are owed HERE. Binding asks them again where the values are, which is
+// where they have to be enforced; asking only there would charge a caller a
+// transaction to be told something the model said all along.
+function unbindableByThisRuntime(
+    model: SemanticModel, action: Action): string|null {
+  for (const param of action.parameters) {
+    if (!param.isEntityRef) continue;
+    const entity = (model.entities ?? []).find(e => e.name === param.type);
+    const parts = (entity?.keys ?? []).length;
+    if (parts > 1) {
+      return `Parameter '${param.name}' of action '${action.name}' refers ` +
+          `to a ${param.type}, whose key has ${parts} parts; the runtime ` +
+          `binds an object reference as a single value, so a composite key ` +
+          `cannot be passed to a statement.`;
+    }
+  }
+  const executor = action.executor;
+  if (executor?.kind !== 'sql') return null;
+  // Asked only for a key some statement actually binds, exactly as
+  // `planFromExecutor` asks it: an entity whose DML supplies its own key must
+  // not be refused over a generated value it never reads.
+  const referenced = new Set(
+      executor.sql.statements.flatMap(sql => referencedParameters(sql)));
+  for (const affected of action.affects ?? []) {
+    if (affected.operation !== 'create') continue;
+    if (!referenced.has(generatedKeyParam(affected.concept))) continue;
+    const unusable = unusableGeneratedKey(model, action, affected.concept);
+    if (unusable) return unusable;
+  }
+  return null;
+}
+
+
+// Why a rule the model states has to stop `action`, or null if none does.
+//
+// One question, and it is narrower than "could some rule bear on this write":
+// does the action name a constraint that has to be checked before it runs,
+// which nothing can check yet. `guards` is what gives a constraint effect over
+// a call -- a rule no action names is a catalogued rule no call consults -- so
+// the model's own answer to "what gates this" is the list, and reading further
+// would be this module inventing an obligation the model does not state.
+//
+// An action naming no guard therefore runs. That is not this module judging the
+// write safe; it is the model saying no rule gates the call. What the write
+// does is the author's, which is what `affects` describes and what the
+// evaluator will check against the statements once it exists.
 function unsafeToRunUnchecked(
     model: SemanticModel, action: Action): string|null {
   // A guard names a constraint the author says is checked before the call.

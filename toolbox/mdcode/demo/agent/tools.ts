@@ -90,6 +90,7 @@ function printLookup(tool: EntityTool): void {
   console.log(`lookup  ${tool.name}  (${tool.entityName})`);
   console.log(indent(tool.description));
   console.log(`    filters: ${tool.parameters.map(p => p.name).join(', ')}`);
+  if (!tool.runnable) console.log(indent(`NOT READABLE: ${tool.unavailable}`));
   console.log();
 }
 

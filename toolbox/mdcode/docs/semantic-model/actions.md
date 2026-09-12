@@ -921,14 +921,22 @@ that wants one half, and each names its own tools without seeing the other.
 
 ### A tool says whether it can be called
 
-Every refusal in [section 7](#7-run-it) is decided before the store is touched,
-so it can be decided before the tool is offered. Each action tool carries
-`runnable`, and when it is false, `unavailable` says why — a withdrawn executor,
-a remote executor with no handler, or a guard nothing checks. The verdict is
-asked of the runtime rather than worked out again, so the two cannot drift: a
-tool advertised as runnable that refuses every call spends the agent's turn and
+A refusal the model alone decides is a refusal every call would meet, so it can
+be decided before the tool is offered rather than inside a transaction. Both
+halves carry `runnable`, and when it is false, `unavailable` says why.
+
+For an action: a withdrawn executor, a remote executor with no handler, a guard
+nothing checks, an object reference to a composite-keyed entity, or a generated
+key the statement asks for that a UUID cannot fill. The verdict is asked of the
+runtime rather than worked out again, so the two cannot drift — a tool
+advertised as runnable that refuses every call spends the agent's turn and
 teaches it nothing, and one withheld that would have worked is never discovered
 at all.
+
+For a lookup: an abstract entity, which has no table of its own; an entity no
+profile bound to one; or an entity whose binding is not a plain table. The same
+function answers the question here and reports it at call time, for the same
+reason.
 
 The tool is still returned and still named either way. An action the model
 declares should not vanish from what the model offers; an adapter binds the

@@ -8,9 +8,9 @@
 
 set -euo pipefail
 
-PROJECT=${DEMO_CLOUD_PROJECT:-sqlgen-testing}
-INSTANCE=${DEMO_SPANNER_INSTANCE:-graph-unified-solution-demo}
-DATABASE=${DEMO_SPANNER_DATABASE:-semantic_agent_demo}
+# The same question setup.sh asks, so the database dropped is the one created.
+HERE=$(dirname "$0")
+read -r PROJECT INSTANCE DATABASE <<<"$(bun "$HERE/target.ts")"
 
 gcloud spanner databases delete "$DATABASE" \
   --instance="$INSTANCE" --project="$PROJECT"

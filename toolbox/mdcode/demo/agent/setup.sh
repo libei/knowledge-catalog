@@ -16,14 +16,17 @@
 #   12346   $18.00  Andy Brook   one item
 #   12347  $200.00  Dana Reyes   one item
 #
+# The database this seeds is the one commerce.profiles/spanner.yaml names.
+# Change that line to run the demo somewhere else; nothing here needs editing.
+#
 # Run from the mdcode package root:  bash demo/agent/setup.sh
 
 set -euo pipefail
 
-PROJECT=${DEMO_CLOUD_PROJECT:-sqlgen-testing}
-INSTANCE=${DEMO_SPANNER_INSTANCE:-graph-unified-solution-demo}
-DATABASE=${DEMO_SPANNER_DATABASE:-semantic_agent_demo}
+# Where to seed is the binding profile's answer, not this script's. Asking it
+# is what keeps setup from creating one database while the demo reads another.
 HERE=$(dirname "$0")
+read -r PROJECT INSTANCE DATABASE <<<"$(bun "$HERE/target.ts")"
 
 if ! gcloud spanner databases describe "$DATABASE" \
        --instance="$INSTANCE" --project="$PROJECT" >/dev/null 2>&1; then

@@ -27,19 +27,19 @@ import {modelTools, ToolParameter} from '../../src/libts/semantic/agent_tools';
 
 import {loadModel, openStore} from './model';
 
-// ADK reaches Gemini through Vertex with application-default credentials, the
-// same credentials the Spanner calls use. Set before the agent is constructed
-// because the client reads them at construction.
-process.env.GOOGLE_GENAI_USE_ENTERPRISE ??= 'true';
-process.env.GOOGLE_CLOUD_PROJECT ??=
-    process.env.DEMO_CLOUD_PROJECT ?? 'sqlgen-testing';
-process.env.GOOGLE_CLOUD_LOCATION ??= 'us-central1';
-
-
 // Step 1. Load the model under its binding profile, and open the store the
 // profile points at.
 const model = loadModel();
-const {client} = openStore(model);
+const {client, project} = openStore(model);
+
+
+// ADK reaches Gemini through Vertex with application-default credentials, the
+// same credentials the Spanner calls use, and in the project the binding
+// profile names -- so one line in one file says where this demo runs. Set
+// before the agent is constructed, because the client reads them then.
+process.env.GOOGLE_GENAI_USE_ENTERPRISE ??= 'true';
+process.env.GOOGLE_CLOUD_PROJECT ??= project;
+process.env.GOOGLE_CLOUD_LOCATION ??= 'us-central1';
 
 
 // Step 2. Derive the tools. `modelTools` returns both halves with their names
@@ -47,14 +47,16 @@ const {client} = openStore(model);
 // in one namespace and two tools of one name is a bug the model cannot see.
 const {lookups, actions} = modelTools({model, client});
 
-// An action this runtime refuses is still declared, still published, and still
-// listed -- but offering it as a callable tool would spend a turn on a call
-// that cannot succeed, and teach the agent nothing it can act on. So it is
-// reported here and left unbound.
-for (const tool of actions) {
-  if (!tool.runnable) console.error(`(withheld) ${tool.name}: ${tool.unavailable}`);
-}
-const derived = [...lookups, ...actions.filter(t => t.runnable)];
+// A tool this binding cannot serve is still declared, still published, and
+// still listed -- but offering it as a callable would spend a turn on a call
+// that cannot succeed, and teach the agent nothing it can act on. Both halves
+// answer the same question, so both are filtered the same way: an entity with
+// no readable binding is as useless to offer as an action the runtime refuses.
+const derived = [...lookups, ...actions].filter(tool => {
+  if (tool.runnable) return true;
+  console.error(`(withheld) ${tool.name}: ${tool.unavailable}`);
+  return false;
+});
 
 
 // Step 3. Adapt each one to ADK.
@@ -72,7 +74,9 @@ const tools = derived.map(
 
 // ADK takes its parameter schema as Zod, and specifically as an object schema.
 // A tool parameter carries a JSON type and a description, which is exactly what
-// a Zod field needs. The return type is inferred rather than widened to
+// a Zod field needs. `integer` is kept distinct from `number` because the model
+// drew that line: collapsing it lets a caller send 2.5 for an Integer and lose
+// a turn to a rejection the schema could have prevented. The return type is inferred rather than widened to
 // `ZodTypeAny`: FunctionTool will not accept a schema that might not be an
 // object, and that is a distinction worth keeping.
 function schemaFor(params: ToolParameter[]) {
@@ -80,6 +84,7 @@ function schemaFor(params: ToolParameter[]) {
   for (const param of params) {
     const base = param.type === 'boolean' ? z.boolean() :
         param.type === 'string'          ? z.string() :
+        param.type === 'integer'         ? z.number().int() :
                                            z.number();
     const described = base.describe(param.description);
     shape[param.name] = param.required ? described : described.optional();

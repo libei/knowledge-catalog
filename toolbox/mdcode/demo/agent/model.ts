@@ -17,6 +17,7 @@ import * as spanner from '../../src/libts/gcp/spanner';
 import {googleDeploymentTargets} from '../../src/libts/semantic/deployment_target';
 import {SemanticModel} from '../../src/libts/semantic/ir';
 import {fromDocument} from '../../src/libts/semantic/loader';
+import {resolveInheritance} from '../../src/libts/semantic/resolve_inheritance';
 import {mergeProfile} from '../../src/libts/semantic/resolve_profiles';
 
 const HERE = import.meta.dir;
@@ -46,16 +47,29 @@ export function loadModel(): SemanticModel {
   }
   for (const warning of merged.warnings) console.error(`Warning: ${warning}`);
 
-  const loaded = fromDocument(merged.doc);
+  // `bindingOptional` and `resolveInheritance` are the two steps the CLI takes
+  // after loading, and they are taken here for the CLI's reasons. A model may
+  // be authored with no binding at all, so requiring one would reject a
+  // logical model the CLI accepts. And an inherited field is a field: the
+  // runtime reads `entity.fields`, so without resolution a subtype's inherited
+  // `name` is invisible -- a reference to a row that exists resolves to "no
+  // such row" -- and an inherited key's TYPE is invisible, so the check that
+  // refuses a generated UUID for an Integer key reads it as a String and lets
+  // the store take the mismatch. commerce.yaml uses no `extends` today; the
+  // point is that DEMO_MODEL_PATH may name a model that does.
+  const loaded = fromDocument(merged.doc, {bindingOptional: true});
   for (const warning of loaded.warnings) console.error(`Warning: ${warning}`);
   if (!loaded.models.length) throw new Error(`${modelPath} declares no model`);
-  return loaded.models[0];
+
+  const resolved = resolveInheritance(loaded.models[0]);
+  for (const warning of resolved.warnings) console.error(`Warning: ${warning}`);
+  return resolved.model;
 }
 
 
 /** The Spanner database this model's deployment target names. */
 export function openStore(model: SemanticModel):
-    {client: spanner.SpannerDataClient; database: string} {
+    {client: spanner.SpannerDataClient; database: string; project: string} {
   const [target] = googleDeploymentTargets(model).spanner;
   if (!target) {
     throw new Error(
@@ -67,5 +81,6 @@ export function openStore(model: SemanticModel):
         gcp.ApiContext.default(), target.project, target.instance,
         target.database),
     database: `${target.project}/${target.instance}/${target.database}`,
+    project: target.project,
   };
 }

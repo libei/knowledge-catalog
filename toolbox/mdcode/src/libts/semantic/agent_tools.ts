@@ -14,8 +14,8 @@
  * The description is framework-neutral on purpose. Nothing here imports an
  * agent framework, so binding these to Google ADK, to LangChain, or to an MCP
  * server is a short adapter the caller writes, and adding a second framework
- * costs nothing in this file. See demo/credit/agent.ts for the ADK adapter,
- * which is eight lines.
+ * costs nothing in this file. See demo/agent/agent.ts for the ADK adapter,
+ * which is a dozen lines.
  *
  * What this module does NOT do is decide anything. A tool built here is a way
  * to ask. Every refusal is decided by runAction, and an agent that calls a
@@ -202,9 +202,17 @@ function toolDescription(
 // Which rules a caller will meet. `guards` names the ones checked before the
 // write; a constraint over stored state is checked after it and is not named
 // here, because a caller cannot do anything differently about one.
+//
+// An ADVISORY guard is not named either. A constraint whose `onViolation` is
+// `warn` reports and lets the write through, so the runtime stands down and
+// the call goes ahead -- telling a caller it is "gated" by a rule that gates
+// nothing is the one kind of claim this file must not make. Saying less is the
+// honest half of saying it accurately.
 function gatingRules(action: Action, model: SemanticModel): string[] {
-  const declared = new Set((model.constraints ?? []).map(c => c.name));
-  return (action.guards ?? []).filter(name => declared.has(name));
+  const gating = new Set((model.constraints ?? [])
+                             .filter(c => c.onViolation !== 'warn')
+                             .map(c => c.name));
+  return (action.guards ?? []).filter(name => gating.has(name));
 }
 
 
@@ -358,6 +366,15 @@ export interface EntityTool {
   description: string;
   /** One optional exact-match filter per bound field. */
   parameters: ToolParameter[];
+  /**
+   * Whether calling this would reach the store, on the same terms as
+   * `ActionTool.runnable`: false when the answer is already in the model, so
+   * that an adapter can decline to offer a tool that returns a problem however
+   * it is called. `invoke` still works and still reports the problem.
+   */
+  runnable: boolean;
+  /** Why `runnable` is false, in words a caller can report. */
+  unavailable?: string;
   invoke(args: Record<string, unknown>): Promise<EntityRows>;
 }
 
@@ -448,10 +465,13 @@ function distinct(base: string, taken: Set<string>): string {
 
 function lookupFor(entity: Entity, opts: EntityToolOptions): EntityTool {
   const bound = boundFields(entity);
+  const unavailable = whyUnreadable(entity, bound);
   return {
     name: `find_${snakeCase(entity.name)}`,
     entityName: entity.name,
     description: lookupDescription(entity, bound),
+    runnable: !unavailable,
+    ...(unavailable ? {unavailable} : {}),
     parameters: bound.map(f => ({
                             name: f.name,
                             type: jsonType(f.type),
@@ -463,6 +483,27 @@ function lookupFor(entity: Entity, opts: EntityToolOptions): EntityTool {
       return await runLookup(entity, bound, args, opts);
     },
   };
+}
+
+
+// Why no call to this entity's lookup could return rows, or null if one
+// could. Every answer is in the model, which is what makes it answerable
+// before the tool is offered rather than after a caller has spent a turn on
+// it -- the same bargain `ActionTool.runnable` strikes on the write side.
+// `runLookup` asks these again where it would read, because that is where the
+// failure has to be reported; here they decide whether to bother the caller.
+function whyUnreadable(entity: Entity, bound: BoundField[]): string|null {
+  if (entity.abstract) {
+    return `${entity.name} is abstract: it groups its subtypes and has no ` +
+        `table of its own. Look up one of the subtypes instead.`;
+  }
+  if (!bound.length) {
+    return `No field of ${entity.name} is bound to a plain column, so there ` +
+        `is nothing to read. Push the model with a binding profile.`;
+  }
+  const warnings: string[] = [];
+  spannerTable(entity.dataSource, warnings, `entity '${entity.name}'`);
+  return warnings.length ? warnings.join('; ') : null;
 }
 
 
@@ -511,20 +552,14 @@ async function runLookup(
     entity: Entity, bound: BoundField[], args: Record<string, unknown>,
     opts: EntityToolOptions): Promise<EntityRows> {
   const empty = {entity: entity.name, fields: [], rows: [], truncated: false};
-  if (!bound.length) {
-    return {
-      ...empty,
-      problem: `No field of ${entity.name} is bound to a plain column, so ` +
-          `there is nothing to read. Push the model with a binding profile.`,
-    };
-  }
+  // Asked of the same function the tool's `unavailable` was asked of, so the
+  // reason a call reports and the reason the tool advertises are one text.
+  const unreadable = whyUnreadable(entity, bound);
+  if (unreadable) return {...empty, problem: unreadable};
 
   const warnings: string[] = [];
   const table =
       spannerTable(entity.dataSource, warnings, `entity '${entity.name}'`);
-  if (warnings.length) {
-    return {...empty, problem: warnings.join('; ')};
-  }
 
   // Only field names the model declares reach the SQL, and every value is
   // bound. An argument naming an unknown field is a caller error worth

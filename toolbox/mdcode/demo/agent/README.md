@@ -25,10 +25,19 @@ the demo uses them for both Spanner and Gemini.
 
 ```bash
 gcloud auth application-default login
-export DEMO_CLOUD_PROJECT=sqlgen-testing            # defaults shown
-export DEMO_SPANNER_INSTANCE=graph-unified-solution-demo
-export DEMO_SPANNER_DATABASE=semantic_agent_demo
 ```
+
+Where it runs is one line, in `commerce.profiles/spanner.yaml`:
+
+```yaml
+deployment_target: //spanner.googleapis.com/projects/sqlgen-testing/instances/graph-unified-solution-demo/databases/semantic_agent_demo/propertyGraphs/commerce
+```
+
+Point that at your own instance and everything follows it: the setup scripts
+create and drop the database it names, the tools read and write there, and the
+agent bills Gemini to the same project. There is nothing else to keep in step,
+which is the profile doing its job — the demo's only deployment-specific fact
+is in the file whose subject is the deployment.
 
 Run everything from the `toolbox/mdcode` package root.
 

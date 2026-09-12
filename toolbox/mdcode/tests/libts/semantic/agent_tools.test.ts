@@ -252,6 +252,177 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
 });
 
 
+// A refusal the model alone decides is a refusal every call would meet. Asking
+// it once, before the tool is offered, is the difference between an agent that
+// never sees a dead tool and one that spends a turn -- and a transaction --
+// finding out. These are the answers that were previously reached only where
+// the runtime binds, which is inside the transaction.
+describe('a binding this runtime cannot fill is refused before the store', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+
+  test('an object reference to a composite-keyed entity', () => {
+    // `customer` is the type of PlaceOrder's entity-typed parameter. Give it a
+    // two-part key and no single statement parameter can carry the reference,
+    // so binding refuses -- whatever row the caller named.
+    const composite = {
+      ...model,
+      entities: model.entities.map(
+          e => e.name === 'customer' ?
+              {...e, keys: ['c_custkey', 'c_nationkey']} :
+              e),
+    };
+    const [tool] = actionTools(
+        {model: withExecutor(composite, RUNNABLE), client: NO_CLIENT});
+    expect(tool.runnable).toBe(false);
+    expect(tool.unavailable).toContain('2 parts');
+  });
+
+  test('a generated key the statement binds, for an integer-keyed entity', () => {
+    // `orders` is keyed by o_orderkey, an Integer, and the runtime generates a
+    // UUID. The statement asks for one, so this can never be filled.
+    const creates = withExecutor(model, {
+      ...RUNNABLE,
+      affects: [{concept: 'orders', operation: 'create'}],
+      executor: {
+        kind: 'sql',
+        sql: {
+          statements: ['INSERT INTO orders (o_orderkey) VALUES (@newordersKey)'],
+        },
+      },
+    });
+    const typed = {
+      ...creates,
+      entities: creates.entities.map(
+          e => e.name === 'orders' ?
+              {
+                ...e,
+                fields: e.fields.map(
+                    f => f.name === 'o_orderkey' ? {...f, type: 'Integer' as const} : f),
+              } :
+              e),
+    };
+    const [tool] = actionTools({model: typed, client: NO_CLIENT});
+    expect(tool.runnable).toBe(false);
+    expect(tool.unavailable).toContain('UUID');
+  });
+
+  test('a generated key no statement binds is not held against the action',
+       () => {
+         // The same integer-keyed entity, but the DML supplies its own key.
+         // Refusing over a value the action never reads would withhold a tool
+         // that works.
+         const creates = withExecutor(model, {
+           ...RUNNABLE,
+           affects: [{concept: 'orders', operation: 'create'}],
+           executor: {
+             kind: 'sql',
+             sql: {
+               statements:
+                   ['INSERT INTO orders (o_orderkey) VALUES (@quantity)'],
+             },
+           },
+         });
+         const [tool] = actionTools({model: creates, client: NO_CLIENT});
+         expect(tool.runnable).toBe(true);
+       });
+
+  test('a handler is not held to either, because it writes its own DML', () => {
+    // A handler is given `refs` whole and may spell a composite key across as
+    // many parameters as it likes. Neither question is the handler's to answer.
+    const composite = {
+      ...model,
+      entities: model.entities.map(
+          e => e.name === 'customer' ?
+              {...e, keys: ['c_custkey', 'c_nationkey']} :
+              e),
+    };
+    const [tool] = actionTools({
+      model: withExecutor(composite, {guards: []}),
+      client: NO_CLIENT,
+      handler: async () => ({statements: []}),
+    });
+    expect(tool.runnable).toBe(true);
+  });
+});
+
+
+// The description tells a caller what it will meet. A rule that stops nothing
+// is not something it will meet, and saying otherwise teaches an LLM to expect
+// a refusal that never comes -- or to explain one that did not happen.
+describe('what a tool says it is gated by', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+
+  test('an advisory guard is not announced as a gate', () => {
+    const advisory: Constraint = {
+      name: 'AmountIsLarge',
+      expression: 'quantity > 1000',
+      onViolation: 'warn',
+    };
+    const base = withExecutor(model, {...RUNNABLE, guards: ['AmountIsLarge']});
+    const [tool] = actionTools(
+        {model: {...base, constraints: [advisory]}, client: NO_CLIENT});
+    expect(tool.runnable).toBe(true);
+    expect(tool.description).not.toContain('gated by');
+  });
+
+  test('a guard that does stop the call is', () => {
+    const blocking: Constraint = {
+      name: 'QuantityIsSane',
+      expression: 'quantity > 0',
+      onViolation: 'reject',
+    };
+    const base = withExecutor(model, {...RUNNABLE, guards: ['QuantityIsSane']});
+    const [tool] = actionTools(
+        {model: {...base, constraints: [blocking]}, client: NO_CLIENT});
+    expect(tool.description).toContain('gated by QuantityIsSane');
+  });
+});
+
+
+// The read side owes the same answer the write side owes, for the same reason.
+describe('a lookup that could not return a row says so up front', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+
+  function lookupFor(entities: Entity[], name: string) {
+    return entityTools({model: {...model, entities}, client: NO_CLIENT})
+        .find(t => t.entityName === name)!;
+  }
+
+  test('a bound entity is runnable', () => {
+    const tool = lookupFor(model.entities, 'customer');
+    expect(tool.runnable).toBe(true);
+    expect(tool.unavailable).toBeUndefined();
+  });
+
+  test('an abstract entity has no table to read', () => {
+    const entities = model.entities.map(
+        e => e.name === 'customer' ? {...e, abstract: true} : e);
+    const tool = lookupFor(entities, 'customer');
+    expect(tool.runnable).toBe(false);
+    expect(tool.unavailable).toContain('abstract');
+  });
+
+  test('an entity with no field bound to a column has nothing to read', () => {
+    const entities = model.entities.map(
+        e => e.name === 'customer' ?
+            {...e, fields: e.fields.map(f => ({...f, expression: undefined}))} :
+            e);
+    const tool = lookupFor(entities, 'customer');
+    expect(tool.runnable).toBe(false);
+    expect(tool.unavailable).toContain('binding profile');
+  });
+
+  test('the reason a call reports is the reason the tool advertised',
+       async () => {
+         const entities = model.entities.map(
+             e => e.name === 'customer' ? {...e, abstract: true} : e);
+         const tool = lookupFor(entities, 'customer');
+         const rows = await tool.invoke({});
+         expect(rows.problem).toBe(tool.unavailable);
+       });
+});
+
+
 // A `sql` executor's claim is that what runs is what the catalog published. A
 // handler exists for the executors this runtime cannot call, and it is one
 // function for the whole model -- so passing it everywhere would retract that
