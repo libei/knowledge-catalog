@@ -496,6 +496,15 @@ function constraintsOverAffected(
   ];
   const names: string[] = [];
   for (const c of constraints) {
+    // A judged constraint states its rule in prose for a language model to
+    // settle, so it declares no expression and there are no qualifiers to read
+    // a coverage set out of. What it covers is therefore unknown, and unknown
+    // counts against every action -- the same answer this gives an expression
+    // that names no concept it recognizes.
+    if (c.expression === undefined) {
+      names.push(c.name);
+      continue;
+    }
     const read = referencedEntityNames(c.expression, conceptNames);
     if (!read.length || read.some(name => affected.has(name))) {
       names.push(c.name);
