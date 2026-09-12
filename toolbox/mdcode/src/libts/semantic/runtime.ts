@@ -130,36 +130,10 @@ export async function runAction(opts: RunActionOptions):
       message: `Model '${model.name}' declares no action '${opts.actionName}'.`,
     };
   }
-  // No executor at all is a binding outcome, not a broken model: the executor
-  // is a physical facet, so an action can be declared here and performable
-  // only somewhere else. Say which it is, because the fix is in the profile
-  // rather than in the action.
-  const executor = action.executor;
-  if (!executor) {
-    return {
-      status: 'error',
-      message: `Action '${action.name}' has no executor under this binding, ` +
-          `so there is nothing to run. An executor is a physical binding: a ` +
-          `profile supplies one, and a profile that writes 'executor: null' ` +
-          `withdraws it. The action is still declared and still published; ` +
-          `it is only not performable here.`,
-    };
-  }
-  if (!opts.handler && executor.kind !== 'sql') {
-    return {
-      status: 'error',
-      message: `Action '${action.name}' is executed by ${
-          executor.kind.toUpperCase()}, which runs outside this ` +
-          `transaction and could not be rolled back if the commit failed. ` +
-          `Supply a handler that performs the write as DML, or declare the ` +
-          `action with a 'sql' executor.`,
-    };
-  }
-
   // Decided BEFORE touching the store, so an action this runtime will not run
   // fails without having opened a transaction at all.
-  const unsafe = unsafeToRunUnchecked(model, action);
-  if (unsafe) return {status: 'error', message: unsafe};
+  const refusal = whyRefusedWithoutRunning(model, action, opts.handler);
+  if (refusal) return {status: 'error', message: refusal};
 
   // Whether a transaction was ever opened. A session that could not be
   // created, or a `beginReadWrite` that threw, fails with nothing to roll
@@ -365,6 +339,42 @@ const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
 // write safe; it is the model saying no rule gates the call. What the write
 // does is the author's, which is what `affects` describes and what the
 // evaluator will check against the statements once it exists.
+/**
+ * Why this runtime would refuse `action` before opening a transaction, or null
+ * if it would run it.
+ *
+ * Exported because deriving a tool for an agent needs the same answer BEFORE
+ * the tool is offered: one that refuses every call spends the agent's turn and
+ * teaches it nothing. A second copy of this rule elsewhere would drift, and
+ * the drift is silent in both directions -- a tool advertised as runnable that
+ * always refuses, or one withheld that would have worked.
+ */
+export function whyRefusedWithoutRunning(
+    model: SemanticModel, action: Action,
+    handler?: ActionHandler): string|null {
+  // No executor at all is a binding outcome, not a broken model: the executor
+  // is a physical facet, so an action can be declared here and performable
+  // only somewhere else. Say which it is, because the fix is in the profile
+  // rather than in the action.
+  const executor = action.executor;
+  if (!executor) {
+    return `Action '${action.name}' has no executor under this binding, so ` +
+        `there is nothing to run. An executor is a physical binding: a ` +
+        `profile supplies one, and a profile that writes 'executor: null' ` +
+        `withdraws it. The action is still declared and still published; it ` +
+        `is only not performable here, and is performed somewhere else.`;
+  }
+  if (!handler && executor.kind !== 'sql') {
+    return `Action '${action.name}' is executed by ${
+        executor.kind.toUpperCase()}, which runs outside this transaction ` +
+        `and could not be rolled back if the commit failed. Supply a handler ` +
+        `that performs the write as DML, or declare the action with a 'sql' ` +
+        `executor.`;
+  }
+  return unsafeToRunUnchecked(model, action);
+}
+
+
 function unsafeToRunUnchecked(
     model: SemanticModel, action: Action): string|null {
   // A guard names a constraint the author says is checked before the call.
@@ -466,7 +476,15 @@ function isCalendarDay(text: string): boolean {
 }
 
 
-function bindScalar(param: ActionParameter, raw: unknown):
+/**
+ * One value, parsed to the store type its declared ontology type implies.
+ *
+ * Exported because a read has the same problem a write does: a filter on a
+ * typed column has to be bound AS that type, or the predicate needs a cast and
+ * no index can answer it. Sharing this also means one answer to what counts as
+ * an Integer or a Date, rather than one for writes and another for reads.
+ */
+export function bindScalar(param: ActionParameter, raw: unknown):
     {value: unknown; code: string}|{error: string} {
   // An empty String IS a value: `--arg memo=` is the caller saying the memo is
   // blank, which is a different statement from not passing one. For every
