@@ -1,9 +1,8 @@
 -- Tables the commerce model binds to.
 --
--- Applied by setup.sh. To do it by hand:
---   gcloud spanner databases create semantic_agent_demo \
---     --instance=graph-unified-solution-demo --project=sqlgen-testing \
---     --ddl-file=demo/agent/schema.sql
+-- A file because `gcloud spanner databases create --ddl-file` takes one, and
+-- because `kcmd push` deploys a graph over tables that already exist rather
+-- than creating them. See the README for the command that applies it.
 --
 -- Money is NUMERIC rather than FLOAT64. An order's total is an exact sum of
 -- exact amounts, and binary floating point does not keep that promise: 0.1 +

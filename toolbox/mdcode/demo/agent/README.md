@@ -21,7 +21,9 @@ used for both Spanner and Gemini.
 gcloud auth application-default login
 ```
 
-Run everything from the `toolbox/mdcode` package root.
+Build the CLI from the `toolbox/mdcode` package root. From step 2 on,
+everything runs in `demo/agent`, which is why `kcmd` appears as
+`../../dist/kcmd`.
 
 ```bash
 npm run build                # builds dist/kcmd
@@ -49,9 +51,9 @@ deployment-specific here, including where it runs:
 deployment_target: //spanner.googleapis.com/projects/sqlgen-testing/instances/graph-unified-solution-demo/databases/semantic_agent_demo/propertyGraphs/commerce
 ```
 
-Point that line at your own instance and everything follows it: the setup
-scripts create and drop the database it names, the tools read and write there,
-and the agent bills Gemini to the same project. There is nothing else to keep in
+Point that line at your own instance and everything follows it: the commands
+below create and drop the database it names, the tools read and write there, and
+the agent bills Gemini to the same project. There is nothing else to keep in
 step.
 
 Both files sit in a `kcmd` workspace (`catalog.yaml` scopes it and names
@@ -83,28 +85,62 @@ them.
 
 ## 2. Create the store
 
-```bash
-bash demo/agent/setup.sh     # creates the database and seeds three orders
-```
-
-The script never names a database. It asks the model:
+Four `gcloud` commands, and none of them names a database. Ask the model where
+it lives instead — `kcmd action list --store` prints the deployment target as
+`project/instance/database` and nothing else, so a shell can read it:
 
 ```bash
-IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(kcmd action list --store)"
+cd demo/agent
+IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(../../dist/kcmd action list --store)"
 ```
 
-Two sources would let you seed one database and have the agent talk to another.
-The rest of the script is `gcloud spanner databases create` and a series of
-`gcloud spanner databases execute-sql` calls, each one copyable on its own.
+Naming it a second time here is how you end up seeding one database while the
+agent talks to another.
 
-The seed leaves order 12345 at $147.85 over four line items, 12346 at $18.00,
-and 12347 at $200.00. Re-running `setup.sh` returns the database to exactly
-that, whatever has been done to it since.
+```bash
+gcloud spanner databases create "$DATABASE" \
+  --instance="$INSTANCE" --project="$PROJECT" --ddl-file=schema.sql
+```
+
+`schema.sql` is three tables. It is a file rather than a command because
+`--ddl-file` wants one, and because `kcmd push` deploys a graph over tables that
+already exist rather than creating them.
+
+Then the rows — two customers, three orders, six line items:
+
+```bash
+gcloud spanner databases execute-sql "$DATABASE" \
+  --instance="$INSTANCE" --project="$PROJECT" \
+  --sql="INSERT INTO Customer (customer_id, name, email) VALUES
+    (1, 'Andy Brook', 'andy.brook@example.com'),
+    (2, 'Dana Reyes', 'dana.reyes@example.com')"
+
+gcloud spanner databases execute-sql "$DATABASE" \
+  --instance="$INSTANCE" --project="$PROJECT" \
+  --sql="INSERT INTO Orders (order_id, customer_id, total, status) VALUES
+    (12345, 1, NUMERIC '147.85', 'OPEN'),
+    (12346, 1, NUMERIC  '18.00', 'OPEN'),
+    (12347, 2, NUMERIC '200.00', 'OPEN')"
+
+gcloud spanner databases execute-sql "$DATABASE" \
+  --instance="$INSTANCE" --project="$PROJECT" \
+  --sql="INSERT INTO LineItem (line_item_id, order_id, type, amount, memo) VALUES
+    ('li-12345-1', 12345, 'item',     NUMERIC  '89.99', 'Cast iron skillet'),
+    ('li-12345-2', 12345, 'item',     NUMERIC  '34.50', 'Enamel saucepan'),
+    ('li-12345-3', 12345, 'shipping', NUMERIC  '12.00', 'Expedited shipping'),
+    ('li-12345-4', 12345, 'tax',      NUMERIC  '11.36', 'Sales tax'),
+    ('li-12346-1', 12346, 'item',     NUMERIC  '18.00', 'Silicone spatula set'),
+    ('li-12347-1', 12347, 'item',     NUMERIC '200.00', 'Stand mixer')"
+```
+
+That leaves order 12345 at $147.85 over four line items, 12346 at $18.00, and
+12347 at $200.00. To start over, drop the database with the command under
+[Cleaning up](#cleaning-up) and run these four again.
 
 ## 3. Check what the model declares
 
 ```console
-$ cd demo/agent && ../../dist/kcmd action list
+$ ../../dist/kcmd action list
 Model 'commerce' (commerce_demo), profile 'spanner':
   store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
   IssueCredit: Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line and the order total is recomputed from the lines.
@@ -316,6 +352,9 @@ work, not a forgotten one.
 
 ## Cleaning up
 
+One command. Everything the demo made is in the database the model names.
+
 ```bash
-bash demo/agent/cleanup.sh     # drops the database
+gcloud spanner databases delete "$DATABASE" \
+  --instance="$INSTANCE" --project="$PROJECT"
 ```
