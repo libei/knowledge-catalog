@@ -466,8 +466,10 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               'differently is published as several constraints, each with ' +
               'its own word, listed together by an action\'s `guards`; the ' +
               'strictest consequence among the violated ones is what the ' +
-              'action does. A constraint stating `judgment` always states ' +
-              'this field, and may state any of the three words.',
+              'action does. That combination is what the model states, and ' +
+              'no component evaluates a constraint today. A constraint ' +
+              'stating `judgment` always states this field, and may state ' +
+              'any of the three words.',
         },
       },
       {

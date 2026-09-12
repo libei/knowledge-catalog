@@ -224,6 +224,17 @@ export function readConstraint(entry: Entry, warnings: string[]): Constraint|
   const onViolation = readEnum(
       name, 'onViolation', data.onViolation, VIOLATION_EFFECTS, warnings);
   if (onViolation) constraint.onViolation = onViolation as ViolationEffect;
+  // A judgment must say what a violation does, so a pulled one that states no
+  // routing word is a model that will not push. Saying so here names the
+  // constraint while the pull is in front of the author; the alternative is a
+  // push error about a key they never wrote.
+  if (judgment && constraint.onViolation === undefined) {
+    warnings.push(
+        `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect states a ` +
+        `judgment but no onViolation, so the pulled constraint will not push ` +
+        `until one is added; a judged constraint must say whether a breach ` +
+        `rejects, escalates or warns`);
+  }
   const severity = readEnum(
       name, 'severity', data.severity, CONSTRAINT_SEVERITIES, warnings);
   if (severity) constraint.severity = severity as ConstraintSeverity;

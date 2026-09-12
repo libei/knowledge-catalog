@@ -427,7 +427,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   error, because an unmarked constraint rejects and that is too strong a
   consequence to inherit by silence. Every `Entity.field` token in the prose is
   resolved against the model by the same scan an expression gets, so a field
-  name that has been renamed out from under the sentence is caught.
+  name that has been renamed out from under the sentence is caught. Quoted text
+  is scanned here, unlike in an expression, where quotes delimit a string
+  literal. In prose they more often set off a field name for emphasis, and
+  skipping those would hide the renames this check exists to catch.
   *(static)*
 * Like an action, a constraint of either kind reaches Knowledge Catalog only,
   and a `--no-kc` push warns that it will not be deployed. Two rules are

@@ -1079,19 +1079,6 @@ function warnMixedAffectsPrecision(
   }
 }
 
-// A constraint that reads an action's parameter describes that call, so the
-// only moment it can be checked is before the call runs -- which happens only
-// when the action names it in `guards`. Such a constraint left unnamed by EVERY
-// action is text nothing will ever evaluate, so say so at load time.
-//
-// Being guarded anywhere is enough. An action that shares the parameter name and
-// does not name the constraint is a deliberate modeling choice, since the same
-// rule may gate one action and leave another alone; warning about it would
-// report a constraint that does run and would teach an author to ignore this
-// message.
-//
-// This warns rather than fails because the scan matches identifiers, and an
-// expression may use a bare name that merely coincides with a parameter name.
 // An action every one of whose guards is judged has no deterministic gate at
 // all. Every gate costs a model call, none can lower to a store-level `CHECK`,
 // and each may decide two identical calls differently, so nothing protects the
@@ -1118,6 +1105,20 @@ function warnAllGuardsJudged(
   }
 }
 
+// A constraint that reads an action's parameter describes that call, so the
+// only moment it can be checked is before the call runs -- which happens only
+// when the action names it in `guards`. Such a constraint left unnamed by EVERY
+// action is text nothing will ever evaluate, so say so at load time.
+//
+// Being guarded anywhere is enough. An action that shares the parameter name and
+// does not name the constraint is a deliberate modeling choice, since the same
+// rule may gate one action and leave another alone; warning about it would
+// report a constraint that does run and would teach an author to ignore this
+// message.
+//
+// This warns rather than fails because the scan matches identifiers, and an
+// expression may use a bare name that merely coincides with a parameter name.
+//
 // One message per pair, naming the first parameter that matched.
 function warnUnguardedParameterConstraints(
     actions: Action[], constraints: Constraint[], modelName: string,
