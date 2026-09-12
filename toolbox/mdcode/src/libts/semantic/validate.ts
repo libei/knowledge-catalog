@@ -157,15 +157,10 @@ function validateActions(
   if (!actions.length) return errors;
   const constraintNames =
       new Set((model.constraints ?? []).map(c => c.name));
-  // Built only when an `affects` entry will actually read it, which is not a
-  // cost argument: declaredFields resolves inheritance, and that THROWS on an
-  // `extends` naming an entity the model does not declare. The loader accepts
-  // such a model, a KC-only push reaches no graph leg to catch it, and a
-  // profile push can create one by pruning a supertype whole. Building this
-  // eagerly would turn any of those into a stack trace out of the validation
-  // gate, for a model this check has nothing to say about.
+  // Built only when an `affects` entry will actually read it, and through
+  // `ifResolvable` because declaredConcepts resolves inheritance.
   const concepts = !fieldsPruned && actions.some(a => a.affects?.length) ?
-      declaredConcepts(model) :
+      ifResolvable(() => declaredConcepts(model)) :
       undefined;
   for (const action of actions) {
     const where =
@@ -386,22 +381,8 @@ function validateConstraints(
   const errors: string[] = [];
   const constraints = model.constraints ?? [];
   if (!constraints.length) return errors;
-  // declaredFields resolves inheritance, and that THROWS on an `extends` naming
-  // an entity the model does not declare. The loader accepts such a model and a
-  // Knowledge-Catalog-only push reaches no graph leg to catch it, so calling
-  // this unguarded turns a bad `extends` into a stack trace out of the
-  // validation gate. Standing the field scan down is the same thing a pruned
-  // profile does: this scan catches a misspelled field, and a model whose
-  // inheritance does not resolve has a larger problem that the graph legs
-  // report where they can resolve it.
-  let fieldsByEntity: Map<string, Set<string>>|undefined;
-  if (!fieldsPruned) {
-    try {
-      fieldsByEntity = declaredFields(model);
-    } catch {
-      fieldsByEntity = undefined;
-    }
-  }
+  const fieldsByEntity =
+      fieldsPruned ? undefined : ifResolvable(() => declaredFields(model));
 
   for (const c of constraints) {
     const where =
@@ -501,6 +482,16 @@ function unknownFieldRefs(
   const token = /\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g;
   for (let m = token.exec(judgment); m; m = token.exec(judgment)) {
     const [, entity, field] = m;
+    // A token with a third segment (`Order.lineItems.amount`) is a path rather
+    // than a field of `Order`, and reading its middle segment as one would
+    // reject it for a field the author never claimed existed. Nothing in the
+    // model defines path syntax today, so the scan declines to guess in both
+    // directions: a token followed by another dotted segment is skipped, and so
+    // is one preceded by a dot, which is how the tail of a path presents.
+    const after = judgment.slice(m.index + m[0].length);
+    if (/^\.\w/.test(after) || (m.index > 0 && judgment[m.index - 1] === '.')) {
+      continue;
+    }
     const fields = fieldsByEntity.get(entity);
     if (!fields || !fields.size || fields.has(field)) continue;
     const ref = `${entity}.${field}`;
@@ -511,6 +502,28 @@ function unknownFieldRefs(
         `field '${field}'.`);
   }
   return errors;
+}
+
+// What `build` returns, or nothing when the model's inheritance does not
+// resolve.
+//
+// `declaredFields` and `declaredConcepts` both resolve inheritance, and
+// resolving THROWS on an `extends` naming an entity the model does not declare
+// rather than reporting it. The loader accepts such a model, a
+// Knowledge-Catalog-only push reaches no graph leg to catch it, and a profile
+// push can create one by pruning a supertype whole. A validation gate reports;
+// it does not stack-trace, so every caller that resolves inheritance to answer
+// a question comes through here and stands its own check down when the answer
+// is unavailable. That is the same thing a pruned profile does. The checks
+// these builders feed catch a misspelled name, and a model whose inheritance
+// does not resolve has a larger problem that the graph legs report where they
+// can resolve it.
+function ifResolvable<T>(build: () => T): T|undefined {
+  try {
+    return build();
+  } catch {
+    return undefined;
+  }
 }
 
 // Every field each entity has, inherited ones included. Inheritance is resolved

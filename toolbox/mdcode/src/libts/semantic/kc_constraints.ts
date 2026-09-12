@@ -204,14 +204,16 @@ export function readConstraint(entry: Entry, warnings: string[]): Constraint|
   if (!expression && !judgment) {
     warnings.push(
         `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect has no ` +
-        `expression and no judgment; the constraint is skipped`);
+        `expression and no judgment; the constraint is skipped, and pushing ` +
+        `this model back will delete the entry`);
     return undefined;
   }
   if (expression && judgment) {
     warnings.push(
         `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect states both ` +
         `an expression and a judgment, and a constraint states its rule in ` +
-        `one or the other; the constraint is skipped`);
+        `one or the other; the constraint is skipped, and pushing this model ` +
+        `back will delete the entry`);
     return undefined;
   }
 

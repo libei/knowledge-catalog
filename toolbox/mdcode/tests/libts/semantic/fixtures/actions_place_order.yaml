@@ -7,13 +7,17 @@
 # scalar ones. The model also names a BigQuery deployment target, so a push
 # exercises the leg that deploys neither an action nor a constraint.
 #
-# The four constraints cover every validation path. NonNegativeOrderTotal opens
-# with a KNOWN entity, so its field is checked. PositiveQuantity opens with
-# `OrderedAs`, which is no entity, so it is left to the evaluator rather than
-# falsely rejected. RequestedQuantityIsPositive reads the action's `quantity`
-# parameter, so PlaceOrder names it in `guards`. OrderWithinStandingLimit is the
-# only one to state the two routing words, so the goldens show `on_violation`
-# and `severity` making the round trip while the other three show their absence.
+# The five constraints cover every validation path. NonNegativeOrderTotal names
+# a KNOWN entity, so its field is checked; every qualified token in an
+# expression is, wherever it appears. PositiveQuantity names `OrderedAs`, which
+# is no entity, so it is left to the evaluator rather than falsely rejected.
+# RequestedQuantityIsPositive reads the action's `quantity` parameter, so
+# PlaceOrder names it in `guards`. LargeOrderIsJustified states a `judgment`
+# rather than an expression, so the goldens carry the derived `evaluation:
+# judged` and the required `on_violation` beside it. OrderWithinStandingLimit
+# and LargeOrderIsJustified are the two that state routing words, so the goldens
+# show `on_violation` and `severity` making the round trip while the other three
+# show their absence.
 #
 # PlaceOrder's `affects` covers every authored shape at once: an entry on an
 # entity narrowed to the fields it writes, an entry on a relationship, and the

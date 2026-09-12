@@ -250,6 +250,30 @@ describe('validatePushRequirements gates constraints', () => {
     expect(() => validatePushRequirements([m])).not.toThrow();
   });
 
+  test('a bad extends does not throw through the affects check either', () => {
+    // The action check resolves inheritance by a second path. Standing one
+    // caller down and not the other leaves the stack trace exactly where a
+    // model is most likely to reach it.
+    const m = loaded([{name: 'C', expression: 'customer.balance >= 0'}]);
+    (m.model.entities[0] as any).extends = ['MissingParent'];
+    m.model.actions = [{
+      name: 'Touch',
+      description: 'd',
+      executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
+      parameters: [],
+      affects: [{concept: 'customer', operation: 'modify'}],
+    }] as any;
+    expect(() => validatePushRequirements([m])).not.toThrow();
+  });
+
+  test('a dotted path is not read as a field of its first segment', () => {
+    // `customer.orders.total` is a path. Reading `orders` as a field of
+    // `customer` rejects it for a field the author never claimed existed.
+    const errs = validatePushRequirements(
+        [loaded([{name: 'C', expression: 'customer.orders.total > 0'}])]);
+    expect(errs).toEqual([]);
+  });
+
   test('a quoted literal in an expression is not a field reference', () => {
     const errs = validatePushRequirements([loaded(
         [{name: 'C', expression: "customer.balance = 'customer.blance'"}])]);
