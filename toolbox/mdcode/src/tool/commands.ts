@@ -1335,7 +1335,9 @@ function listActions(
       console.log(`    parameters: ${
           a.parameters.length ? a.parameters.map(describeParameter).join(', ') :
                                 '(none)'}`);
-      console.log(`    executor:   ${a.executor.kind}`);
+      console.log(`    executor:   ${
+          a.executor ? a.executor.kind :
+                       '(none under this profile -- declared, not runnable)'}`);
       if (a.guards?.length) {
         console.log(`    guards:     ${a.guards.join(', ')}`);
       }
@@ -1346,7 +1348,12 @@ function listActions(
                                         f.concept)
                 .join(', ')}`);
       }
-      console.log(`    run:        ${runLine(a)}`);
+      if (a.executor) {
+        console.log(`    run:        ${runLine(a)}`);
+      } else {
+        console.log(
+            `    run:        bind an executor in a profile to run this.`);
+      }
     }
   }
   return 0;

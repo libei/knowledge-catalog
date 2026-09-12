@@ -130,11 +130,26 @@ export async function runAction(opts: RunActionOptions):
       message: `Model '${model.name}' declares no action '${opts.actionName}'.`,
     };
   }
-  if (!opts.handler && action.executor.kind !== 'sql') {
+  // No executor at all is a binding outcome, not a broken model: the executor
+  // is a physical facet, so an action can be declared here and performable
+  // only somewhere else. Say which it is, because the fix is in the profile
+  // rather than in the action.
+  const executor = action.executor;
+  if (!executor) {
+    return {
+      status: 'error',
+      message: `Action '${action.name}' has no executor under this binding, ` +
+          `so there is nothing to run. An executor is a physical binding: a ` +
+          `profile supplies one, and a profile that writes 'executor: null' ` +
+          `withdraws it. The action is still declared and still published; ` +
+          `it is only not performable here.`,
+    };
+  }
+  if (!opts.handler && executor.kind !== 'sql') {
     return {
       status: 'error',
       message: `Action '${action.name}' is executed by ${
-          action.executor.kind.toUpperCase()}, which runs outside this ` +
+          executor.kind.toUpperCase()}, which runs outside this ` +
           `transaction and could not be rolled back if the commit failed. ` +
           `Supply a handler that performs the write as DML, or declare the ` +
           `action with a 'sql' executor.`,
@@ -522,7 +537,8 @@ function unusableGeneratedKey(
 function planFromExecutor(
     model: SemanticModel, action: Action, bound: Bindings,
     generated: Record<string, string>): ActionPlan|{error: string} {
-  if (action.executor.kind !== 'sql') {
+  const executor = action.executor;
+  if (executor?.kind !== 'sql') {
     return {error: `Action '${action.name}' has no 'sql' executor.`};
   }
   // Null-prototype maps throughout. Parameter names come from the model, and
@@ -541,7 +557,7 @@ function planFromExecutor(
   }
 
   const statements: spanner.Statement[] = [];
-  for (const sql of action.executor.sql.statements) {
+  for (const sql of executor.sql.statements) {
     const params: Record<string, unknown> = {};
     const paramTypes: Record<string, {code: string}> = {};
     for (const name of referencedParameters(sql)) {

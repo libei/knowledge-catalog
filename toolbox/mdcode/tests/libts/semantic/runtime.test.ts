@@ -414,6 +414,52 @@ describe('an executor the runtime cannot roll back', () => {
 });
 
 
+// An executor is a physical binding, so an action can reach the runtime with
+// none at all -- a profile that never mentioned it, or one that withdrew it
+// with `executor: null`. That is a legitimate state, not a malformed model,
+// and it is the binding that has to change to fix it.
+describe('an action with no executor under this binding', () => {
+  const unbound: Action = {
+    name: 'Transfer',
+    parameters: [
+      {name: 'source', type: 'Account', isEntityRef: true},
+      {name: 'target', type: 'Account', isEntityRef: true},
+      {name: 'amount', type: 'Float', isEntityRef: false},
+    ],
+  };
+
+  test('is refused without touching the store', async () => {
+    const fake = resolvingFake();
+    const outcome = await run(
+        fake, {model: model({actions: [unbound]}), handler: undefined});
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('no executor under this binding');
+    expect(fake.statements).toHaveLength(0);
+  });
+
+  test('points at the profile rather than at the action', async () => {
+    // The action itself is fine. Saying "declare a sql executor" would send
+    // the author to change a logical declaration that was never the problem.
+    const fake = resolvingFake();
+    const outcome = await run(
+        fake, {model: model({actions: [unbound]}), handler: undefined});
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('profile');
+    expect(outcome.message).toContain('still declared');
+  });
+
+  test('is refused even when a handler is supplied', async () => {
+    // A handler substitutes for a remote executor's write. It does not
+    // substitute for the binding deciding this action runs here at all.
+    const fake = resolvingFake();
+    const outcome = await run(fake, {model: model({actions: [unbound]})});
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('no executor under this binding');
+    expect(fake.statements).toHaveLength(0);
+  });
+});
+
+
 // A second model, for the half of the runtime the payments model cannot reach:
 // an action whose write is declared in the model rather than performed by a
 // handler.

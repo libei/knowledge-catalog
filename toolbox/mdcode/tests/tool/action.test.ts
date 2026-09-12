@@ -108,6 +108,29 @@ semantic_model:
           - { name: amount, expression: amount }
 `;
 
+// A read-only binding of the same store. An executor is a physical facet, so
+// a profile can withdraw one with `executor: null` -- the action stays
+// declared and published, and simply cannot be performed here.
+const READONLY = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployment_target: ${SPANNER}/databases/commerce/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER}/databases/commerce/tables/Orders
+        fields:
+          - { name: key, expression: OrderId }
+          - { name: total, expression: Total }
+      - name: Entry
+        source: ${SPANNER}/databases/commerce/tables/LedgerEntry
+        fields:
+          - { name: key, expression: EntryId }
+          - { name: amount, expression: Amount }
+    actions:
+      - name: IssueCredit
+        executor: null
+`;
+
 // A binding whose deployment target and entity sources disagree about which
 // database they mean.
 const MISMATCHED = `version: "0.2.0.dev0/google"
@@ -177,6 +200,8 @@ function writeWorkspace(modelText = MODEL): void {
       path.join(eg, 'commerce.profiles', 'analytical.yaml'), ANALYTICAL);
   fs.writeFileSync(
       path.join(eg, 'commerce.profiles', 'mismatched.yaml'), MISMATCHED);
+  fs.writeFileSync(
+      path.join(eg, 'commerce.profiles', 'readonly.yaml'), READONLY);
 }
 
 beforeEach(() => {
@@ -229,6 +254,21 @@ describe('kcmd action list', () => {
          expect(out).toContain('NotifyCustomer');
          expect(out).toContain('executor:   mcp');
          expect(out).toContain('run:        kcmd action run NotifyCustomer --arg order=<Order>');
+       });
+
+  test('shows an action the profile withdrew as declared but not runnable',
+       async () => {
+         // The listing answers "what can this model do HERE". Printing a run
+         // line for a write this binding cannot perform would send the reader
+         // to a refusal, so it prints the fix instead.
+         writeWorkspace();
+         const code = await action('list', undefined, {profile: 'readonly'});
+         expect(code).toBe(0);
+         const out = logs.join('\n');
+         expect(out).toContain('IssueCredit');
+         expect(out).toContain('executor:   (none under this profile');
+         expect(out).toContain('bind an executor in a profile to run this');
+         expect(out).not.toContain('kcmd action run IssueCredit');
        });
 
   test('says so when a model declares no actions', async () => {
@@ -329,6 +369,22 @@ describe('kcmd action run: what it will not send to a store', () => {
          expect(out).toContain(
              "Running 'IssueCredit' on projects/acme-ops/instances/prod/databases/commerce");
        });
+});
+
+
+describe('kcmd action run: an action this binding cannot perform', () => {
+  test('refuses an action whose executor the profile withdrew', async () => {
+    // Nothing is wrong with the action. The binding is what says no, so the
+    // message has to send the reader to the profile rather than to the model.
+    writeWorkspace();
+    const code = await action(
+        'run', 'IssueCredit',
+        {profile: 'readonly', arg: ['order=1', 'amount=5']});
+    expect(code).toBe(1);
+    const out = logs.join('\n');
+    expect(out).toContain('no executor under this binding');
+    expect(out).toContain('profile');
+  });
 });
 
 
