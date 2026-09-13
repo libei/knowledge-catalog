@@ -984,6 +984,11 @@ that what runs is what the catalog published, and one handler serves the whole
 model, so passing it through would retract that claim for every such action at
 once.
 
+[`demo/agent`](../../demo/agent/README.md) is a recipe for all of this against a
+live Spanner database: a model, a binding profile, `kcmd action run` and `kcmd
+agent tools` to check both halves before any agent exists, and then 57 lines of
+ADK that mention nothing about the business.
+
 Opening the workspace is `openWorkspace` and `spannerStore` from
 `semantic/workspace`, the same pair `kcmd action` uses — so an agent reads the
 model the CLI reads, under the same profile, with the same merge and the same
