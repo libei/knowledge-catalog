@@ -580,14 +580,17 @@ costs a model call, none can lower to a store-level check, and each may decide
 two identical calls differently. `IssueCredit` is clear of it: three of its five
 guards are expressions.
 
-**Status: nothing calls a judge.** `kcmd` parses `judgment`, validates it,
-publishes it and reads it back, and publishes a derived `evaluation` field
-saying whether the rule is `deterministic` or `judged` so a consumer can select
-on it. No component asks a model to settle a judgment. Rule 4 says `warn`, so a
-call goes ahead and the rule is reported as not checked. Rule 5 says `reject`,
-so `IssueCredit` as published above is refused before either call reaches a
-gate. The two calls are what the published policy says should happen, and `kcmd`
-publishes the fields an engine needs in order to make it happen.
+**Status: a judgment is settled by a model when the caller supplies one.**
+`kcmd` parses `judgment`, validates it, publishes it and reads it back, and
+publishes a derived `evaluation` field saying whether the rule is
+`deterministic` or `judged` so a consumer can select on it. Running the action
+with `--judge` puts each judged guard to a language model, which answers whether
+the rule holds for that call and says why.
+
+Without the flag there is no judge, and the rule's own `on_violation` decides
+what that costs. Rule 4 says `warn`, so a call goes ahead and the rule is
+reported as not checked. Rule 5 says `reject`, so `IssueCredit` is refused
+before either call reaches a gate.
 
 `kcmd` reports a mismatch from either side. A guard that names no constraint
 fails the push. A constraint over parameters that no action names loads with a
@@ -602,9 +605,9 @@ before the statements, a rule over stored data after them. A violation carries
 its own `on_violation` word back to the caller, and several violations combine
 by the rule above.
 
-A guard the runtime cannot turn into a query is what remains. A judgment is one,
-since nothing calls a judge, and so is an expression outside the grammar, such
-as rule 3's `SUM`. What happens then follows the rule's own `on_violation`. One
+A guard the runtime can settle neither way is what remains: an expression
+outside the grammar, such as rule 3's `SUM`, and a judgment on a run that was
+given no judge. What happens then follows the rule's own `on_violation`. One
 that would `reject` or `escalate` refuses the action, because running it would
 apply a write the model says is checked first. One that would `warn` lets the
 write through and is reported back as not checked, since an advisory rule stops
@@ -982,10 +985,50 @@ in a model whose action leaves `affects` out. Checking either would mean
 publishing a rule could start refusing calls that succeeded the day before,
 which is what making the reference explicit prevents.
 
+### A guard settled in words
+
+A judgment does not become a query. It is put to a language model, which
+answers whether the rule holds for this call and says why. The model is given
+four things: the rule as the author wrote it, the action's name, its
+description, and the arguments the caller passed. `--judge` is what supplies
+one, naming a model or taking the default:
+
+```
+$ kcmd action run IssueCredit --judge --arg order=12345 --arg amount=20 --arg memo="goodwill"
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+  rules stated in words go to gemini-2.5-flash (us-central1)
+Refused (reject): Action 'IssueCredit' was refused and nothing was written. A
+credit needs a stated reason. Say what went wrong on this order. Stopped by
+'CreditMemoNamesAServiceFailure' (The LineItem.memo must name a specific service
+failure that justifies the credit. A memo that only says the credit is owed, or
+names no failure at all, does not satisfy this.). Your memo "goodwill" does not
+name a specific service failure that justifies the credit.
+```
+
+The message carries three things: the constraint's `description`, which is the
+policy; the rule itself, which is what was asked; and the model's own sentence
+about this call, which is the part no expression could have written. A memo that
+does name a failure passes the same gate:
+
+```
+$ kcmd action run IssueCredit --judge --arg order=12345 --arg amount=20 --arg memo="package arrived three days late"
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+  rules stated in words go to gemini-2.5-flash (us-central1)
+  order: '12345' -> Order 12345
+Committed at 2026-09-14T03:56:47.873503Z.
+```
+
+Judged guards are settled before the transaction opens, earlier than any
+expression guard. A model call takes seconds, and a read-write transaction held
+open across one holds its write locks for that long, so a call the judge refuses
+costs the store no session and no lock at all. The price is that a judge sees
+the arguments and nothing else: the state the write produced does not exist yet,
+so a rule about it has to be an expression.
+
 ### A guard the runtime cannot check
 
-Two kinds of guard do not become a query. A judgment is one, since nothing calls
-a judge. An expression outside the grammar is the other: the comparisons that
+Two kinds of guard settle neither way. A judgment on a run given no judge is
+one. An expression outside the grammar is the other: the comparisons that
 lower are over an entity's stored fields, the action's parameters and literals,
 joined by `AND` and `OR`, so a function call or a parenthesised subexpression
 does not.
@@ -996,15 +1039,15 @@ otherwise. So a rule that would `reject` or `escalate` and cannot be checked
 stops the call, and every such rule is named:
 
 ```
-$ kcmd action run IssueCredit --arg order=12345 --arg amount=30 --arg memo="shipping charge applied in error"
+$ kcmd action run IssueCredit --arg order=12345 --arg amount=20 --arg memo="package arrived three days late"
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
 Error: Action 'IssueCredit' cannot be run: constraint 'OrderTotalMatchesLineItems'
 cannot be checked: it uses parentheses or a function call (Order.total =
 SUM(LineItem.amount)), which the grammar does not parse; constraint
-'CreditIsNotSplitToAvoidReview' cannot be checked: it is settled by judgment
-rather than by an expression, and this runtime runs no judge. Running it would
-apply a write the model says is checked first, so it is refused rather than run
-unchecked.
+'CreditMemoNamesAServiceFailure' cannot be checked: it is settled by judgment
+rather than by an expression, and this runtime was given no judge to ask.
+Running it would apply a write the model says is checked first, so it is refused
+rather than run unchecked.
 ```
 
 An advisory rule is the exception. A rule that declares `warn` reports a
@@ -1020,8 +1063,8 @@ Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/sem
   order: '12345' -> Order 12345
   not checked: advisory rule 'CreditMemoNamesAServiceFailure' (constraint
   'CreditMemoNamesAServiceFailure' cannot be checked: it is settled by judgment
-  rather than by an expression, and this runtime runs no judge)
-Committed at 2026-09-13T21:09:10.688549Z.
+  rather than by an expression, and this runtime was given no judge to ask)
+Committed at 2026-09-14T04:00:47.677741Z.
 ```
 
 A rule that cannot be checked is found while the guards are lowered, before any
@@ -1295,10 +1338,12 @@ states what the run cannot yet do.
 
 This is a prototype. Five things a reader reasonably expects are absent.
 
-- **No judge settles a judgment.** An expression guard is turned into a query
-  and checked; a judgment is published and nothing reads it. An action guarded
-  by one is stopped rather than run past it, unless the rule is advisory, so the
-  gap is loud wherever a model states a judged rule gates the call.
+- **A judge reads only the call's arguments.** A judged guard is settled before
+  the transaction opens, so the model sees the rule and the arguments and
+  nothing the store holds. A rule needing a stored value cannot be settled that
+  way: "not one credit split to evade review" has to see the order's other
+  credits. A run given no judge settles such a rule not at all, and the action
+  is stopped rather than run past it, unless the rule is advisory.
 - **The expression grammar is narrow.** Comparisons over an entity's stored
   fields, the action's parameters and literals, joined by `AND` and `OR`. A
   function call, a subquery or a rule spanning two entities does not lower, and

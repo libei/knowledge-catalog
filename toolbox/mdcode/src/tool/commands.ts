@@ -20,6 +20,7 @@ import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import {GeminiJudge} from '../libts/gcp/gemini';
 import {runAction} from '../libts/semantic/runtime/run_action';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
@@ -1171,6 +1172,10 @@ export interface ActionOptions {
   profile?: string|boolean;
   // `--store`: print where a run would land and nothing else (`list` only).
   store?: boolean;
+  // `--judge`: settle guards stated in words by asking a model (`run` only).
+  // cac hands back `true` for the bare flag, which takes the default model,
+  // and the text for `--judge <model>`.
+  judge?: string|boolean;
 }
 
 
@@ -1546,9 +1551,25 @@ async function runOneAction(
     return 1;
   }
 
+  // A guard stated in words needs something to state it to. Built here
+  // rather than inside the runtime, so the library declares what a judge is
+  // and the tool decides which one -- the same split the store follows.
+  //
+  // Without the flag there is no judge, and an action guarded by a judgment
+  // is refused before anything opens. That is the safe default: a rule the
+  // model states is checked or the action does not run.
+  const judge = options.judge ?
+      new GeminiJudge(
+          ctx,
+          typeof options.judge === 'string' ? {model: options.judge} : {}) :
+      undefined;
+
   console.log(`Running '${name}' on ${runtime.store.name}...`);
-  const outcome =
-      await runAction({runtime, actionName: name, args: parsed.args});
+  // Said before it happens, because it is a call to a service the reader did
+  // not name and it is what the wait is.
+  if (judge) console.log(`  rules stated in words go to ${judge.name}`);
+  const outcome = await runAction(
+      {runtime, actionName: name, args: parsed.args, judge});
   if (outcome.status === 'error') {
     console.error(`Error: ${outcome.message}`);
     return 1;
