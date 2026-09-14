@@ -17,12 +17,13 @@ import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/s
 import {
   CheckPlan,
   checkStatement,
-  ConstraintCheck,
   effectOf,
   GOOGLE_SQL,
+  isStoreCheck,
   planGuard,
   planGuards,
   SqlDialect,
+  StoreCheck,
   strictestEffect,
   violating,
   violationFrom,
@@ -132,15 +133,19 @@ function lower(expression: string, action?: Action): CheckPlan {
 
 // The probe's query text is read often enough here to be worth flattening onto
 // the check, so an assertion about the SQL reads as one.
-function probeOf(lowered: CheckPlan): ConstraintCheck&{sql: string} {
+//
+// An expression lowers to a check the store answers, so anything else reaching
+// here is a failure of the lowering rather than of the assertion that follows.
+function probeOf(lowered: CheckPlan): StoreCheck&{sql: string} {
   if (!lowered.ok) throw new Error(`expected a probe: ${lowered.reason}`);
+  if (!isStoreCheck(lowered.check)) {
+    throw new Error(`expected a probe, got a ${lowered.check.settledBy} check`);
+  }
   return {...lowered.check, sql: lowered.check.query.text};
 }
 
 function reasonOf(lowered: CheckPlan): string {
-  if (lowered.ok) {
-    throw new Error(`expected a refusal: ${lowered.check.query.text}`);
-  }
+  if (lowered.ok) throw new Error(`expected a refusal, got a check`);
   return lowered.reason;
 }
 
@@ -314,7 +319,7 @@ describe('the expressions it refuses, and what it says about them', () => {
       onViolation: 'escalate',
     }));
     expect(reason).toContain("constraint 'LargeCreditIsJustified' cannot be checked");
-    expect(reason).toContain('runs no judge');
+    expect(reason).toContain('no judge to ask');
   });
 
   test('an expression that is not there', () => {
@@ -444,7 +449,7 @@ describe('lowering the guards of one action', () => {
          const {errors, unchecked} = guardedBy([advisory], ['Justified']);
          expect(errors).toEqual([]);
          expect(unchecked.map(u => u.constraint)).toEqual(['Justified']);
-         expect(unchecked[0].reason).toContain('runs no judge');
+         expect(unchecked[0].reason).toContain('no judge to ask');
        });
 
   test('the checkable guards are still lowered alongside the rest', () => {
@@ -489,6 +494,7 @@ describe('binding a probe to the call', () => {
   test('a probe naming no parameter carries none at all', () => {
     const statement = checkStatement(
         {
+          settledBy: 'store',
           constraint: {name: 'Rule', expression: 'TRUE = TRUE'},
           timing: 'before',
           query: {
@@ -519,7 +525,7 @@ describe('what the dialect decides, and what it does not', () => {
   };
 
   const inDialect = (expression: string, dialect: SqlDialect) => planGuard(
-      modelWith(), ISSUE_CREDIT, {name: 'Rule', expression}, dialect);
+      modelWith(), ISSUE_CREDIT, {name: 'Rule', expression}, {dialect});
 
   test('the same rule is written differently and resolved the same', () => {
     // Binding is what the two share: both read column Total of table Orders,

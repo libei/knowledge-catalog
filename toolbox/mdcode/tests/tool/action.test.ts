@@ -401,7 +401,7 @@ describe('kcmd action run: what it will not send to a store', () => {
          // below is about the guard, which is proof the parse succeeded.
          const code = await action('run', 'IssueCredit', {arg: 'amount=30'});
          expect(code).toBe(1);
-         expect(logs.join('\n')).toContain('runs no judge');
+         expect(logs.join('\n')).toContain('no judge to ask');
        });
 
   test('refuses an action whose executor runs outside the transaction',

@@ -60,6 +60,11 @@ import {
   checkStatement,
   ConstraintViolation,
   effectOf,
+  isJudgeCheck,
+  isStoreCheck,
+  Judge,
+  JudgeCheck,
+  judgedViolation,
   planGuards,
   strictestEffect,
   UncheckedRule,
@@ -156,6 +161,10 @@ export interface RunActionOptions {
   // Supplies the writes for an action whose executor lives in another system.
   // Omit it for a `sql` executor, whose writes are in the model.
   handler?: ActionHandler;
+  // What settles a guard stated in words. Omitting it is not "run them
+  // unjudged": an action guarded by a judgment is refused before anything
+  // opens, the same as any other guard this runtime cannot check.
+  judge?: Judge;
 }
 
 
@@ -176,19 +185,39 @@ export async function runAction(opts: RunActionOptions):
   }
   // Decided BEFORE touching the store, so an action this runtime will not run
   // fails without having opened a transaction at all.
-  const refusal = whyRefusedWithoutRunning(model, action, opts.handler);
+  const refusal =
+      whyRefusedWithoutRunning(model, action, opts.handler, opts.judge);
   if (refusal) return {status: 'error', message: refusal};
 
   // Planned before anything opens, and by the same call the refusal check just
   // made: the checks that run are the ones it proved buildable, so an action
   // reported as runnable cannot then meet a rule that turns out to be
   // uncheckable.
-  const lowered = planGuards(model, action);
-  const checks = lowered.checks;
+  const lowered = planGuards(model, action, {judge: opts.judge});
+  // Split by what answers them, because the two run at different moments and
+  // against different things. Everything below that says `checks` means the
+  // ones the store answers.
+  const checks = lowered.checks.filter(isStoreCheck);
+  const judged = lowered.checks.filter(isJudgeCheck);
   // Grows during the run: a check the store refuses joins the rules that could
   // not be planned in the first place, since both leave a rule the model named
   // unevaluated and both are worth reporting under the same heading.
   const unchecked: UncheckedRule[] = [...lowered.unchecked];
+
+  // Judged guards are settled HERE, before a session exists. A model call
+  // takes seconds, and a read-write transaction held open across one holds its
+  // write locks for that long, so asking first costs a refused call no store
+  // work at all. The price is that a judge reads the arguments and never the
+  // post-state, which is why a rule about the result of a write has to be an
+  // expression.
+  const judgeWarnings: ConstraintViolation[] = [];
+  if (judged.length) {
+    const asked = await askJudges(action, args, judged, opts.judge!, unchecked);
+    if ('error' in asked) return {status: 'error', message: asked.error};
+    const refused = refusedBy(action, asked.violations, {}, false);
+    if (refused) return refused;
+    judgeWarnings.push(...asked.violations);
+  }
 
   // Also before touching the store, because there may be none to touch.
   const client = runtimeClient(opts.runtime);
@@ -328,8 +357,8 @@ export async function runAction(opts: RunActionOptions):
         const afterWrite = await violationsAt('after');
         const refusedAfter = refusedBy(action, afterWrite, refs);
         if (refusedAfter) return await rollback(refusedAfter);
-        const warnings =
-            [...beforeWrite, ...afterWrite].filter(v => v.effect === 'warn');
+        const warnings = [...judgeWarnings, ...beforeWrite, ...afterWrite]
+                             .filter(v => v.effect === 'warn');
 
         // Deliberately NOT rolled back. Once commit has been called the
         // transaction's fate is the server's, and a deadline or a 5xx is
@@ -452,8 +481,8 @@ const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
  * always refuses, or one withheld that would have worked.
  */
 export function whyRefusedWithoutRunning(
-    model: SemanticModel, action: Action,
-    handler?: ActionHandler): string|null {
+    model: SemanticModel, action: Action, handler?: ActionHandler,
+    judge?: Judge): string|null {
   // No executor at all is a binding outcome, not a broken model: the executor
   // is a physical facet, so an action can be declared here and performable
   // only somewhere else. Say which it is, because the fix is in the profile
@@ -473,7 +502,7 @@ export function whyRefusedWithoutRunning(
         `that performs the write as DML, or declare the action with a 'sql' ` +
         `executor.`;
   }
-  const unchecked = guardsNotCheckable(model, action);
+  const unchecked = guardsNotCheckable(model, action, judge);
   if (unchecked) return unchecked;
   // The refusals left are about filling statements with the action's own
   // parameters. A handler writes its own DML, is handed `refs` whole, and may
@@ -540,8 +569,9 @@ function unbindableByThisRuntime(
 // An action naming no guard therefore runs. That is not this module judging the
 // write safe; it is the model saying no rule gates the call. What the write
 // does is the author's, which is what `affects` describes.
-function guardsNotCheckable(model: SemanticModel, action: Action): string|null {
-  const errors = planGuards(model, action).errors;
+function guardsNotCheckable(
+    model: SemanticModel, action: Action, judge?: Judge): string|null {
+  const errors = planGuards(model, action, {judge}).errors;
   if (!errors.length) return null;
   return `Action '${action.name}' cannot be run: ${errors.join('; ')}. ` +
       `Running it would apply a write the model says is checked first, so ` +
@@ -559,7 +589,7 @@ function guardsNotCheckable(model: SemanticModel, action: Action): string|null {
 // would send the caller to ask for something nobody can give.
 function refusedBy(
     action: Action, violations: ConstraintViolation[],
-    refs: Record<string, EntityRef>): ActionOutcome|null {
+    refs: Record<string, EntityRef>, opened = true): ActionOutcome|null {
   const effect = strictestEffect(violations);
   if (effect !== 'reject' && effect !== 'escalate') return null;
   const stopping = violations.filter(v => v.effect !== 'warn');
@@ -568,9 +598,71 @@ function refusedBy(
       `Action '${action.name}' was refused and nothing was written. ${
           reasons}` :
       `Action '${action.name}' needs an approval, and nothing was written. ${
-          reasons} Nothing is held while somebody decides: the transaction ` +
-          `was rolled back, so run the action again once it is approved.`;
+          reasons} Nothing is held while somebody decides: ${
+          opened ? 'the transaction was rolled back' :
+                   'no transaction was ever opened'}, so run the action ` +
+          `again once it is approved.`;
   return {status: 'refused', effect, violations: stopping, message, refs};
+}
+
+
+// Asks each judged guard, and reports what did not hold.
+//
+// Returns an error rather than throwing when a judge cannot be reached, so the
+// caller can say the judge failed. Letting it throw would surface as the store
+// failing to start, which sends the reader to the database over a fault that
+// was never there.
+async function askJudges(
+    action: Action, args: Record<string, unknown>, checks: JudgeCheck[],
+    judge: Judge, unchecked: UncheckedRule[]):
+    Promise<{violations: ConstraintViolation[]}|{error: string}> {
+  const violations: ConstraintViolation[] = [];
+  for (const check of checks) {
+    let verdict;
+    try {
+      verdict = await judge.decide({
+        constraint: check.constraint.name,
+        rule: check.rule,
+        action: action.name,
+        ...(action.description ? {actionDescription: action.description} : {}),
+        arguments: argumentsShown(check, args),
+      });
+    } catch (err) {
+      // A judge that could not be asked is the same situation as a store that
+      // refused a probe: an advisory rule is reported unchecked and the write
+      // goes on, anything stricter stops the call.
+      const reason = err instanceof Error ? err.message : String(err);
+      if (effectOf(check.constraint) !== 'warn') {
+        return {
+          error: `Action '${action.name}' was not run: '${
+              check.constraint.name}' is settled by judgment and the judge ` +
+              `could not be asked (${reason}). Nothing was written.`,
+        };
+      }
+      unchecked.push({
+        constraint: check.constraint.name,
+        reason: `its judge could not be asked (${reason})`,
+      });
+      continue;
+    }
+    if (!verdict.holds) violations.push(judgedViolation(check, verdict));
+  }
+  return {violations};
+}
+
+
+// The arguments a judge is shown, as the caller stated them.
+//
+// Filtered to the parameters the check named, for the reason `checkStatement`
+// filters a probe's: what a rule is given to read is the check's call and not
+// whatever else happened to be passed.
+function argumentsShown(check: JudgeCheck, args: Record<string, unknown>):
+    Record<string, unknown> {
+  const shown: Record<string, unknown> = {};
+  for (const name of check.parameters) {
+    if (name in args) shown[name] = args[name];
+  }
+  return shown;
 }
 
 

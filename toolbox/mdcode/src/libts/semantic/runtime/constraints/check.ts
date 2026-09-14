@@ -11,15 +11,19 @@
 import {Action, Constraint, SemanticModel, ViolationEffect} from '../../ir';
 
 import {SqlDialect} from './dialect';
+import {Judge, JudgeVerdict} from './judge';
 
 
-// When a check runs, relative to the action's own writes.
+// When a check against the store runs, relative to the action's own writes.
 //
 //   - `before` the write has not happened. The check reads the pre-state and
 //              the call's arguments, and a failure means the call is refused.
 //   - `after`  the writes have run in the transaction but nothing is
 //              committed. The check reads the post-state, and a failure rolls
 //              it back.
+//
+// Both are inside the transaction. A judged rule runs earlier still, before
+// one is opened at all, and so carries no timing of its own -- see JudgeCheck.
 export type CheckTiming = 'before'|'after';
 
 
@@ -38,8 +42,9 @@ export interface StoreQuery {
 }
 
 
-/** A constraint turned into something runnable, and when to run it. */
-export interface ConstraintCheck {
+/** A constraint the store settles, turned into a query, and when to run it. */
+export interface StoreCheck {
+  settledBy: 'store';
   constraint: Constraint;
   timing: CheckTiming;
   // The entity the check reads, absent when the rule names none: a rule over
@@ -52,6 +57,44 @@ export interface ConstraintCheck {
   // The columns `query` returns, so a violation can name the rows it found
   // rather than only reporting that one exists.
   columns: string[];
+}
+
+
+/**
+ * A constraint a judge settles, turned into a question.
+ *
+ * There is no timing field because there is only one moment. A model call
+ * takes seconds, and a read-write transaction held open across one holds the
+ * write locks for that long; so a judged rule is asked before the transaction
+ * is opened, and a call it refuses costs the store nothing. The consequence is
+ * that a judge sees the arguments and never the post-state, which is the price
+ * of not holding locks while a model thinks.
+ */
+export interface JudgeCheck {
+  settledBy: 'judge';
+  constraint: Constraint;
+  // The rule in the author's words, trimmed. Carried here so that running the
+  // check needs nothing but the check.
+  rule: string;
+  // The action parameters the judge is shown, bound by the caller at run time
+  // exactly as a store check's are.
+  parameters: string[];
+}
+
+
+/** A constraint turned into something runnable. */
+export type ConstraintCheck = StoreCheck|JudgeCheck;
+
+
+/** Whether `check` is answered by querying the store. */
+export function isStoreCheck(check: ConstraintCheck): check is StoreCheck {
+  return check.settledBy === 'store';
+}
+
+
+/** Whether `check` is answered by asking a judge. */
+export function isJudgeCheck(check: ConstraintCheck): check is JudgeCheck {
+  return check.settledBy === 'judge';
 }
 
 
@@ -73,6 +116,11 @@ export interface CheckerContext {
   // How a check that asks the store spells its query. A checker that asks
   // something other than the store ignores it.
   dialect: SqlDialect;
+  // What will answer a rule stated in words, absent when the caller supplied
+  // none. Planning reads whether it is here and never calls it: a rule that
+  // has nothing to settle it must fail to PLAN, so that an action reported as
+  // runnable cannot then meet a guard with no answer.
+  judge?: Judge;
 }
 
 
@@ -82,6 +130,10 @@ export interface CheckerContext {
  * One implementation per way a constraint can be settled, and which one runs
  * is read off the constraint's own body rather than chosen by a caller. See
  * CONSTRAINT_EVALUATIONS in ir.ts and the registry in index.ts.
+ *
+ * Synchronous on purpose. Planning decides what would be asked; it never asks.
+ * The store is not queried here and no judge is called here, which is what
+ * lets an action be reported as runnable without touching anything.
  */
 export type ConstraintChecker = (ctx: CheckerContext) => CheckPlan;
 
@@ -112,7 +164,7 @@ export interface StoreStatement {
  * rule.
  */
 export function checkStatement(
-    check: ConstraintCheck, params: Record<string, unknown>,
+    check: StoreCheck, params: Record<string, unknown>,
     types: Record<string, {code: string}>): StoreStatement {
   const statement: StoreStatement = {sql: check.query.text};
   const used: Record<string, unknown> = {};
@@ -138,7 +190,8 @@ export interface ConstraintViolation {
   // the instruction to the refused caller, followed by the citation.
   message: string;
   // The violating rows, each as its key values joined by '/'. Empty for a rule
-  // over the arguments alone, which has no row to name.
+  // over the arguments alone, which has no row to name, and for a judged rule,
+  // which reads no rows.
   instances: string[];
 }
 
@@ -154,23 +207,26 @@ export interface UncheckedRule {
 
 
 /**
- * A violation of `check`, given the rows it returned.
+ * How every violation opens, whatever settled it.
  *
  * The constraint's `description` leads, because it is the model author's own
  * words about what the caller should do differently; the name and the body
  * follow as the citation for it. The body cited is whichever one the
  * constraint declares, so a rule settled in words cites the words.
  */
-export function violationFrom(
-    check: ConstraintCheck, rows: string[][]): ConstraintViolation {
-  const constraint = check.constraint;
+function citation(constraint: Constraint): string[] {
   const lead = constraint.description?.trim() ||
       `Constraint '${constraint.name}' does not hold.`;
   const body = constraint.expression ?? constraint.judgment;
-  const parts = [
-    lead,
-    `Stopped by '${constraint.name}'${body ? ` (${body})` : ''}.`,
-  ];
+  return [lead, `Stopped by '${constraint.name}'${body ? ` (${body})` : ''}.`];
+}
+
+
+/** A violation of `check`, given the rows it returned. */
+export function violationFrom(
+    check: StoreCheck, rows: string[][]): ConstraintViolation {
+  const constraint = check.constraint;
+  const parts = citation(constraint);
   // Rows are named only when they identify something: the one-row result of a
   // rule over the arguments alone says nothing a reader can use.
   const instances = check.entity ? rows.map(row => row.join('/')) : [];
@@ -182,6 +238,28 @@ export function violationFrom(
     effect: effectOf(constraint),
     message: parts.join(' '),
     instances,
+  };
+}
+
+
+/**
+ * A violation of `check`, given what the judge answered.
+ *
+ * The judge's own reason is appended to the citation rather than replacing it.
+ * The model author's `description` is the same for every caller and is what
+ * the catalog governs; the reason is this call's particulars, and a reader
+ * needs both to tell a rule they broke from a rule they disagree with.
+ */
+export function judgedViolation(
+    check: JudgeCheck, verdict: JudgeVerdict): ConstraintViolation {
+  const parts = citation(check.constraint);
+  const reason = verdict.reason.trim();
+  if (reason) parts.push(reason);
+  return {
+    constraint: check.constraint.name,
+    effect: effectOf(check.constraint),
+    message: parts.join(' '),
+    instances: [],
   };
 }
 

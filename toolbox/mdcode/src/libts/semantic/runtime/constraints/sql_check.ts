@@ -60,6 +60,7 @@ export const sqlCheck: ConstraintChecker =
         return {
           ok: true,
           check: {
+            settledBy: 'store',
             constraint,
             timing: rule.timing,
             query: {
@@ -94,6 +95,7 @@ export const sqlCheck: ConstraintChecker =
       return {
         ok: true,
         check: {
+          settledBy: 'store',
           constraint,
           timing: rule.timing,
           entity: entityName,

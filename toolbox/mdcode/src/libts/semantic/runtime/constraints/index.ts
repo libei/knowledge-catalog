@@ -13,9 +13,11 @@
 //   * WHAT SETTLES THE RULE. A constraint declares exactly one body and the
 //     body says who answers it. An `expression` is answered by the store
 //     (sql_check.ts); a `judgment` is answered by a language model reading the
-//     proposed change (judgment.ts). CHECKERS below maps one to the other,
+//     attempted call (judgment.ts). CHECKERS below maps one to the other,
 //     keyed by the IR's own CONSTRAINT_EVALUATIONS, so a third body cannot be
-//     added to the model without this map failing to compile.
+//     added to the model without this map failing to compile. What a judge IS
+//     is declared in judge.ts and supplied by the caller, so no model client
+//     reaches this package's dependency list.
 //   * HOW A STORE IS ASKED. One rule, one meaning, more than one language to
 //     write it in: GoogleSQL over the entity's own table today, GQL over the
 //     pushed property graph next, whatever a future engine reads after that.
@@ -50,8 +52,22 @@ import {
   UncheckedRule,
 } from './check';
 import {GOOGLE_SQL, SqlDialect} from './dialect';
+import {Judge} from './judge';
 import {judgedCheck} from './judgment';
 import {sqlCheck} from './sql_check';
+
+
+/**
+ * What a plan may be answered with, beyond the model and the action.
+ *
+ * Both are absent by default and both absences are meaningful: with no dialect
+ * the store is asked in GoogleSQL, and with no judge a rule stated in words
+ * cannot be planned at all.
+ */
+export interface PlanOptions {
+  dialect?: SqlDialect;
+  judge?: Judge;
+}
 
 
 // One checker per way a constraint can be settled. Total over the IR's own
@@ -80,8 +96,7 @@ const CHECKERS: Record<ConstraintEvaluation, ConstraintChecker> = {
  * that was owed and not made is news in its own right.
  */
 export function planGuards(
-    model: SemanticModel, action: Action,
-    dialect: SqlDialect = GOOGLE_SQL): {
+    model: SemanticModel, action: Action, options: PlanOptions = {}): {
   checks: ConstraintCheck[];
   errors: string[];
   unchecked: UncheckedRule[];
@@ -99,7 +114,7 @@ export function planGuards(
           `does not declare`);
       continue;
     }
-    const planned = planGuard(model, action, constraint, dialect);
+    const planned = planGuard(model, action, constraint, options);
     if (planned.ok) {
       checks.push(planned.check);
     } else if (effectOf(constraint) === 'warn') {
@@ -115,15 +130,23 @@ export function planGuards(
 /** Plans one constraint as a gate on `action`, or says why it cannot be. */
 export function planGuard(
     model: SemanticModel, action: Action, constraint: Constraint,
-    dialect: SqlDialect = GOOGLE_SQL): CheckPlan {
-  return CHECKERS[constraintEvaluation(constraint)](
-      {model, action, constraint, dialect});
+    options: PlanOptions = {}): CheckPlan {
+  return CHECKERS[constraintEvaluation(constraint)]({
+    model,
+    action,
+    constraint,
+    dialect: options.dialect ?? GOOGLE_SQL,
+    judge: options.judge,
+  });
 }
 
 
 export {
   checkStatement,
   effectOf,
+  isJudgeCheck,
+  isStoreCheck,
+  judgedViolation,
   strictestEffect,
   violationFrom,
 } from './check';
@@ -134,9 +157,12 @@ export type {
   ConstraintCheck,
   ConstraintChecker,
   ConstraintViolation,
+  JudgeCheck,
+  StoreCheck,
   StoreQuery,
   StoreStatement,
   UncheckedRule,
 } from './check';
 export {GOOGLE_SQL, violating} from './dialect';
 export type {EntityProbe, SqlDialect} from './dialect';
+export type {Judge, JudgeRequest, JudgeVerdict} from './judge';
