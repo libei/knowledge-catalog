@@ -165,11 +165,13 @@ not change with the store, so put it in the model, as above. A `sql` executor is
 the write itself, written in one database's own table and column names, so put
 it in that database's profile unless your model will only ever have one store.
 
-You can also write no executor anywhere. Your action is then **declared but not
-performable**: it still states what it does, what gates it, and what it changes,
-which is the whole of what a reader needs. A catalog-only push — `--no-profile`,
-or a model with no deployment target — publishes it like any other action, and
-`kcmd profiles` lists it under `cannot run:` for each binding that supplies no
+Sometimes nobody has wired the write up yet, or another team owns it and you
+need your model only to record that it exists. Leave the executor out of both
+files for that case. Your action is then **declared but not performable**: it
+still states what it does, what gates it, and what it changes, which is the
+whole of what a reader needs. A catalog-only push — `--no-profile`, or a model
+with no deployment target — publishes it like any other action, and `kcmd
+profiles` lists it under `cannot run:` for each binding that supplies no
 executor for it.
 
 A push that also deploys a graph behaves the way it already does for your
@@ -679,9 +681,10 @@ A record says more — which operation, and which fields the call writes:
             operation: create
 ```
 
-You can mix the two shapes in one list, so be precise about the concepts you
-know and coarse about the rest. Every `concept` — bare, or named under the key —
-has to be something the same model declares.
+Be precise about the concepts you have worked out and coarse about the rest. The
+two shapes sit in one list together, so a vague entry costs you nothing on the
+ones you know. Every `concept` — bare, or named under the key — has to be
+something the same model declares.
 
 ### One key for both kinds
 
@@ -706,8 +709,8 @@ which is what makes *which actions can change `Account.balance`* answerable. A
 `delete` takes the whole instance, so we reject a field named beside one rather
 than ignore it.
 
-Both the operation and the fields are optional. Writing `- concept: Account` on
-its own says the same thing the bare `Account` does, and we write it back as the
+Name the concept now and refine it later. Writing `- concept: Account` on its
+own says the same thing the bare `Account` does, and we write it back as the
 bare form.
 
 **Status: nothing consumes `affects` yet.** kcmd parses it, checks every concept
