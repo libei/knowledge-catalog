@@ -112,8 +112,9 @@ agree on every structural row and differ only where a Spanner target has no
 13. **Constraints.** A constraint reaches Knowledge Catalog only, as one
     `semantic-constraint` entry under the model entry, and `pull` reads it back.
     Every other push target deploys nothing for it and warns once. Publishing is
-    all that happens to a constraint; no component checks one against live
-    data.
+    all that push does with a constraint; what settles one is a run, where
+    `kcmd action run --judge` puts the guards an action names to a judge before
+    the write.
 
 ## To Knowledge Catalog
 
