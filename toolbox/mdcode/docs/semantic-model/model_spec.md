@@ -526,7 +526,7 @@ reads the document ([§6](#6-the-extension-mechanism)).
   An action whose every guard is judged draws one too: it has no gate a query
   can decide.
   Status: authored, validated and published; one of the two bodies is settled
-  at run time. `kcmd action run --judge` puts a guard carrying a `judgment` to
+  at run time. `kcmd action-run --judge` puts a guard carrying a `judgment` to
   a language model before the transaction opens, and routes the verdict by
   `on_violation`. No component evaluates an `expression` against live data, so
   an action guarding on one is refused rather than run past the rule. Rules in

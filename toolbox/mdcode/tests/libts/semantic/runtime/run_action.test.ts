@@ -13,9 +13,9 @@ import {describe, expect, test} from 'bun:test';
 
 import * as spanner from '../../../../src/libts/gcp/spanner';
 import {Action, Constraint, Field, SemanticModel} from '../../../../src/libts/semantic/ir';
-import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
 import {Judge, JudgeRequest, JudgeVerdict} from '../../../../src/libts/semantic/runtime/judge';
 import {ActionPlan, runAction, RunActionOptions, whyRefusedWithoutRunning} from '../../../../src/libts/semantic/runtime/run_action';
+import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
 
 
 // `runAction` takes a runtime: a model paired with the store it runs against.
@@ -261,30 +261,34 @@ describe('resolving an entity-typed argument', () => {
          expect(where).not.toContain('CAST');
        });
 
-  test('reads a date key back as text, which the predicate is not', async () => {
-    // The other half of the same decision. A key value read here is carried in
-    // an EntityRef and re-bound as a parameter later, so it has to come back in
-    // the form the runtime parses from -- which on PostgreSQL a DATE does not:
-    // it arrives as a full ISO instant rather than a plain day. Casting the
-    // OUTPUT costs no index, so this side is cast and the WHERE above is not.
-    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
-    await run(fake, {model: keyedBy('Date')});
-    const select = fake.statements[0].sql.split(' FROM ')[0];
-    expect(select).toContain('CAST(account_id AS STRING)');
-  });
+  test(
+      'reads a date key back as text, which the predicate is not', async () => {
+        // The other half of the same decision. A key value read here is carried
+        // in an EntityRef and re-bound as a parameter later, so it has to come
+        // back in the form the runtime parses from -- which on PostgreSQL a
+        // DATE does not: it arrives as a full ISO instant rather than a plain
+        // day. Casting the OUTPUT costs no index, so this side is cast and the
+        // WHERE above is not.
+        const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
+        await run(fake, {model: keyedBy('Date')});
+        const select = fake.statements[0].sql.split(' FROM ')[0];
+        expect(select).toContain('CAST(account_id AS STRING)');
+      });
 
-  test('leaves a timestamp key alone, which the cast would corrupt', async () => {
-    // Only a date needs it. Both backends already hand a timestamp back in RFC
-    // 3339, which is the form the runtime re-binds from; the SQL rendering a
-    // cast would produce instead -- '2026-09-07 00:00:00+00', a two-digit
-    // offset -- is not. Casting every key type would fix the date and break
-    // this.
-    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
-    await run(fake, {model: keyedBy('DateTime')});
-    const select = fake.statements[0].sql.split(' FROM ')[0];
-    expect(select).not.toContain('CAST');
-    expect(select).toContain('account_id');
-  });
+  test(
+      'leaves a timestamp key alone, which the cast would corrupt',
+      async () => {
+        // Only a date needs it. Both backends already hand a timestamp back in
+        // RFC 3339, which is the form the runtime re-binds from; the SQL
+        // rendering a cast would produce instead -- '2026-09-07 00:00:00+00', a
+        // two-digit offset -- is not. Casting every key type would fix the date
+        // and break this.
+        const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
+        await run(fake, {model: keyedBy('DateTime')});
+        const select = fake.statements[0].sql.split(' FROM ')[0];
+        expect(select).not.toContain('CAST');
+        expect(select).toContain('account_id');
+      });
 
   test('leaves an untyped key alone', async () => {
     const fake = resolvingFake();
@@ -1106,6 +1110,23 @@ describe('a guard settled by judgment', () => {
     expect(whyRefusedWithoutRunning(guarded, action, undefined, holds()))
         .toBeNull();
   });
+
+  test('skipGuards clears every guard refusal, judged or not', async () => {
+    // The two shapes refuse for different reasons -- one has no judge to ask,
+    // the other cannot be computed at all -- and a flag that cleared only the
+    // first would leave an author with an expression guard exactly as stuck.
+    // That is why the flag is about the guards rather than about the judge.
+    const judged = guarding([justified]);
+    expect(whyRefusedWithoutRunning(
+               judged, judged.actions![0], undefined, undefined, true))
+        .toBeNull();
+
+    const computed =
+        guarding([{name: 'UnderCeiling', expression: 'amount <= 50'}]);
+    expect(whyRefusedWithoutRunning(
+               computed, computed.actions![0], undefined, undefined, true))
+        .toBeNull();
+  });
 });
 
 
@@ -1331,7 +1352,7 @@ describe('a constraint that only warns', () => {
   test(
       'but a guard naming nothing the model declares still refuses',
       async () => {
-        // Validation makes that a hard error and `kcmd action run` now runs
+        // Validation makes that a hard error and `kcmd action-run` now runs
         // validation -- but a library caller reaching runAction directly gets
         // no such pass, and a guard this cannot account for is not something
         // to wave through on the grounds that it was not found.
@@ -1670,31 +1691,39 @@ describe('optional and defaulted parameters', () => {
     expect(fake.statements[0].params).toEqual({name: 'Alice', memo: null});
   });
 
-  test('explicit null clears a defaulted field rather than restoring the default', async () => {
-    const fake = new FakeSpanner();
-    const outcome = await run(fake, {
-      actionName: 'CreateAccount',
-      args: {name: 'Alice', status: null},
-      handler: undefined,
-      model: model({
-        actions: [{
-          name: 'CreateAccount',
-          executor: {
-            kind: 'sql',
-            sql: {
-              statements: [
-                'INSERT INTO Account (account_id, name, status) VALUES (GENERATE_UUID(), @name, @status)',
+  test(
+      'explicit null clears a defaulted field rather than restoring the default',
+      async () => {
+        const fake = new FakeSpanner();
+        const outcome = await run(fake, {
+          actionName: 'CreateAccount',
+          args: {name: 'Alice', status: null},
+          handler: undefined,
+          model: model({
+            actions: [{
+              name: 'CreateAccount',
+              executor: {
+                kind: 'sql',
+                sql: {
+                  statements: [
+                    'INSERT INTO Account (account_id, name, status) VALUES (GENERATE_UUID(), @name, @status)',
+                  ],
+                },
+              },
+              parameters: [
+                {name: 'name', type: 'String', isEntityRef: false},
+                {
+                  name: 'status',
+                  type: 'String',
+                  default: 'open',
+                  isEntityRef: false
+                },
               ],
-            },
-          },
-          parameters: [
-            {name: 'name', type: 'String', isEntityRef: false},
-            {name: 'status', type: 'String', default: 'open', isEntityRef: false},
-          ],
-        }],
-      }),
-    });
-    expect(outcome.status).toBe('committed');
-    expect(fake.statements[0].params).toEqual({name: 'Alice', status: null});
-  });
+            }],
+          }),
+        });
+        expect(outcome.status).toBe('committed');
+        expect(fake.statements[0].params)
+            .toEqual({name: 'Alice', status: null});
+      });
 });

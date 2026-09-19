@@ -63,35 +63,51 @@ scope you authored under. See [Pull](README.md#pull) for behavior.
 | `--dry-run` | Reconstruct from the catalog and report what would be written, but write no files. |
 | `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. |
 
-### action
+### action-list
 
 ```bash
-kcmd action list
-kcmd action run <name> --arg <name>=<value> ...
+kcmd action-list [name]
 ```
 
-`list` prints every action the models in the scope declare, with the store a run
-would reach and the command line that runs each one. `run` executes one against
-the Spanner or AlloyDB database the selected profile's deployment target names;
-only a `sql` executor runs. A guard whose constraint states its rule as a `judgment` is
-settled by `--judge` before the transaction opens, and by a judge that can query
-the model's tables when `--judge-reads-store` is passed as well. One stated as an
-`expression` is settled by nothing, so an action naming it is refused rather than
-run unchecked. See [Run it](actions.md#7-run-it).
+Prints every action the models in the scope declare, with the store a run would
+reach and the command line that runs each one. Opens no store and calls no
+model. See [Run it](actions.md#7-run-it).
 
 | Flag | Effect |
 |------|--------|
-| `--arg <name>=<value>` | Bind one action parameter. Repeat the flag for each one; the value is text, parsed against the parameter's declared ontology type. `run` only. |
 | `--profile [name]` | Read the model under this binding profile. Its deployment target names the database the action runs against, so this is how you change stores. Defaults to `default_profile`, else the model's inline bindings. |
-| `--store` | Print only where a run would land, on one line and nothing else, for a script to read rather than parse back out of the listing: `project/instance/database` for a Spanner store, `bigquery:project/dataset` for a BigQuery one. Errors when the scope holds more than one model, since those may name different databases. `list` only. |
-| `--judge [model]` | Settle each guard stated as a `judgment` by asking Gemini on Vertex AI, using the project and credentials `kcmd` already holds. Takes a model id, defaulting to `gemini-2.5-flash`. Without the flag, an action guarded by such a rule is refused rather than run unchecked, unless the rule declares `warn`, in which case the run commits and reports that the rule went unchecked. `run` only. |
-| `--judge-location <region>` | Ask the judge in this Vertex AI region. The region is where the argument values are sent, so a project that has to keep them somewhere in particular names that region here. Defaults to `us-central1`. The environment's `compute/region` is deliberately not read, because a region chosen for Compute Engine is often one Vertex AI does not serve. `global` is accepted and reaches the host that serves it. `run` only. |
-| `--judge-reads-store` | Let the judge query the model's own tables while it settles a rule, so a guard can compare the call against what is recorded rather than only against what the caller stated. The judge is shown the entities, tables and columns the selected profile binds, writes its own statement in that profile's dialect, and every statement it sends is printed. Each one is checked to be a single read beginning with `SELECT` or `WITH` and wrapped in a subquery, so that a data-modifying CTE cannot run; at most 20 rows come back and each value is clipped. Costs one model call more per guard, plus one for each round of reading. Says what a judge may do rather than hiring one, so pass `--judge` as well. Errors when the profile binds no table to read. `run` only. See [When the judge needs a fact](actions.md#when-the-judge-needs-a-fact). |
+| `--store` | Print only where a run would land, on one line and nothing else, for a script to read rather than parse back out of the listing: `project/instance/database` for a Spanner store, `bigquery:project/dataset` for a BigQuery one. Errors when the scope holds more than one model, since those may name different databases. |
 
-### agent
+### action-run
 
 ```bash
-kcmd agent tools
+kcmd action-run <name> --arg <name>=<value> ...
+```
+
+Executes one action against the Spanner or AlloyDB database the selected
+profile's deployment target names; only a `sql` executor runs. A guard whose
+constraint states its rule as a `judgment` is settled by `--judge` before the
+transaction opens. One stated as an `expression` is settled by nothing, so an
+action naming it is refused rather than run unchecked.
+
+Running an action is not what `kcmd` is for — the command exists so that an
+author can exercise a model they are curating without first standing up an
+agent. A judge that reads the model's own tables while it settles a rule is a
+property of the runtime rather than of this command line; an agent embedding the
+runtime supplies one (see [the demo agent](../../demo/semantic-model/agent/README.md)),
+and this command does not.
+
+| Flag | Effect |
+|------|--------|
+| `--arg <name>=<value>` | Bind one action parameter. Repeat the flag for each one; the value is text, parsed against the parameter's declared ontology type. |
+| `--profile [name]` | Read the model under this binding profile. Its deployment target names the database the action runs against, so this is how you change stores. Defaults to `default_profile`, else the model's inline bindings. |
+| `--judge [model]` | Settle each guard stated as a `judgment` by asking Gemini on Vertex AI, using the project and credentials `kcmd` already holds. Takes a model id, defaulting to `gemini-2.5-flash`. Without the flag, an action guarded by such a rule is refused rather than run unchecked, unless the rule declares `warn`, in which case the run commits and reports that the rule went unchecked. |
+| `--skip-guards` | Run without checking the guards at all. Not a weaker check — no check: the write still happens and every rule the model states goes unenforced. It exists because the refusals above are total, so an author trying a model out against their own database, with no judge to stand up, would otherwise find every guarded action unrunnable and be tempted to delete the guard instead. The run says on its own line that nothing was checked, and `action-list` never suggests the flag. Refused together with `--judge`, which is the opposite instruction. |
+
+### agent-tools
+
+```bash
+kcmd agent-tools
 ```
 
 Prints what an agent would be handed for the models in the scope: one lookup
@@ -110,7 +126,7 @@ callable with it.
 | Flag | Effect |
 |------|--------|
 | `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. |
-| `--judge [model]` | List what an agent holding a judge is offered: an action guarded by a rule stated in words is callable rather than `[NOT RUNNABLE]`. Takes a Gemini model id, defaulting to `gemini-2.5-flash`, on the same region rule as [`action run --judge`](#action). No model is called either way — a judge settles a rule when an action runs, and this listing runs none. |
+| `--judge [model]` | List what an agent holding a judge is offered: an action guarded by a rule stated in words is callable rather than `[NOT RUNNABLE]`. Takes a Gemini model id, defaulting to `gemini-2.5-flash`, the same one [`action-run --judge`](#action-run) takes. No model is called either way — a judge settles a rule when an action runs, and this listing runs none. |
 
 A model whose profile names no Spanner database offers no tools, because calling
 one needs a store. That model is reported as offering none and the rest of the

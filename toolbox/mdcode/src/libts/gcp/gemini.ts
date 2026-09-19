@@ -28,12 +28,12 @@ export const DEFAULT_JUDGE_MODEL = 'gemini-2.5-flash';
 
 
 // Vertex serves models from a region, and not every region serves every model.
-// A caller that knows better names one, through `--judge-location` or this
-// option; everything else uses a region that serves Gemini. The region is also
-// where the argument values are sent, so a project that has to keep them
-// somewhere in particular names that region. What is deliberately NOT consulted
-// is `gcloud config get-value compute/region`, which is whatever the user set
-// for Compute Engine and is routinely somewhere Vertex is not -- `us`, say,
+// A caller that knows better names one through this option; everything else
+// uses a region that serves Gemini. The region is also where the argument
+// values are sent, so a project that has to keep them somewhere in particular
+// names that region. What is deliberately NOT consulted is `gcloud config
+// get-value compute/region`, which is whatever the user set for Compute
+// Engine and is routinely somewhere Vertex is not -- `us`, say,
 // which is not a Vertex endpoint at all. Reading it would make a judge
 // unreachable over an unrelated setting, and an unreachable judge refuses
 // writes that are fine.

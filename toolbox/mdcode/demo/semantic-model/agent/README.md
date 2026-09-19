@@ -30,10 +30,10 @@ sentences a language model settles. The action names the four sentences in
 
 One of those four is about a number the caller never states: a credit may not
 exceed the total of the order it credits, and the total is on record. Settling it
-takes a judge that can query the tables the model binds, which is what
-`--judge-reads-store` supplies. The judge writes the statement, the runtime
-checks it is a read and prints it, and the rule is settled against a row rather
-than against a claim.
+takes a judge that can query the tables the model binds, which is what the agent
+here gives it. The judge writes the statement, the runtime checks it is a read
+and prints it, and the rule is settled against a row rather than against a
+claim.
 
 [Step 6](#6-run-it) runs the request a support desk gets every day. A customer
 was charged for shipping that was supposed to be free, and someone inside the
@@ -151,8 +151,10 @@ number on record rather than a number the caller states:
 A judge handed the attempted call and nothing else cannot settle that rule,
 because the total is not in the call. A judge that can query the model's own
 tables can: it looks the order up, reads the total back, and compares. That is
-what `--judge-reads-store` supplies, and every transcript below prints the
-statement the judge ran. The wording has to invite the read. The rule says the
+what `modelJudgeStore()` supplies and what this agent hands its judge, and every
+agent transcript below prints the statement the judge ran. `kcmd action-run`
+hires no such judge — see [step 3](#3-check-what-the-model-declares).
+The wording has to invite the read. The rule says the
 total "is on record rather than stated in the arguments, so read it before
 answering", because the judge decides for itself whether to look, and an
 unsettled rule counts as not holding.
@@ -267,13 +269,13 @@ caller's. Only the internal one is built here.
 ## 2. Create the store
 
 Four `gcloud` commands create the store, and none of them names a database. Ask
-the model where it lives instead — `kcmd action list --store` prints the
+the model where it lives instead — `kcmd action-list --store` prints the
 deployment target as `project/instance/database` and nothing else, so a shell
 can read it:
 
 ```bash
 cd demo/semantic-model/agent
-IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(../../../dist/kcmd action list --store)"
+IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(../../../dist/kcmd action-list --store)"
 ```
 
 Naming it a second time here is how you end up seeding one database while the
@@ -328,7 +330,7 @@ again.
 ## 3. Check what the model declares
 
 ```console
-$ ../../../dist/kcmd action list
+$ ../../../dist/kcmd action-list
 Model 'commerce' (commerce_demo), profile 'spanner':
   store: my-project/my-instance/semantic_agent_demo
   IssueCredit: Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line and the order total is recomputed from the lines.
@@ -336,15 +338,19 @@ Model 'commerce' (commerce_demo), profile 'spanner':
     executor:   sql
     guards:     CreditWithinOrderTotalWithJudge, CreditUnderReviewThresholdWithJudge, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview
     affects:    LineItem (create), Order (modify)
-    run:        kcmd action run IssueCredit --judge --judge-reads-store --arg order=<Order> --arg amount=<Decimal> --arg memo=<String>
+    run:        kcmd action-run IssueCredit --judge --arg order=<Order> --arg amount=<Decimal> --arg memo=<String>
 ```
 
-The `run:` line names both judge flags because the guards are judged and the
-model has tables under this profile to read, and a suggested command certain to
-be refused is worse than no suggestion. Nothing in a constraint's wording says
-whether settling it takes a look at the store, so the line offers the reading
-judge wherever a read is possible, and a judge with nothing to look up looks
-nothing up.
+The `run:` line carries `--judge` because the guards are judged and a suggested
+command certain to be refused is worse than no suggestion. It carries nothing
+else. `kcmd action-run` will not run this action unchecked, and the listing does
+not offer the flag that would: a line a reader pastes has recommended what it
+prints.
+
+What that command line cannot do is let the judge read the order's total, which
+is what two of these four guards need. That is not a missing flag — it is the
+difference between curating a model and running one, and the agent in step 5 is
+where it shows up.
 
 Three warnings print above this. Two of them name an expression that reads an
 argument of `IssueCredit` and report that nothing references it:
@@ -375,68 +381,12 @@ section. Once an expression evaluator exists, two of these four rules stop
 costing anything.
 
 The action runs from the command line before any agent exists. `--judge` hires
-the judge, and `--judge-reads-store` is what lets it look at the tables the model
-binds:
+the judge, and that is the whole of what this command line offers. The judge it
+hires knows the rule, the action and the arguments, and nothing else — so it
+does not guess at the order's total, and it does not quietly let the rule hold:
 
 ```console
-$ ../../../dist/kcmd action run IssueCredit --judge --judge-reads-store --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
-  rules stated in words go to gemini-2.5-flash (us-central1)
-  it may read commerce's tables to settle them
-  the judge reads: SELECT total FROM Orders WHERE order_id = 12346
-  order: '12346' -> Order 12346
-Committed at 2026-09-14T19:12:04.996343Z.
-```
-
-Four judgments were put to Gemini and all four held, so the write went through.
-One of them went and looked. Nothing in the call says what order 12346 totals, so
-the judge settling `CreditWithinOrderTotalWithJudge` wrote a statement, ran it,
-and compared $3.00 against the $18.00 that came back. Nobody wrote that SQL: the
-rule names the order's total in words, and the judge was told which tables hold
-this model's data.
-
-One verdict in that run does not repeat reliably. `Coupon applied late` gives a
-cause without naming a thing that went wrong, which leaves it near the line
-`CreditMemoNamesAServiceFailure` draws, and some runs settle that rule the other
-way and print its advisory warning above the commit. The write lands either way,
-because the rule is advisory. A judged rule is settled afresh for every call, so
-a case close to the line a rule draws has no one fixed answer. That is a reason
-to keep the cases a rule must catch well clear of its line.
-
-`order=12346` was text; the runtime resolved it to a row and says which one. The
-total moved from $18.00 to $15.00 with nobody doing arithmetic, because the
-second statement recomputes it from the lines. Both statements ran in one
-read-write transaction.
-
-Ask for more than the order is worth and the same guard refuses:
-
-```console
-$ ../../../dist/kcmd action run IssueCredit --judge --judge-reads-store --arg order=12346 --arg amount=20.00 --arg memo="Shipping charge applied in error"
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
-  rules stated in words go to gemini-2.5-flash (us-central1)
-  it may read commerce's tables to settle them
-  the judge reads: SELECT total FROM Orders WHERE order_id = 12346
-Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotalWithJudge' ("The credit
-amount requested must not exceed the total of the order it is applied to. The `order`
-argument of this call identifies that order, and the order's total is on record rather
-than stated in the arguments, so read it before answering. Read both as dollars."), and
-gemini-2.5-flash (us-central1) judged that it does not hold for this call: The credit
-amount of 20.00 exceeds the order total of 15.00. The model marks this rule 'escalate',
-so an approver may allow it; nothing here can. A credit cannot exceed the total of the
-order it credits. Lower the credit amount, or split it across the orders it actually
-covers. No transaction was opened, so nothing was written.
-```
-
-$15.00 is what the previous run left on the order, and the judge read the number
-that is there now rather than the one this page seeded. $20 is under the
-25-dollar ceiling, so no threshold rule catches it. What catches it is a
-comparison against a row.
-
-Drop `--judge-reads-store` and the judge knows only what it was passed. It does
-not guess, and it does not quietly let the rule hold:
-
-```console
-$ ../../../dist/kcmd action run IssueCredit --judge --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
+$ ../../../dist/kcmd action-run IssueCredit --judge --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
 Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotalWithJudge' ("The credit
 amount requested must not exceed the total of the order it is applied to. ..."), and
@@ -452,12 +402,21 @@ unsettled rule counts as not holding — which is the whole reason the wording o
 judged rule and the capabilities of the judge have to be chosen together. A rule
 that names something on record needs a judge that can read the record.
 
+That judge is not missing from the flag list by oversight. Letting a model
+compose and send queries against your data, at the moment it decides whether a
+write may proceed, is a decision for whoever builds the application — and `kcmd`
+is for curating a model, not for running one. The runtime exposes it
+(`modelJudgeStore()` in `src/libts/semantic/runtime/judge_store.ts`), the agent
+in [step 6](#6-run-it) calls it, and every `(judge reads)` line in the
+transcripts there is a statement that judge wrote for itself. The rule refused
+above settles there, against a row.
+
 Drop `--judge` as well and nothing is put to anything, because the runtime will
 not apply a write the model says must be checked when it has nothing to check
 with:
 
 ```console
-$ ../../../dist/kcmd action run IssueCredit --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
+$ ../../../dist/kcmd action-run IssueCredit --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
 Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotalWithJudge',
 'CreditUnderReviewThresholdWithJudge' and 'CreditIsNotSplitToAvoidReview', which are
@@ -470,19 +429,16 @@ The advisory rule is absent from that list, and belongs absent: a `warn` rule
 never stops a call, so a missing judge cannot make it stop one. Refusing on its
 behalf would make a model that states advisory rules permanently unrunnable.
 
-One credit landed out of those four calls. Read the orders back with plain SQL:
+Neither call wrote anything, and each says so on its last line, so the orders
+are still exactly as step 2 seeded them. That is what four judged guards and a
+judge that cannot read the store add up to on this command line: a model you can
+inspect, and an action you cannot exercise.
 
-```console
-$ gcloud spanner databases execute-sql semantic_agent_demo \
-    --instance=my-instance --project=my-project \
-    --sql="SELECT order_id, placed_on, total FROM Orders ORDER BY order_id"
-order_id  placed_on   total
-12345     2026-09-07  165.85
-12346     2026-08-20  15
-12347     2026-09-02  200
-```
-
-However the action is called, the order's total matches its lines.
+Which is a problem if inspecting is not all you want to do. `--skip-guards` is
+the way out, and it is blunt on purpose: it checks no guard at all, the write
+still happens, and the run prints a line saying so. It is for trying your own
+model against your own database before any of this is wired up. It is refused
+alongside `--judge`, and `action-list` never suggests it.
 
 ### What a reading judge is allowed to do
 
@@ -572,18 +528,18 @@ the write.
 **What a guarded call costs.** Reading is a conversation rather than a lookup:
 the judge is asked, it may ask for rows, it is shown them, and only then does it
 answer. So a guard that reads nothing costs two model calls, and each round of
-reading adds one. The committed run above put four guards to Gemini, one of which
-read once, for nine calls. Without `--judge-reads-store` the same four guards
-cost four calls and the first of them cannot be settled.
+reading adds one, so four guards and one read come to nine. The command-line run
+above pays less and gets less: its judge cannot read, so the same four guards
+cost four calls, and the first of them cannot be settled at any price.
 
 ## 4. Look at the tools before writing the agent
 
-`kcmd agent tools` prints exactly what an agent will be handed, before there is
+`kcmd agent-tools` prints exactly what an agent will be handed, before there is
 an API key, a language model, or a line of agent code. Ask it without a judge
 first, because what an agent is offered depends on what it is holding:
 
 ```console
-$ ../../../dist/kcmd agent tools
+$ ../../../dist/kcmd agent-tools
 Model 'commerce' (commerce_demo), profile 'spanner':
   store: my-project/my-instance/semantic_agent_demo
 
@@ -621,7 +577,7 @@ Pass `--judge` and the same action is offerable, with the same description and
 the same parameters, minus the refusal:
 
 ```console
-$ ../../../dist/kcmd agent tools --judge
+$ ../../../dist/kcmd agent-tools --judge
 Rules stated in words go to gemini-2.5-flash (us-central1).
 Model 'commerce' (commerce_demo), profile 'spanner':
   store: my-project/my-instance/semantic_agent_demo
@@ -753,7 +709,7 @@ const judge = new GeminiJudge(ApiContext.default(), {
 });
 
 // 3. Derive what the model offers, and keep what this binding can serve --
-//    what `kcmd agent tools --judge` just printed.
+//    what `kcmd agent-tools --judge` just printed.
 const {callable, withheld, instruction} =
     callableTools(modelTools({runtime, judge}));
 for (const tool of withheld) {
@@ -919,8 +875,8 @@ Four judgments were asked and all four held, so the write went through and order
 12347 is $180.00. Note that the agent called `issue_credit` directly: the request
 named the order, so there was nothing to look up.
 
-The same statement was read twice here, and once in the command-line run of
-[step 3](#3-check-what-the-model-declares) with the same four guards. How many
+The same statement was read twice here, and once in the run of
+[step 6](#6-run-it) with the same four guards. How many
 reads a call costs is not fixed and is not declared anywhere: each guard is put
 to the judge in a conversation of its own, and a judge reads when the rule it is
 settling makes it want to. Budget for a range rather than a number.
@@ -1020,8 +976,8 @@ of what moving databases costs:
 the model derives — you can check that rather than take it:
 
 ```console
-$ ../../../dist/kcmd agent tools --profile spanner > /tmp/spanner.txt
-$ ../../../dist/kcmd agent tools --profile alloydb > /tmp/alloydb.txt
+$ ../../../dist/kcmd agent-tools --profile spanner > /tmp/spanner.txt
+$ ../../../dist/kcmd agent-tools --profile alloydb > /tmp/alloydb.txt
 $ diff /tmp/spanner.txt /tmp/alloydb.txt
 1,2c1,2
 < Model 'commerce' (commerce_demo), profile 'spanner':
@@ -1184,14 +1140,21 @@ which have not.
 
 ### The same action without the model in the loop
 
-`kcmd action run` takes the action the agent would have called and calls it
+`kcmd action-run` takes the action the agent would have called and calls it
 directly, with the arguments spelled out instead of chosen. It is the whole of
 the run below the agent — the connection, the entity reference, both statements
 and the commit — so it is worth doing once on a new store before handing the
-store to a model:
+store to a model.
+
+> The two runs below were recorded against a build whose `action-run` carried a
+> `--judge-reads-store` flag. That flag has since been removed: hiring a judge
+> that queries your data is a property of the runtime an application embeds, not
+> of a command line for curating a model, and the agent above is what supplies
+> it now. They are kept because what they show — the same rule, in the other
+> dialect, against the other names — is not shown anywhere else on this page.
 
 ```console
-$ ../../../dist/kcmd action run IssueCredit --profile alloydb --judge --judge-reads-store \
+$ ../../../dist/kcmd action-run IssueCredit --profile alloydb --judge --judge-reads-store \
     --arg order=12345 --arg amount=20.00 --arg memo='Shipping charged in error'
 Running 'IssueCredit' on projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_agent_demo...
   rules stated in words go to gemini-2.5-flash (us-central1)
@@ -1203,7 +1166,7 @@ Committed at 2026-09-14T19:17:08.588Z.
 
 The credit is $20 rather than the $30 that was charged, because $30 is over the
 self-service ceiling and would be held for an approver on this store exactly as
-it is on Spanner. Dropping `--judge` produces the refusal from
+it is on Spanner. Dropping `--judge` produces the no-judge refusal from
 [step 3](#3-check-what-the-model-declares), word for word.
 
 Compare the read with the one on Spanner. There, the judge wrote `SELECT total
@@ -1221,7 +1184,7 @@ statement it wrote selected one column and it knew which one it asked for.
 Ask for more than the order is worth and the guard refuses here too:
 
 ```console
-$ ../../../dist/kcmd action run IssueCredit --profile alloydb --judge --judge-reads-store \
+$ ../../../dist/kcmd action-run IssueCredit --profile alloydb --judge --judge-reads-store \
     --arg order=12346 --arg amount=20.00 --arg memo='Shipping charged in error'
 Running 'IssueCredit' on projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_agent_demo...
   rules stated in words go to gemini-2.5-flash (us-central1)
@@ -1262,7 +1225,7 @@ recomputed from those five lines rather than adjusted by the credit amount.
 
 > **What on this page is copied from a real run, and what is not.** Every `kcmd`
 > listing here is, including the `diff` above, the push refusal, and the
-> `action run` and `psql` output just above. Those two are from a live AlloyDB
+> `action-run` and `psql` output just above. Those two are from a live AlloyDB
 > cluster, so the connection, the IAM token as the password, the cluster CA and
 > the `@name`-to-`$1` rewrite are proven against a real database rather than only
 > against unit tests. So are all four judged guards, the judge's own read, both
@@ -1272,8 +1235,8 @@ recomputed from those five lines rather than adjusted by the credit amount.
 > afterwards. The **agent** transcript
 > under `alloydb` is not captured: `@google/adk` does not install here, so the
 > model-in-the-loop leg of this section has been run only under `spanner`. What
-> that leg adds over `action run` is the model choosing the action and its
-> arguments, and `kcmd agent tools` shows it is offered the same two lines of
+> that leg adds over `action-run` is the model choosing the action and its
+> arguments, and `kcmd agent-tools` shows it is offered the same two lines of
 > difference either way. One edit postdates every run on this page. Under both
 > profiles the INSERT keyed the new row from a runtime-generated UUID when these
 > outputs were captured, and it now generates one inside the statement instead,
@@ -1350,8 +1313,8 @@ binding point.
 means four conversations with Gemini before a write, run one after another, and
 the loader's third warning names the cost. A judge that cannot read spends one
 call per guard; a judge that can spends two, plus one for every round of reading,
-because it has to be shown its rows before it can say whether it wants more. The
-committed run in [step 3](#3-check-what-the-model-declares) cost nine. The
+because it has to be shown its rows before it can say whether it wants more. Four
+guards and a single read come to nine. The
 runtime stops at the first refusal, so a call that is going to be rejected does
 not pay for the rest, and a call that succeeds pays for every guard. An
 expression evaluator would take two of these four to zero, and in a store-level

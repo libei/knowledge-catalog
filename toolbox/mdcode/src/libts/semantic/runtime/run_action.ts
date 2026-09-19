@@ -149,6 +149,15 @@ export interface RunActionOptions {
   // "run those unjudged": an action guarded by a judgment is refused, the same
   // way one guarded by an expression is.
   judge?: Judge;
+  // Runs the action without checking its guards at all. Not a weaker check --
+  // no check: every refusal a guard would have produced is skipped and the
+  // write happens. It exists because the refusals above are total. An author
+  // trying a model out locally, against their own database, has no judge to
+  // supply and would find every guarded action unrunnable; the alternative is
+  // deleting the guards to test the write, which is worse. The run still
+  // reports each guard it did not check, so a caller reading the output is
+  // never told the write passed rules nothing consulted.
+  skipGuards?: boolean;
 }
 
 
@@ -174,8 +183,8 @@ export async function runAction(opts: RunActionOptions):
   }
   // Decided BEFORE touching the store, so an action this runtime will not run
   // fails without having opened a transaction at all.
-  const refusal =
-      whyRefusedWithoutRunning(model, action, opts.handler, opts.judge);
+  const refusal = whyRefusedWithoutRunning(
+      model, action, opts.handler, opts.judge, opts.skipGuards);
   if (refusal) return {status: 'error', message: refusal};
 
   // Checked before the judge as well. A judge is asked whether a rule holds
@@ -427,7 +436,7 @@ const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
  */
 export function whyRefusedWithoutRunning(
     model: SemanticModel, action: Action, handler?: ActionHandler,
-    judge?: Judge): string|null {
+    judge?: Judge, skipGuards?: boolean): string|null {
   // No executor at all is a binding outcome, not a broken model: the executor
   // is a physical facet, so an action can be declared here and performable
   // only somewhere else. Say which it is, because the fix is in the profile
@@ -447,7 +456,12 @@ export function whyRefusedWithoutRunning(
         `that performs the write as DML, or declare the action with a 'sql' ` +
         `executor.`;
   }
-  const unchecked = unsafeToRunUnchecked(model, action, judge);
+  // Skipped wholesale rather than judge-by-judge. The refusals below are about
+  // a guard nothing can settle, and `skipGuards` is the caller saying nothing
+  // will be asked to; running the ones that happen to be settleable and
+  // refusing the rest would leave the author exactly as blocked.
+  const unchecked =
+      skipGuards ? null : unsafeToRunUnchecked(model, action, judge);
   if (unchecked) return unchecked;
   // The refusals left are about filling the model's OWN statements, so they
   // apply only when the model is what supplies them. A handler writes its own
@@ -775,8 +789,8 @@ function bindArguments(
 
 // An object reference as its key value, typed by the ontology. Resolution
 // returns every key as a string, because that is what the store's REST surface
-// gives back; binding it into a statement needs the type the KEY FIELD declares,
-// or an integer-keyed row would be handed to the store as text.
+// gives back; binding it into a statement needs the type the KEY FIELD
+// declares, or an integer-keyed row would be handed to the store as text.
 function bindReference(
     model: SemanticModel, param: ActionParameter, ref: EntityRef|undefined):
     {value: unknown; code: string}|{error: string} {
