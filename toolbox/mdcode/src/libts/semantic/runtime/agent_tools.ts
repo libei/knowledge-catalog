@@ -482,13 +482,14 @@ function instructionFor(model: SemanticModel): string {
   const stated = model.aiContext?.instructions?.trim();
   if (stated) parts.push(stated);
   parts.push(
-      'Never invent an identifier. Never compute a total or a balance ' +
-      'yourself; the tools do that. When a tool reports that a write did not ' +
-      'happen, read the reason it gives and repeat it plainly; if it says a ' +
-      'person has to decide, say so and stop, because you cannot approve it ' +
-      'yourself. When a write did happen and the tool returns warnings, the ' +
-      'change landed and a rule still went unmet or unchecked: report both, ' +
-      'because nobody else will. Finish by saying what you changed.');
+      'Never invent an identifier. When you are given a name or a ' +
+      'description where an action wants a key, ask the caller or read the ' +
+      'store directly. When a tool reports that a write did not happen, read ' +
+      'the reason it gives and repeat it plainly; if it says a person has to ' +
+      'decide, say so and stop, because you cannot approve it yourself. When ' +
+      'a write did happen and the tool returns warnings, the change landed ' +
+      'and a rule still went unmet or unchecked: report both, because ' +
+      'nobody else will. Finish by saying what you changed.');
   return parts.join('\n\n');
 }
 
@@ -518,7 +519,7 @@ function noStore(runtime: SemanticRuntime): string|null {
 // Exported so a generated skill can list the physical tables and columns this
 // profile binds, keeping the agent from querying INFORMATION_SCHEMA to find
 // them.
-export interface BoundField {
+interface BoundField {
   name: string;
   type: string;
   column: string;
@@ -527,7 +528,7 @@ export interface BoundField {
 }
 
 
-export function boundFields(entity: Entity): BoundField[] {
+function boundFields(entity: Entity): BoundField[] {
   const bound: BoundField[] = [];
   for (const field of entity.fields) {
     const expr = (fieldBinding(field) ?? '').trim();
