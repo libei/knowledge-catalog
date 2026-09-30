@@ -8,40 +8,33 @@ party.
 
 `kcmd push` expresses the hierarchy on the graph as **labels**. A subtype's node
 table carries its own label plus one label per supertype, so `MATCH (:Party)`
-matches every customer and every supplier. The exact generation rules — how
-fields flatten down, what a label signature must contain — are in
-[Reference → Class hierarchies](reference.md#class-hierarchies-extends--labels);
-this page is the modeling guide.
+matches every customer and every supplier, and each real party comes back once.
 
-## When to use it
+## What a hierarchy gives you, and what it does not
 
-Use `extends` when the shared fields reflect a real *is a kind of* relationship
-and you want a supertype query to gather every subtype.
+A hierarchy classifies **things**. It does not classify connections, storage, or
+aggregates, and four rules mark that boundary. Read them before you model: each
+one is enforced, and each one shapes the model you write.
 
-Do not use it when the shared fields are a coincidence of naming, or when you
-have one entity whose columns happen to be split across two tables — that is a
-[binding](profiles.md), and modeling it as inheritance produces the double-count
-described below.
+- **Only entities inherit.** Relationships, metrics, actions, and constraints
+  have no `extends`.
+- **A supertype must be abstract.** Mark it `abstract: true`. It has no table and
+  no rows of its own, and survives in the graph only as a label on its subtypes.
+- **Both endpoints of a relationship must be a concrete entity.** An edge
+  declared on an abstract supertype reaches no subtype and is dropped.
+- **Each concrete subtype binds every field it exposes**, inherited fields
+  included. A field the subtype does not bind is absent from the graph.
 
-## The one rule
-
-A supertype query gathers every subtype. Because it gathers subtypes, **each real
-thing must live in exactly one place**, or it is gathered more than once and your
-counts double. State it once and rely on it:
-
-> **One real thing, one row, one node.**
-
-Everything below is a way to honor this rule.
+The first two rules are what make a supertype count exact. Because a supertype
+has no table, no real thing can appear in two tables under the same label, so a
+supertype query cannot double-count. The second two are the price: a hierarchy
+buys you one query over many kinds, and it does not save you any binding work.
 
 ## 1. Declare the hierarchy
 
-`Party` is the general kind. In this model no row is *just* a party — every party
-is a customer or a supplier — so `Party` has no table of its own. Mark it
-`abstract: true`: it has no `source` and no key, produces no node table, and
-survives in the graph only as a label on its subtypes.
-
-Each concrete kind declares its own fields and the one `extends` keyword. The
-supertype's fields are inherited, so you do not repeat them:
+`Party` is the general kind. Every party is a customer or a supplier, so `Party`
+has no table: it is `abstract: true`. Each concrete kind declares its own fields
+and the one `extends` keyword.
 
 ```yaml
 version: "0.2.0.dev0/google"
@@ -66,10 +59,6 @@ semantic_model:
           - { name: rating, datatype: Integer }
 ```
 
-The supertype's `id` and `name` flatten down onto both subtypes, so `Customer`
-and `Supplier` each expose them, and each subtype node carries both its own label
-and the `Party` label.
-
 ```mermaid
 classDiagram
     class Party {
@@ -87,18 +76,19 @@ classDiagram
     Party <|-- Supplier
 ```
 
-`Party` is abstract, so it has no table of its own; the arrows are `extends`. A
-query against `Party` reaches every subtype below it.
+The arrows are `extends`. `Party.id` and `Party.name` flatten down onto both
+subtypes, so `Customer` and `Supplier` each expose them, and each subtype node
+carries both its own label and the `Party` label.
+
+This model names no tables. It is complete as a logical model, and binding it to
+a graph is a separate step.
 
 ## 2. Bind each subtype's table
 
-Inheritance meets binding at one requirement: **each subtype's table must expose
-the inherited columns**, because those fields are read from the subtype's own
-table. `Party.name`, flattened onto `Customer`, is read from the customer table,
-so that table must have a name column.
-
-A binding gives each entity its `source` and each field its column. With one
-store you can bind inline on the model as the `default` profile:
+Every field a subtype exposes needs a column on that subtype's own table,
+including the fields it inherited. `Party.name`, flattened onto `Customer`, is
+read from the customer table, so `Customer` declares `name` again with the column
+that backs it:
 
 ```yaml
       - name: Customer
@@ -107,14 +97,23 @@ store you can bind inline on the model as the `default` profile:
         source: my-project.sales.customer
         fields:
           - { name: id,           datatype: Integer, expression: c_custkey }
-          - { name: name,         datatype: String,  expression: c_name }   # the inherited field, bound here
+          - { name: name,         datatype: String,  expression: c_name }   # inherited from Party, bound here
           - { name: loyalty_tier, datatype: String,  expression: c_tier }
+```
+
+Redeclaring an inherited field is not a mistake and not a fallback — it is how a
+binding reaches that field. A subtype that leaves an inherited field unbound
+still inherits the name, but the push omits the property and warns:
+
+```
+entity 'Customer': field 'name' has no column under this binding; omitted from
+the node table (bind it, or govern the logical model in Knowledge Catalog instead)
 ```
 
 To bind the same hierarchy to more than one store, put each binding in its own
 [profile](profiles.md). A profile answers the supertype query only for the
-subtypes it binds: bind `Customer` but leave `Supplier` unbound and
-`MATCH (:Party)` returns customers alone.
+subtypes it binds: bind `Customer`, leave `Supplier` unbound, and `MATCH (:Party)`
+returns customers alone.
 
 ## 3. Query the supertype
 
@@ -127,18 +126,32 @@ RETURN p.name
 Every customer and every supplier comes back, each once, because each real party
 lives in exactly one table.
 
-## More hierarchy shapes
+The generated DDL shows how: each subtype table declares the `Party` label with
+its own columns behind the shared property names.
+
+```sql
+`my-project.sales.customer` AS Customer
+  KEY(c_custkey)
+  DEFAULT LABEL
+  PROPERTIES( c_custkey AS id, c_name AS name, c_tier AS loyalty_tier )
+  LABEL Party
+  PROPERTIES( c_custkey AS id, c_name AS name ),
+`my-project.sales.supplier` AS Supplier
+  KEY(s_suppkey)
+  DEFAULT LABEL
+  PROPERTIES( s_suppkey AS id, s_name AS name, s_rating AS rating )
+  LABEL Party
+  PROPERTIES( s_suppkey AS id, s_name AS name )
+```
+
+A shared label is reconciled by property name rather than by backing column, so
+the two tables never have to agree on a column name — only on `id` and `name`.
+
+## Deeper and wider hierarchies
 
 `extends` composes. A subtype can extend several supertypes, and a supertype can
-extend another supertype above it. Two facts hold for every shape: the supertype
-fields flatten down, and each concrete table binds every inherited field to its
-own column. So the shapes below all deploy the same way, and each was verified to
-deploy on BigQuery Graph.
-
-### Extending more than one supertype, and diamonds
-
-`extends` takes a list. Here an `Employee` is both a `Person` and a `Taxpayer`,
-and each of those is a `Party`:
+extend another supertype above it. Every intermediate level is abstract, so only
+the leaves have tables.
 
 ```yaml
       - name: Party
@@ -193,139 +206,147 @@ classDiagram
     Taxpayer <|-- Employee
 ```
 
-`Party` sits at the top and is reached through two paths, so this is a diamond.
-`Employee` carries the `Person`, `Taxpayer`, and `Party` labels, and `Party`
-appears once. `MATCH (:Person)`, `MATCH (:Taxpayer)`, and `MATCH (:Party)` each
-return every employee a single time. The number of supertypes a subtype has, and
-the number of paths that reach a shared ancestor, do not change the count.
+`Party` is reached through two paths, so this is a diamond. `Employee` carries
+the `Person`, `Taxpayer`, and `Party` labels, and `Party` appears once.
+`MATCH (:Person)`, `MATCH (:Taxpayer)`, and `MATCH (:Party)` each return every
+employee a single time. Neither the number of supertypes nor the number of paths
+to a shared ancestor changes the count.
 
-### Deeper hierarchies
+Depth behaves the same way. `Party` can divide into abstract `Person` and
+abstract `Organization`, with concrete `Customer` under one and concrete `Vendor`
+under the other: `MATCH (:Party)` then returns every customer and every vendor,
+`MATCH (:Person)` returns customers alone, and `MATCH (:Organization)` vendors
+alone.
 
-A hierarchy can run several levels deep with a concrete table at each leaf. Here
-`Party` divides into `Person` and `Organization`, and each has its own concrete
-kind: a `Customer` is a person, a `Vendor` is an organization:
+## Relationships in a hierarchy
+
+An edge attaches to the concrete entity whose table holds the foreign key. It
+does not flow down to subtypes, and it cannot be declared on a supertype.
+
+Declaring `owns` from `Party` to `Account` deploys a graph with no `owns` edge at
+all, because `Party` has no node table for the edge to reference. The push warns
+and continues:
+
+```
+relationship 'owns': references skipped entity 'Party'; edge omitted
+```
+
+Declare the edge on each concrete kind that has the key instead, one edge per
+kind, each with its own name:
 
 ```yaml
-      - name: Party
-        abstract: true
-        primary_key: [id]
-        fields:
-          - { name: id,   datatype: Integer }
-          - { name: name, datatype: String }
-      - name: Person
-        abstract: true
-        extends: [Party]
-        fields:
-          - { name: birth_year, datatype: Integer }
-      - name: Organization
-        abstract: true
-        extends: [Party]
-        fields:
-          - { name: founded_year, datatype: Integer }
-      - name: Customer
-        extends: [Person]
-        primary_key: [id]
-        source: my-project.sales.customer
-        fields:
-          - { name: id,         datatype: Integer, expression: c_id }
-          - { name: name,       datatype: String,  expression: c_name }
-          - { name: birth_year, datatype: Integer, expression: c_birth }
-          - { name: tier,       datatype: String,  expression: c_tier }
-      - name: Vendor
-        extends: [Organization]
-        primary_key: [id]
-        source: my-project.sales.vendor
-        fields:
-          - { name: id,           datatype: Integer, expression: v_id }
-          - { name: name,         datatype: String,  expression: v_name }
-          - { name: founded_year, datatype: Integer, expression: v_founded }
-          - { name: rating,       datatype: Integer, expression: v_rating }
+    relationships:
+      - name: customerOwns
+        from: Customer
+        to: Account
+        from_columns: [account_id]
+        to_columns: [id]
+      - name: supplierOwns
+        from: Supplier
+        to: Account
+        from_columns: [account_id]
+        to_columns: [id]
 ```
 
-```mermaid
-classDiagram
-    class Party {
-        <<abstract>>
-        id : integer
-        name : string
-    }
-    class Person {
-        <<abstract>>
-        birth_year : integer
-    }
-    class Organization {
-        <<abstract>>
-        founded_year : integer
-    }
-    class Customer {
-        tier : string
-    }
-    class Vendor {
-        rating : integer
-    }
-    Party <|-- Person
-    Party <|-- Organization
-    Person <|-- Customer
-    Organization <|-- Vendor
+A query then names the kind it traverses from —
+`MATCH (:Customer)-[:customerOwns]->(:Account)`. One traversal over every party
+kind is not expressible today; see [Limitations](#limitations).
+
+## Metrics in a hierarchy
+
+A metric attaches to a concrete entity, and every concrete entity accepts one.
+Because supertypes are abstract, no node table ever shares its label with
+another, so the restriction that a measure must sit on a leaf type never applies
+to a model built this way.
+
+```yaml
+    metrics:
+      - name: total_spend
+        expression: SUM(Customer.spend)
 ```
 
-`Customer` and `Vendor` are the only tables. `MATCH (:Party)` returns every
-customer and every vendor; `MATCH (:Person)` returns customers alone, and
-`MATCH (:Organization)` vendors alone. Each real party lives in one table, so
-every count is exact.
+A metric that targets the abstract supertype is dropped, with the reason:
 
-### What keeps every shape correct
+```
+metric 'total_spend' targets entity 'Party', which is abstract (a table-less
+supertype with no node table to carry a MEASURE); metric dropped
+```
 
-These shapes deploy because their supertypes are abstract. Each concrete table
-binds every inherited field to its own column, and BigQuery matches a shared
-label by property name, so the subtype tables never have to agree on a physical
-column. A supertype with its own table works too. Then every subtype table must
-carry that supertype's columns under the same names, and a thing present in both
-the supertype table and a subtype table is counted twice under the supertype
-label. Keeping supertypes abstract keeps the one rule — one real thing, one node
-— automatic.
+For a figure over the whole hierarchy, declare the metric once per concrete
+subtype and combine the results in the query.
 
 ## Match the shape to how your data is stored
 
-How your subtypes are already stored decides how you model them. `extends` builds
-one shape directly, and the other two common layouts are modeled without it:
+How your subtypes are already stored decides whether `extends` is the right tool.
+It builds one layout directly; the other two common ones are modeled without it.
 
 - **One table per kind, the parent has none.** Each concrete kind has its own
-  complete table; the supertype has no table and survives as a label; a supertype
-  query is the union of the kind tables. This is the shape `extends` builds — the
-  hierarchy above. It is correct as long as the kind tables hold disjoint things,
-  which is why the parent is `abstract`.
+  complete table, and a supertype query is the union of those tables. This is the
+  layout `extends` builds.
 - **One table for the whole family, with a kind column.** All parties in one
-  table, a `type` column saying which kind each row is. Model this as one entity
-  with a dimension field; it holds one row per thing, so it cannot double-count.
+  table, with a `type` column saying which kind each row is. Model this as one
+  entity with a dimension field. It holds one row per thing, so it cannot
+  double-count, but it gives you no per-kind label: `MATCH (:Customer)` is not
+  available.
 - **A base table plus an extension table.** A thing's general fields in one table
   and its specific fields in another, tied by a shared key. Model this as one
   entity whose binding joins the two tables, so the thing keeps one identity.
 
-## When a supertype total looks too high
+## Limitations
 
-If a supertype count or sum comes back larger than the data warrants, the same
-real thing lives in more than one table under the hierarchy. Every table carrying
-the label contributes that thing as its own node. Take three people split across
-a `person` table and a `customer` table that both carry the `Person` label, with
-two of the three present in both. `MATCH (:Person)` returns **five** nodes,
-because no identity link across the two tables tells the graph that the shared
-rows are the same person.
+Each item below is current behavior. Where a workaround exists it is the
+supported way to get the result today.
 
-The fix is the one rule. Make the parent `abstract` so no real thing lives in more
-than one table under the hierarchy. When the two tables are instead the general
-and specific halves of one thing, model them as one entity whose binding joins
-them by key.
+- **A supertype cannot have a table.** `abstract: true` is required on any entity
+  another entity extends. A supertype with rows of its own would put the same
+  real thing in two tables under one label, and a supertype count would include
+  it twice. For a general table plus a specific table describing one thing, model
+  one entity whose binding joins them.
+- **Relationships do not inherit, and cannot start or end on a supertype.** There
+  is no single edge that traverses every kind of party. Declare one edge per
+  concrete kind, and write one query per kind. This is the largest gap in the
+  feature today.
+- **A metric cannot cover a whole hierarchy.** A metric lowers to a graph
+  `MEASURE` on one node table, and an abstract supertype has none. Declare the
+  metric per subtype and combine in the query.
+- **Keys do not inherit.** Each concrete subtype declares its own `primary_key`.
+- **Inherited fields are not free.** A concrete subtype must declare and bind
+  every inherited field it wants in the graph. `extends` saves you the logical
+  declaration in the supertype, and it saves nothing in the binding.
+- **An inherited field cannot be given a different meaning.** Every table under a
+  shared label must declare the property identically. A subtype may bind an
+  inherited field to its own column, but it may not redefine what the field means
+  or attach its own description to it.
+- **A hierarchy where all kinds live in one table is not expressible.** A node
+  table is a whole table, so a kind identified by a discriminator column has no
+  label of its own. Model it as one entity with a dimension field.
+- **Descriptions on a supertype reach nothing.** A supertype's `description` and
+  synonyms are not emitted onto the shared label, and the catalog skips the
+  supertype entirely, so they are visible only in the model file.
+- **Knowledge Catalog does not see the hierarchy.** Abstract supertypes are
+  skipped on a push there and no published entry records what it extends. Until
+  the catalog gains a class-hierarchy construct, a hierarchy is a property of the
+  deployed graph and of the model file.
 
-## The rules push enforces
+## Where a hierarchy deploys
 
-Fields flow down to subtypes; relationships and keys do not. A subtype's table
-must expose every inherited column, or the deploy fails. A metric cannot sit on a
-shared supertype; attach it to a concrete subtype. An inherited field cannot be
-redefined with a different meaning, and every table under a shared supertype must
-expose the identical field set. Each rule and the error it raises is in
+A hierarchy reaches BigQuery Graph and Spanner Graph. The extra labels and the
+flattened fields are identical on both, so one model deploys to either. A Spanner
+target carries no measures and no element descriptions, as it does for any model.
+
+A hierarchy does not reach Knowledge Catalog. The catalog has no class-hierarchy
+construct today, so a push there skips every abstract supertype and warns:
+
+```
+entity 'Party' is abstract (no physical table); skipped for Knowledge Catalog
+(KC does not yet model class hierarchies)
+```
+
+The concrete subtypes are published as ordinary entries, and no entry records
+what it extends. So the catalog sees `Customer` and `Supplier`, and it does not
+see that both are parties. The hierarchy survives in the model file itself:
+`kcmd pull` and the OSI serialization both carry `extends` and `abstract`, so a
+round trip does not lose it.
+
+The generation rules and the exact text of every error are in
 [Reference → Class hierarchies](reference.md#class-hierarchies-extends--labels).
-
-Inheritance deploys the same way to BigQuery Graph and Spanner Graph — the extra
-labels and the flattened fields are identical on both backends. On Spanner the
-model carries no measures, as it does for any model.
